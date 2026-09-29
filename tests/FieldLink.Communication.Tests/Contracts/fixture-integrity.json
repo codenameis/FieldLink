@@ -1,0 +1,26 @@
+[
+  {
+    "file": "tests/FieldLink.Communication.Tests/Fixtures/profinet-golden.json",
+    "cases": 58,
+    "baselineSha256": "4697fb883cffdea40b1e4ef426916b9a36ff84c65379432a78e61a3caeeaf05d",
+    "currentSha256": "9bd54f781e353b8aacbf4a0835200d4b124d26ab6dda6c10c74fcec3d64d6c9a",
+    "onlyDestinationChanged": true,
+    "normalizedTextSha256": "5698bb0efb9af8961538db9b627248b6a38fc8bc215e75f801cd45107700d604"
+  },
+  {
+    "file": "tests/FieldLink.Communication.Tests/Fixtures/profinet-golden.writes.json",
+    "cases": 54,
+    "baselineSha256": "306236c142aaf8d9a2f898f13df58f2f1c2edc8335ab6f1ce8b319a3167c078c",
+    "currentSha256": "b434e59641ea9efa5492799d46e0c65a221f0468780f0c02215476ab51a3c964",
+    "onlyDestinationChanged": true,
+    "normalizedTextSha256": "3dfb9bd78e527b6af615ac5eed003dd9e5d2fbc3fb18269c31fabb52191245b7"
+  },
+  {
+    "file": "tests/FieldLink.Communication.Tests/Fixtures/robot-golden.json",
+    "cases": 134,
+    "baselineSha256": "e330b1f8da75f5c2ff4a01e8f65e4bea0635255014ac1ae0ad2ee7fa1dfb5743",
+    "currentSha256": "547f5cbb0f38c3dd2fcb5b0460924992376c8b55ef137b5bf40eaa531b749c31",
+    "onlyDestinationChanged": true,
+    "normalizedTextSha256": "a883e6bc5f8fe7087dfe916a79dce22604cf52df4bed6ae7f30fe0e8c0fa0775"
+  }
+]

@@ -1,0 +1,1414 @@
+[
+  {
+    "Name": "AllenBradleyHelper.RegisterSessionHandle#1",
+    "Source": "Profinet/AllenBradley/AllenBradleyHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.AllenBradley.AllenBradleyCommandBuilder",
+    "Method": "RegisterSessionHandle",
+    "Arguments": [
+      {
+        "Type": "System.Byte[]",
+        "Value": "AAAAAA=="
+      }
+    ],
+    "Expected": "65000400000000000000000000000000000000000000000001000000"
+  },
+  {
+    "Name": "AllenBradleyHelper.PackRequestHeader#2",
+    "Source": "Profinet/AllenBradley/AllenBradleyHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.AllenBradley.AllenBradleyCommandBuilder",
+    "Method": "PackRequestHeader",
+    "Arguments": [
+      {
+        "Type": "System.UInt16",
+        "Value": 111
+      },
+      {
+        "Type": "System.UInt32",
+        "Value": 305419896
+      },
+      {
+        "Type": "System.Byte[]",
+        "Value": "AQID"
+      },
+      {
+        "Type": "System.Byte[]",
+        "Value": "AAAAAAAAAAA="
+      }
+    ],
+    "Expected": "6F0003007856341200000000000000000000000000000000010203"
+  },
+  {
+    "Name": "AllenBradleySLCNet.BuildReadCommand#3",
+    "Source": "Profinet/AllenBradley/AllenBradleySLCNet.cs",
+    "Destination": "FieldLink.PlcDrivers.AllenBradley.AllenBradleySLCNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "N7:0"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "000500000F000001A20207890000",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "AllenBradleySLCNet.BuildReadCommand#4",
+    "Source": "Profinet/AllenBradley/AllenBradleySLCNet.cs",
+    "Destination": "FieldLink.PlcDrivers.AllenBradley.AllenBradleySLCNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "Z1:0"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": null,
+      "ErrorCode": 10000,
+      "IsSuccess": false
+    }
+  },
+  {
+    "Name": "AdsHelper.BuildReadDeviceInfoCommand#5",
+    "Source": "Profinet/Beckhoff/Helper/AdsHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Beckhoff.AdsCommandBuilder",
+    "Method": "BuildReadDeviceInfoCommand",
+    "Arguments": [],
+    "Expected": {
+      "Content": "0000200000000000000000000000000000000000000001000400000000000000000000000000",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "AdsHelper.BuildReadStateCommand#6",
+    "Source": "Profinet/Beckhoff/Helper/AdsHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Beckhoff.AdsCommandBuilder",
+    "Method": "BuildReadStateCommand",
+    "Arguments": [],
+    "Expected": {
+      "Content": "0000200000000000000000000000000000000000000004000400000000000000000000000000",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "AdsHelper.BuildReadCommand#7",
+    "Source": "Profinet/Beckhoff/Helper/AdsHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Beckhoff.AdsCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "M100"
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 4
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": "00002C00000000000000000000000000000000000000020004000C0000000000000000000000204000006400000004000000",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "AdsHelper.BuildReadCommand#8",
+    "Source": "Profinet/Beckhoff/Helper/AdsHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Beckhoff.AdsCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "invalid"
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 4
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": null,
+      "ErrorCode": 10000,
+      "IsSuccess": false
+    }
+  },
+  {
+    "Name": "DeltaDvpHelper.ParseDeltaDvpAddress#9",
+    "Source": "Profinet/Delta/Helper/DeltaDvpHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Delta.DeltaDvpAddressParser",
+    "Method": "ParseDeltaDvpAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D4096"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 3
+      }
+    ],
+    "Expected": {
+      "Content": "36864",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "DeltaDvpHelper.ParseDeltaDvpAddress#10",
+    "Source": "Profinet/Delta/Helper/DeltaDvpHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Delta.DeltaDvpAddressParser",
+    "Method": "ParseDeltaDvpAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "X17"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      }
+    ],
+    "Expected": {
+      "Content": "x=2;1039",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "DeltaASHelper.ParseDeltaASAddress#11",
+    "Source": "Profinet/Delta/Helper/DeltaASHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Delta.DeltaAsAddressParser",
+    "Method": "ParseDeltaASAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "M100"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      }
+    ],
+    "Expected": {
+      "Content": "100",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "FatekProgramHelper.BuildReadWordCommand#12",
+    "Source": "Profinet/FATEK/Helper/FatekProgramHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.FATEK.FatekProgramCommandBuilder",
+    "Method": "BuildReadWordCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "02303134363032443030313030363403"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "FatekProgramHelper.BuildReadWordCommand#13",
+    "Source": "Profinet/FATEK/Helper/FatekProgramHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.FATEK.FatekProgramCommandBuilder",
+    "Method": "BuildReadWordCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 300
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "02303134363430443030313030363603",
+        "02303134363430443030313634373003",
+        "02303134363430443030323238373103",
+        "02303134363430443030323932373203",
+        "02303134363243443030333536383403"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "FatekProgramHelper.BuildWriteBoolCommand#14",
+    "Source": "Profinet/FATEK/Helper/FatekProgramHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.FATEK.FatekProgramCommandBuilder",
+    "Method": "BuildWriteBoolCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 2
+      },
+      {
+        "Type": "System.String",
+        "Value": "M10"
+      },
+      {
+        "Type": "System.Boolean[]",
+        "Value": [
+          true,
+          false,
+          true
+        ]
+      }
+    ],
+    "Expected": {
+      "Content": "023032343530334D30303130313031443003",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "FujiCommandSettingType.BuildReadCommand#15",
+    "Source": "Profinet/Fuji/FujiCommandSettingType.cs",
+    "Destination": "FieldLink.PlcDrivers.Fuji.FujiCommandSettingTypeCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "000000050464000200",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "FujiSPBHelper.BuildReadCommand#16",
+    "Source": "Profinet/Fuji/FujiSPBHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Fuji.FujiSPBCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "3A303130394646464630303030304330303031303230300D0A",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "FujiSPHNet.BuildReadCommand#17",
+    "Source": "Profinet/Fuji/FujiSPHNet.cs",
+    "Destination": "FieldLink.PlcDrivers.Fuji.FujiSPHNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 254
+      },
+      {
+        "Type": "System.String",
+        "Value": "M1.100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "FB808000FF7BFE00110000000000000000010600026400000200"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "GeHelper.BuildReadCommand#18",
+    "Source": "Profinet/GE/GeHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.GE.GeCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Int64",
+        "Value": 4660
+      },
+      {
+        "Type": "System.String",
+        "Value": "R1"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": "02003412000000000001000000000000000100000000000000000000000006C000000000100E000001010408000001000000000000000000",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "GeHelper.BuildReadCommand#19",
+    "Source": "Profinet/GE/GeHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.GE.GeCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Int64",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "R0"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": null,
+      "ErrorCode": 10000,
+      "IsSuccess": false
+    }
+  },
+  {
+    "Name": "VibrationSensorClient.BulidLongMessage#20",
+    "Source": "Profinet/Geniitek/VibrationSensorClient.cs",
+    "Destination": "FieldLink.PlcDrivers.Geniitek.VibrationSensorClientCommandBuilder",
+    "Method": "BulidLongMessage",
+    "Arguments": [
+      {
+        "Type": "System.UInt16",
+        "Value": 4660
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.Byte[]",
+        "Value": null
+      }
+    ],
+    "Expected": "AA557F123401010001010000267FAAED"
+  },
+  {
+    "Name": "SAMSerial.BuildReadCommand#21",
+    "Source": "Profinet/IDCard/SAMSerial.cs",
+    "Destination": "FieldLink.PlcDrivers.IDCard.SAMSerialCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 32
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.Byte[]",
+        "Value": null
+      }
+    ],
+    "Expected": "2001"
+  },
+  {
+    "Name": "SAMSerial.PackToSAMCommand#22",
+    "Source": "Profinet/IDCard/SAMSerial.cs",
+    "Destination": "FieldLink.PlcDrivers.IDCard.SAMSerialCommandBuilder",
+    "Method": "PackToSAMCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte[]",
+        "Value": "IAE="
+      }
+    ],
+    "Expected": "AAAAAA96690003200122"
+  },
+  {
+    "Name": "KeyenceNanoHelper.BuildReadCommand#23",
+    "Source": "Profinet/Keyence/KeyenceNanoHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Keyence.KeyenceNanoCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "DM100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "52445320444D31303020320D"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "KeyenceNanoHelper.BuildWriteCommand#24",
+    "Source": "Profinet/Keyence/KeyenceNanoHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Keyence.KeyenceNanoCommandBuilder",
+    "Method": "BuildWriteCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "DM100"
+      },
+      {
+        "Type": "System.Byte[]",
+        "Value": "NBJ4Vg=="
+      }
+    ],
+    "Expected": {
+      "Content": "57525320444D313030203220343636302032323133360D",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "LSCnetHelper.BuildReadByteCommand#25",
+    "Source": "Profinet/LSIS/Helper/LSCnetHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.LSIS.LSCnetCommandBuilder",
+    "Method": "BuildReadByteCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "05303172534230362544423230303032043736",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "LSCpuHelper.BuildReadByteCommand#26",
+    "Source": "Profinet/LSIS/Helper/LSCpuHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.LSIS.LSCpuCommandBuilder",
+    "Method": "BuildReadByteCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "0272613030303030303033353603",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "LSFastEnet.BuildReadIndividualCommand#27",
+    "Source": "Profinet/LSIS/LSFastEnet.cs",
+    "Destination": "FieldLink.PlcDrivers.LSIS.LSFastEnetCommandBuilder",
+    "Method": "BuildReadIndividualCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 0
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      }
+    ],
+    "Expected": {
+      "Content": "54000000000001000600254442323030",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MelsecA1ENet.BuildReadCommand#28",
+    "Source": "Profinet/Melsec/MelsecA1ENet.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecA1ENetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 255
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "01FF0A006400000020440200"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MelsecA1EAsciiNet.BuildReadCommand#29",
+    "Source": "Profinet/Melsec/MelsecA1EAsciiNet.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecA1EAsciiNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 255
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "303146463030304134343230303030303030363430323030"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MelsecFxLinksHelper.BuildReadCommand#30",
+    "Source": "Profinet/Melsec/Helper/MelsecFxLinksHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecFxLinksCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 0
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "3031464657523044303130303032"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MelsecFxSerialHelper.BuildReadWordCommand#31",
+    "Source": "Profinet/Melsec/Helper/MelsecFxSerialHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecFxSerialCommandBuilder",
+    "Method": "BuildReadWordCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": true
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "02453030343043383034034542"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MelsecFxSerialHelper.BuildReadBoolCommand#32",
+    "Source": "Profinet/Melsec/Helper/MelsecFxSerialHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecFxSerialCommandBuilder",
+    "Method": "BuildReadBoolCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "M100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 17
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content1": [
+        "0230303130433033033641"
+      ],
+      "Content2": 4,
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MelsecFxSerialHelper.BuildWriteBoolPacket#33",
+    "Source": "Profinet/Melsec/Helper/MelsecFxSerialHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecFxSerialCommandBuilder",
+    "Method": "BuildWriteBoolPacket",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "M100"
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": true
+      }
+    ],
+    "Expected": {
+      "Content": "023736343038033043",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "OmronHostLinkCModeHelper.BuildReadCommand#34",
+    "Source": "Profinet/Omron/Helper/OmronHostLinkCModeHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Omron.OmronHostLinkCModeCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "52443031303030303032"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "OpenProtocolNet.BuildReadCommand#35",
+    "Source": "Profinet/OpenProtocol/OpenProtocolNet.cs",
+    "Destination": "FieldLink.PlcDrivers.OpenProtocol.OpenProtocolNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Int32",
+        "Value": 1
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 1
+      },
+      {
+        "Type": "System.Int32",
+        "Value": -1
+      },
+      {
+        "Type": "System.Int32",
+        "Value": -1
+      },
+      {
+        "Type": "System.Collections.Generic.List`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]",
+        "Value": null
+      }
+    ],
+    "Expected": {
+      "Content": "303032303030303130303130202020202020202000",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "OpenProtocolNet.BuildReadCommand#36",
+    "Source": "Profinet/OpenProtocol/OpenProtocolNet.cs",
+    "Destination": "FieldLink.PlcDrivers.OpenProtocol.OpenProtocolNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Int32",
+        "Value": 18
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 1
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 2
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 3
+      },
+      {
+        "Type": "System.Collections.Generic.List`1[[System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]",
+        "Value": [
+          "001"
+        ]
+      }
+    ],
+    "Expected": {
+      "Content": "303032333030313830303130323033202020202030303100",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "PanasonicHelper.BuildReadOneCoil#37",
+    "Source": "Profinet/Panasonic/PanasonicHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Panasonic.PanasonicCommandBuilder",
+    "Method": "BuildReadOneCoil",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "R100"
+      }
+    ],
+    "Expected": {
+      "Content": "25303123524353523031303031360D",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "SiemensPPIHelper.BuildReadCommand#38",
+    "Source": "Profinet/Siemens/Helper/SiemensPPIHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Siemens.SiemensPPICommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 2
+      },
+      {
+        "Type": "System.String",
+        "Value": "DB1.0"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": "681B1B6802006C320100000000000E00000401120A100200020001840000006916",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "SiemensFetchWriteNet.BuildReadCommand#39",
+    "Source": "Profinet/Siemens/SiemensFetchWriteNet.cs",
+    "Destination": "FieldLink.PlcDrivers.Siemens.SiemensFetchWriteNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "DB1.0"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "5335100103050308010100000001FF02",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "SiemensMPI.BuildReadCommand#40",
+    "Source": "Profinet/Siemens/SiemensMPI.cs",
+    "Destination": "FieldLink.PlcDrivers.Siemens.SiemensMPICommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 2
+      },
+      {
+        "Type": "System.String",
+        "Value": "M100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": "6820206882807C1601F100320100003302000E00000401120A10020002000083000320D716E5",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "ToyoPuc.BuildReadWordCommand#41",
+    "Source": "Profinet/Toyota/ToyoPuc.cs",
+    "Destination": "FieldLink.PlcDrivers.Toyota.ToyoPucCommandBuilder",
+    "Method": "BuildReadWordCommand",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "1C00110200",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "ReaderNet.BuildReadCommand#42",
+    "Source": "Profinet/Turck/ReaderNet.cs",
+    "Destination": "FieldLink.PlcDrivers.Turck.ReaderNetCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 3
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 4
+      }
+    ],
+    "Expected": [
+      "AA09096800010258B2"
+    ]
+  },
+  {
+    "Name": "VigorVsHelper.BuildReadCommand#43",
+    "Source": "Profinet/Vigor/Helper/VigorVsHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Vigor.VigorVsCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "100201070020A0000100020010034342"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "XinJEHelper.BuildReadCommand#44",
+    "Source": "Profinet/XINJE/XinJEHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.XINJE.XinJECommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "0120800000640002"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "DigitronCPLHelper.BuildReadCommand#45",
+    "Source": "Profinet/Yamatake/Helper/DigitronCPLHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Yamatake.DigitronCPLCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "02303130305852532C313030572C320343420D0A",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MemobusHelper.BuildReadCommand#46",
+    "Source": "Profinet/YASKAWA/Helper/MemobusHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.YASKAWA.MemobusCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 32
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 3
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 0
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 100
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      }
+    ],
+    "Expected": {
+      "Content": "070020031000640002",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "YokogawaLinkTcp.BuildReadCommand#47",
+    "Source": "Profinet/Yokogawa/YokogawaLinkTcp.cs",
+    "Destination": "FieldLink.PlcDrivers.Yokogawa.YokogawaLinkTcpCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 2
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "110100080004000000640002"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "YokogawaLinkTcp.BuildReadCommand#48",
+    "Source": "Profinet/Yokogawa/YokogawaLinkTcp.cs",
+    "Destination": "FieldLink.PlcDrivers.Yokogawa.YokogawaLinkTcpCommandBuilder",
+    "Method": "BuildReadCommand",
+    "Arguments": [
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      },
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.UInt16",
+        "Value": 1000
+      },
+      {
+        "Type": "System.Boolean",
+        "Value": false
+      }
+    ],
+    "Expected": {
+      "Content": [
+        "110100080004000000640040",
+        "110100080004000000A40040",
+        "110100080004000000E40040",
+        "110100080004000001240040",
+        "110100080004000001640040",
+        "110100080004000001A40040",
+        "110100080004000001E40040",
+        "110100080004000002240040",
+        "110100080004000002640040",
+        "110100080004000002A40040",
+        "110100080004000002E40040",
+        "110100080004000003240040",
+        "110100080004000003640040",
+        "110100080004000003A40040",
+        "110100080004000003E40040",
+        "110100080004000004240028"
+      ],
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MelsecHelper.TransBoolArrayToByteData#49",
+    "Source": "Profinet/Melsec/MelsecHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecValueConverter",
+    "Method": "TransBoolArrayToByteData",
+    "Arguments": [
+      {
+        "Type": "System.Boolean[]",
+        "Value": [
+          true,
+          false,
+          true
+        ]
+      }
+    ],
+    "Expected": "1010"
+  },
+  {
+    "Name": "MelsecHelper.FxCalculateCRC#50",
+    "Source": "Profinet/Melsec/MelsecHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Melsec.MelsecValueConverter",
+    "Method": "FxCalculateCRC",
+    "Arguments": [
+      {
+        "Type": "System.Byte[]",
+        "Value": "AjAxAw=="
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 1
+      },
+      {
+        "Type": "System.Int32",
+        "Value": 0
+      }
+    ],
+    "Expected": "3634"
+  },
+  {
+    "Name": "SiemensS7Helper.AnalysisReadBit#51",
+    "Source": "Profinet/Siemens/Helper/SiemensS7Helper.cs",
+    "Destination": "FieldLink.PlcDrivers.Siemens.SiemensS7ResponseParser",
+    "Method": "AnalysisReadBit",
+    "Arguments": [
+      {
+        "Type": "System.Byte[]",
+        "Value": "AAAAAAA="
+      }
+    ],
+    "Expected": {
+      "Content": null,
+      "ErrorCode": 10000,
+      "IsSuccess": false
+    }
+  },
+  {
+    "Name": "OmronFinsNetHelper.UdpResponseValidAnalysis#52",
+    "Source": "Profinet/Omron/OmronFinsNetHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Omron.OmronFinsNetResponseParser",
+    "Method": "UdpResponseValidAnalysis",
+    "Arguments": [
+      {
+        "Type": "System.Byte[]",
+        "Value": "wAACAAAAAAAAAAEBAAASNA=="
+      }
+    ],
+    "Expected": {
+      "Content": "1234",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "FujiSPBHelper.CheckResponseData#53",
+    "Source": "Profinet/Fuji/FujiSPBHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Fuji.FujiSPBResponseParser",
+    "Method": "CheckResponseData",
+    "Arguments": [
+      {
+        "Type": "System.Byte[]",
+        "Value": "OjAxMDUwMDAwMDAwMA0K"
+      }
+    ],
+    "Expected": {
+      "Content": "3030",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "InovanceHelper.PraseInovanceAMAddress#54",
+    "Source": "Profinet/Inovance/InovanceHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Inovance.InovanceAddressParser",
+    "Method": "PraseInovanceAMAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "M100"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      }
+    ],
+    "Expected": {
+      "Content": "100",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "InovanceHelper.PraseInovanceH3UAddress#55",
+    "Source": "Profinet/Inovance/InovanceHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Inovance.InovanceAddressParser",
+    "Method": "PraseInovanceH3UAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 3
+      }
+    ],
+    "Expected": {
+      "Content": "100",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "InovanceHelper.PraseInovanceH5UAddress#56",
+    "Source": "Profinet/Inovance/InovanceHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.Inovance.InovanceAddressParser",
+    "Method": "PraseInovanceH5UAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "X17"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      }
+    ],
+    "Expected": {
+      "Content": "63503",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MegMeetHelper.PraseMegMeetAddress#57",
+    "Source": "Profinet/MegMeet/MegMeetHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.MegMeet.MegMeetAddressParser",
+    "Method": "PraseMegMeetAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "D100"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 3
+      }
+    ],
+    "Expected": {
+      "Content": "100",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  },
+  {
+    "Name": "MegMeetHelper.PraseMegMeetAddress#58",
+    "Source": "Profinet/MegMeet/MegMeetHelper.cs",
+    "Destination": "FieldLink.PlcDrivers.MegMeet.MegMeetAddressParser",
+    "Method": "PraseMegMeetAddress",
+    "Arguments": [
+      {
+        "Type": "System.String",
+        "Value": "X17"
+      },
+      {
+        "Type": "System.Byte",
+        "Value": 1
+      }
+    ],
+    "Expected": {
+      "Content": "x=2;15",
+      "ErrorCode": 0,
+      "IsSuccess": true
+    }
+  }
+]

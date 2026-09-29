@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/FieldLink/FieldLink.csproj" />
+    <Compile Include="../../samples/FieldLink.Communication/*.cs" Link="Samples/%(Filename)%(Extension)" />
+    <None Include="Fixtures/profinet-golden.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures/profinet-golden.writes.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures/robot-golden.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Contracts/fanuc-member-migration.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Contracts/public-api.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Contracts/fixture-integrity.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

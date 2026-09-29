@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FieldLink/FieldLink.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FieldLink.Communication.Tests/FieldLink.Communication.Tests.csproj" />
+    <Project Path="tests/FieldLink.Communication.TestRunner/FieldLink.Communication.TestRunner.csproj" />
+  </Folder>
+</Solution>
