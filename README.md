@@ -1,8 +1,8 @@
 # FieldLink
 
-PLC와 산업용 Robot의 통신을 위한 **.NET Standard 2.0** 라이브러리입니다. 제조사별 프로토콜과 TCP·UDP·Serial·WebSocket 전송을 제공하며, 주요 PLC는 C# 자료형 그대로 읽고 쓸 수 있습니다.
+PLC·산업용 Robot·SECS/GEM 통신을 위한 **.NET Standard 2.0** 라이브러리입니다. 제조사별 프로토콜과 TCP·UDP·Serial·WebSocket 전송을 제공하며, 주요 PLC는 C# 자료형 그대로 읽고 쓸 수 있습니다.
 
-[지원 PLC](#지원-plc) · [PLC 예제](#plc-예제) · [지원 Robot](#지원-robot) · [Robot 예제](#robot-예제) · [빌드와 검증](#빌드와-검증) · [전체 문서](docs/README.md)
+[지원 PLC](#지원-plc) · [PLC 예제](#plc-예제) · [지원 Robot](#지원-robot) · [Robot 예제](#robot-예제) · [SECS/GEM](docs/secs-gem.md) · [빌드와 검증](#빌드와-검증) · [전체 문서](docs/README.md)
 
 ## 시작하기
 

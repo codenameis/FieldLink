@@ -16,6 +16,7 @@ dotnet run --project tests/FieldLink.Communication.TestRunner/FieldLink.Communic
 ```powershell
 dotnet run --project tests/FieldLink.Communication.TestRunner/FieldLink.Communication.TestRunner.csproj -c Release --no-build -- Standards
 dotnet run --project tests/FieldLink.Communication.TestRunner/FieldLink.Communication.TestRunner.csproj -c Release --no-build -- Robot
+dotnet run --project tests/FieldLink.Communication.TestRunner/FieldLink.Communication.TestRunner.csproj -c Release --no-build -- SecsTests
 ```
 
 ## 기준 자료

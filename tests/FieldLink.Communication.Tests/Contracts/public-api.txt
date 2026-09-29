@@ -218,11 +218,49 @@ C FieldLink.Robot.YASKAWA.Protocols.YrcAlarm public (FieldLink.PlcDrivers.Common
 C FieldLink.Robot.YASKAWA.Protocols.YrcEthernetRequestBuilder public ()
 C FieldLink.Robot.YASKAWA.Protocols.YrcRobotPosition public ()
 C FieldLink.Robot.YASKAWA.Protocols.YrcRobotPosition public (FieldLink.Robot.YASKAWA.Protocols.YrcControllerModel type,System.String value)
+C FieldLink.Secs.Gem public (FieldLink.Secs.ISecs secs,System.Text.Encoding encoding=)
+C FieldLink.Secs.HsmsClient public (System.Net.IPEndPoint endpoint,System.UInt16 deviceID=0,System.Nullable<System.TimeSpan> timeout=,System.Boolean selectOnOpen=False,System.Int32 maximumFrameLength=1048576,System.Text.Encoding stringEncoding=,System.Boolean automaticGemReplies=True)
+C FieldLink.Secs.HsmsServer public (System.Net.IPEndPoint endpoint,System.UInt16 deviceID=1,System.Nullable<System.TimeSpan> timeout=,System.Int32 maximumFrameLength=1048576,System.Int32 maximumConnections=100,System.Text.Encoding stringEncoding=,System.Boolean automaticGemReplies=False)
+C FieldLink.Secs.SecsProtocolException public (System.String message,System.Int32 code)
+C FieldLink.Secs.Types.OnlineData public (System.String model,System.String version)
+C FieldLink.Secs.Types.SecsMessage public (System.UInt16 deviceID,System.Byte stream,System.Byte function,System.UInt32 messageID,System.Byte[] data=,System.Boolean replyExpected=False,System.Byte sessionType=0,System.Byte presentationType=0)
+C FieldLink.Secs.Types.SecsValue public ()
+C FieldLink.Secs.Types.SecsValue public (FieldLink.Secs.Types.SecsItemType type,System.Object value)
+C FieldLink.Secs.Types.SecsValue public (System.Boolean value)
+C FieldLink.Secs.Types.SecsValue public (System.Boolean[] value)
+C FieldLink.Secs.Types.SecsValue public (System.Byte value)
+C FieldLink.Secs.Types.SecsValue public (System.Byte[] value)
+C FieldLink.Secs.Types.SecsValue public (System.Collections.Generic.IEnumerable<System.Object> values)
+C FieldLink.Secs.Types.SecsValue public (System.Double value)
+C FieldLink.Secs.Types.SecsValue public (System.Double[] value)
+C FieldLink.Secs.Types.SecsValue public (System.Int16 value)
+C FieldLink.Secs.Types.SecsValue public (System.Int16[] value)
+C FieldLink.Secs.Types.SecsValue public (System.Int32 value)
+C FieldLink.Secs.Types.SecsValue public (System.Int32[] value)
+C FieldLink.Secs.Types.SecsValue public (System.Int64 value)
+C FieldLink.Secs.Types.SecsValue public (System.Int64[] value)
+C FieldLink.Secs.Types.SecsValue public (System.SByte value)
+C FieldLink.Secs.Types.SecsValue public (System.SByte[] value)
+C FieldLink.Secs.Types.SecsValue public (System.Single value)
+C FieldLink.Secs.Types.SecsValue public (System.Single[] value)
+C FieldLink.Secs.Types.SecsValue public (System.String value)
+C FieldLink.Secs.Types.SecsValue public (System.String[] value)
+C FieldLink.Secs.Types.SecsValue public (System.UInt16 value)
+C FieldLink.Secs.Types.SecsValue public (System.UInt16[] value)
+C FieldLink.Secs.Types.SecsValue public (System.UInt32 value)
+C FieldLink.Secs.Types.SecsValue public (System.UInt32[] value)
+C FieldLink.Secs.Types.SecsValue public (System.UInt64 value)
+C FieldLink.Secs.Types.SecsValue public (System.UInt64[] value)
+C FieldLink.Secs.Types.SecsValue public (System.Xml.Linq.XElement element)
+C FieldLink.Secs.Types.VariableName public ()
 E FieldLink.Communication.ICommunicationClient.StateChanged System.EventHandler<FieldLink.Communication.Diagnostics.ClientStateChangedEventArgs> public
 E FieldLink.Communication.Serial.SerialClient.StateChanged System.EventHandler<FieldLink.Communication.Diagnostics.ClientStateChangedEventArgs> public
 E FieldLink.Communication.Tcp.TcpClient.StateChanged System.EventHandler<FieldLink.Communication.Diagnostics.ClientStateChangedEventArgs> public
 E FieldLink.Communication.Udp.UdpClient.StateChanged System.EventHandler<FieldLink.Communication.Diagnostics.ClientStateChangedEventArgs> public
 E FieldLink.Robot.Hyundai.Servers.HyundaiUdpServer.PositionReceived System.Action<FieldLink.Robot.Hyundai.Protocols.HyundaiPositionCorrection> public
+E FieldLink.Secs.HsmsClient.MessageReceived System.Action<FieldLink.Secs.HsmsSession,FieldLink.Secs.Types.SecsMessage> public
+E FieldLink.Secs.HsmsServer.MessageReceived System.Action<FieldLink.Secs.HsmsSession,FieldLink.Secs.Types.SecsMessage> public
+E FieldLink.Secs.HsmsSession.MessageReceived System.Action<FieldLink.Secs.HsmsSession,FieldLink.Secs.Types.SecsMessage> public
 F FieldLink.Communication.Diagnostics.ClientState.Closed FieldLink.Communication.Diagnostics.ClientState static=True readonly=False const=0
 F FieldLink.Communication.Diagnostics.ClientState.Disposed FieldLink.Communication.Diagnostics.ClientState static=True readonly=False const=4
 F FieldLink.Communication.Diagnostics.ClientState.Faulted FieldLink.Communication.Diagnostics.ClientState static=True readonly=False const=3
@@ -577,6 +615,23 @@ F FieldLink.Robot.FANUC.Protocols.FanucProtocol.SELECTOR_Q System.Byte static=Tr
 F FieldLink.Robot.YASKAWA.Protocols.YrcControllerModel.YRC100 FieldLink.Robot.YASKAWA.Protocols.YrcControllerModel static=True readonly=False const=1
 F FieldLink.Robot.YASKAWA.Protocols.YrcControllerModel.YRC1000 FieldLink.Robot.YASKAWA.Protocols.YrcControllerModel static=True readonly=False const=0
 F FieldLink.Robot.YASKAWA.Protocols.YrcControllerModel.value__ System.Int32 static=False readonly=False const=-
+F FieldLink.Secs.Types.SecsItemType.ASCII FieldLink.Secs.Types.SecsItemType static=True readonly=False const=3
+F FieldLink.Secs.Types.SecsItemType.Binary FieldLink.Secs.Types.SecsItemType static=True readonly=False const=2
+F FieldLink.Secs.Types.SecsItemType.Bool FieldLink.Secs.Types.SecsItemType static=True readonly=False const=1
+F FieldLink.Secs.Types.SecsItemType.Byte FieldLink.Secs.Types.SecsItemType static=True readonly=False const=6
+F FieldLink.Secs.Types.SecsItemType.Double FieldLink.Secs.Types.SecsItemType static=True readonly=False const=14
+F FieldLink.Secs.Types.SecsItemType.Int16 FieldLink.Secs.Types.SecsItemType static=True readonly=False const=7
+F FieldLink.Secs.Types.SecsItemType.Int32 FieldLink.Secs.Types.SecsItemType static=True readonly=False const=9
+F FieldLink.Secs.Types.SecsItemType.Int64 FieldLink.Secs.Types.SecsItemType static=True readonly=False const=11
+F FieldLink.Secs.Types.SecsItemType.JIS8 FieldLink.Secs.Types.SecsItemType static=True readonly=False const=4
+F FieldLink.Secs.Types.SecsItemType.List FieldLink.Secs.Types.SecsItemType static=True readonly=False const=0
+F FieldLink.Secs.Types.SecsItemType.None FieldLink.Secs.Types.SecsItemType static=True readonly=False const=15
+F FieldLink.Secs.Types.SecsItemType.SByte FieldLink.Secs.Types.SecsItemType static=True readonly=False const=5
+F FieldLink.Secs.Types.SecsItemType.Single FieldLink.Secs.Types.SecsItemType static=True readonly=False const=13
+F FieldLink.Secs.Types.SecsItemType.UInt16 FieldLink.Secs.Types.SecsItemType static=True readonly=False const=8
+F FieldLink.Secs.Types.SecsItemType.UInt32 FieldLink.Secs.Types.SecsItemType static=True readonly=False const=10
+F FieldLink.Secs.Types.SecsItemType.UInt64 FieldLink.Secs.Types.SecsItemType static=True readonly=False const=12
+F FieldLink.Secs.Types.SecsItemType.value__ System.Int32 static=False readonly=False const=-
 M FieldLink.Communication.FileTransfer.FileTransferClient.Dispose public static=False virtual=True abstract=False returns=System.Void ()
 M FieldLink.Communication.FileTransfer.FileTransferClient.DownloadAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.String remoteName,System.String localPath,System.Threading.CancellationToken cancellationToken=)
 M FieldLink.Communication.FileTransfer.FileTransferClient.UploadAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.String localPath,System.String remoteName,System.Threading.CancellationToken cancellationToken=)
@@ -2317,6 +2372,49 @@ M FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequestBuilder.BuildReset public stati
 M FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequestBuilder.BuildSetMainJob public static=True virtual=False abstract=False returns=FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequest<System.String> (System.String programName=)
 M FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequestBuilder.BuildStart public static=True virtual=False abstract=False returns=FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequest<System.String> (System.String programName=)
 M FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequestBuilder.BuildSvon public static=True virtual=False abstract=False returns=FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequest<System.String> (System.Boolean status)
+M FieldLink.Secs.Gem.AreYouThereAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.OnlineData> (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.Gem.EquipmentConstantRequestAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.SecsValue> (System.Object[] constantIDs=,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.Gem.EstablishCommunicationsAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.OnlineData> (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.Gem.OfflineRequestAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task<System.Byte> (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.Gem.OnlineRequestAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task<System.Byte> (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.Gem.StatusVariableNamelistAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.VariableName[]> (System.Int32[] variableIDs=,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsClient.CloseAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsClient.Dispose public static=False virtual=True abstract=False returns=System.Void ()
+M FieldLink.Secs.HsmsClient.OpenAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsClient.RequestAsync public static=False virtual=True abstract=False returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.SecsMessage> (System.Byte stream,System.Byte function,FieldLink.Secs.Types.SecsValue data,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsServer.Dispose public static=False virtual=True abstract=False returns=System.Void ()
+M FieldLink.Secs.HsmsServer.PublishAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Byte stream,System.Byte function,FieldLink.Secs.Types.SecsValue data,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsServer.StartAsync public static=False virtual=True abstract=False returns=System.Threading.Tasks.Task (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsServer.StopAsync public static=False virtual=True abstract=False returns=System.Threading.Tasks.Task ()
+M FieldLink.Secs.HsmsSession.CloseAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsSession.Dispose public static=False virtual=True abstract=False returns=System.Void ()
+M FieldLink.Secs.HsmsSession.LinkTestAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsSession.ReplyAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (FieldLink.Secs.Types.SecsMessage request,FieldLink.Secs.Types.SecsValue data,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsSession.RequestAsync public static=False virtual=True abstract=False returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.SecsMessage> (System.Byte stream,System.Byte function,FieldLink.Secs.Types.SecsValue data,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsSession.RequestBytesAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.SecsMessage> (System.Byte stream,System.Byte function,System.Byte[] data,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsSession.SelectAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsSession.SendAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Byte stream,System.Byte function,FieldLink.Secs.Types.SecsValue data,System.Boolean replyExpected=False,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.HsmsSession.SendBytesAsync public static=False virtual=False abstract=False returns=System.Threading.Tasks.Task (System.Byte stream,System.Byte function,System.Byte[] data,System.Boolean replyExpected=False,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.ISecs.RequestAsync public static=False virtual=True abstract=True returns=System.Threading.Tasks.Task<FieldLink.Secs.Types.SecsMessage> (System.Byte stream,System.Byte function,FieldLink.Secs.Types.SecsValue data,System.Threading.CancellationToken cancellationToken=)
+M FieldLink.Secs.Protocols.HsmsCodec.CreateFrameBoundary public static=True virtual=False abstract=False returns=FieldLink.Communication.Framing.IFrameBoundary (System.Int32 maximumFrameLength=1048576)
+M FieldLink.Secs.Protocols.HsmsCodec.Decode public static=True virtual=False abstract=False returns=FieldLink.Secs.Types.SecsMessage (System.Byte[] frame,System.Int32 maximumFrameLength=1048576)
+M FieldLink.Secs.Protocols.HsmsCodec.Encode public static=True virtual=False abstract=False returns=System.Byte[] (FieldLink.Secs.Types.SecsMessage message)
+M FieldLink.Secs.Protocols.Secs1MessageBuilder.Build public static=True virtual=False abstract=False returns=System.Collections.Generic.IReadOnlyList<System.Byte[]> (System.UInt16 deviceID,System.Byte stream,System.Byte function,System.UInt16 blockNumber,System.UInt32 messageID,System.Byte[] data,System.Boolean replyExpected)
+M FieldLink.Secs.Protocols.Secs2Codec.Decode public static=True virtual=False abstract=False returns=FieldLink.Secs.Types.SecsValue (System.Byte[] data,System.Text.Encoding encoding)
+M FieldLink.Secs.Protocols.Secs2Codec.Encode public static=True virtual=False abstract=False returns=System.Byte[] (FieldLink.Secs.Types.SecsValue value,System.Text.Encoding encoding)
+M FieldLink.Secs.Types.SecsMessage.GetItemValues public static=False virtual=False abstract=False returns=FieldLink.Secs.Types.SecsValue ()
+M FieldLink.Secs.Types.SecsMessage.GetItemValues public static=False virtual=False abstract=False returns=FieldLink.Secs.Types.SecsValue (System.Text.Encoding encoding)
+M FieldLink.Secs.Types.SecsMessage.ToString public static=False virtual=True abstract=False returns=System.String ()
+M FieldLink.Secs.Types.SecsValue.CreateListSecsValue public static=True virtual=False abstract=False returns=FieldLink.Secs.Types.SecsValue (System.Object[] values)
+M FieldLink.Secs.Types.SecsValue.EmptyListValue public static=True virtual=False abstract=False returns=FieldLink.Secs.Types.SecsValue ()
+M FieldLink.Secs.Types.SecsValue.EmptySecsValue public static=True virtual=False abstract=False returns=FieldLink.Secs.Types.SecsValue ()
+M FieldLink.Secs.Types.SecsValue.ParseFromSource public static=True virtual=False abstract=False returns=FieldLink.Secs.Types.SecsValue (System.Byte[] source,System.Text.Encoding encoding)
+M FieldLink.Secs.Types.SecsValue.ToSourceBytes public static=False virtual=False abstract=False returns=System.Byte[] ()
+M FieldLink.Secs.Types.SecsValue.ToSourceBytes public static=False virtual=False abstract=False returns=System.Byte[] (System.Text.Encoding encoding)
+M FieldLink.Secs.Types.SecsValue.ToString public static=False virtual=True abstract=False returns=System.String ()
+M FieldLink.Secs.Types.SecsValue.ToVariableNames public static=False virtual=False abstract=False returns=FieldLink.Secs.Types.VariableName[] ()
+M FieldLink.Secs.Types.SecsValue.ToXElement public static=False virtual=False abstract=False returns=System.Xml.Linq.XElement ()
+M FieldLink.Secs.Types.VariableName.ToString public static=False virtual=True abstract=False returns=System.String ()
 P FieldLink.Communication.Diagnostics.ClientStateChangedEventArgs.Error System.Exception get=public set=- ()
 P FieldLink.Communication.Diagnostics.ClientStateChangedEventArgs.PreviousState FieldLink.Communication.Diagnostics.ClientState get=public set=- ()
 P FieldLink.Communication.Diagnostics.ClientStateChangedEventArgs.Sequence System.Int64 get=public set=- ()
@@ -2960,6 +3058,41 @@ P FieldLink.Robot.YASKAWA.Protocols.YrcRobotPosition.ToolNumber System.Int32 get
 P FieldLink.Robot.YASKAWA.Protocols.YrcRobotPosition.X System.Single get=public set=public ()
 P FieldLink.Robot.YASKAWA.Protocols.YrcRobotPosition.Y System.Single get=public set=public ()
 P FieldLink.Robot.YASKAWA.Protocols.YrcRobotPosition.Z System.Single get=public set=public ()
+P FieldLink.Secs.HsmsClient.ConnectionGeneration System.Int64 get=public set=- ()
+P FieldLink.Secs.HsmsClient.Gem FieldLink.Secs.Gem get=public set=- ()
+P FieldLink.Secs.HsmsClient.IsOpen System.Boolean get=public set=- ()
+P FieldLink.Secs.HsmsClient.Session FieldLink.Secs.HsmsSession get=public set=- ()
+P FieldLink.Secs.HsmsServer.Completion System.Threading.Tasks.Task get=public set=- ()
+P FieldLink.Secs.HsmsServer.IsRunning System.Boolean get=public set=- ()
+P FieldLink.Secs.HsmsServer.LastConnectionError System.Exception get=public set=- ()
+P FieldLink.Secs.HsmsServer.LocalEndPoint System.Net.IPEndPoint get=public set=- ()
+P FieldLink.Secs.HsmsServer.Sessions FieldLink.Secs.HsmsSession[] get=public set=- ()
+P FieldLink.Secs.HsmsSession.Completion System.Threading.Tasks.Task get=public set=- ()
+P FieldLink.Secs.HsmsSession.DeviceID System.UInt16 get=public set=- ()
+P FieldLink.Secs.HsmsSession.Gem FieldLink.Secs.Gem get=public set=- ()
+P FieldLink.Secs.HsmsSession.IsOpen System.Boolean get=public set=- ()
+P FieldLink.Secs.HsmsSession.IsSelected System.Boolean get=public set=- ()
+P FieldLink.Secs.HsmsSession.LastError System.Exception get=public set=- ()
+P FieldLink.Secs.HsmsSession.LastMessageHandlerError System.Exception get=public set=- ()
+P FieldLink.Secs.HsmsSession.RemoteEndPoint System.Net.EndPoint get=public set=- ()
+P FieldLink.Secs.HsmsSession.StringEncoding System.Text.Encoding get=public set=- ()
+P FieldLink.Secs.SecsProtocolException.Code System.Int32 get=public set=- ()
+P FieldLink.Secs.Types.OnlineData.ModelType System.String get=public set=- ()
+P FieldLink.Secs.Types.OnlineData.SoftVersion System.String get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.Data System.Byte[] get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.DeviceID System.UInt16 get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.FunctionNo System.Byte get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.MessageID System.UInt32 get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.PresentationType System.Byte get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.SessionType System.Byte get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.StreamNo System.Byte get=public set=- ()
+P FieldLink.Secs.Types.SecsMessage.W System.Boolean get=public set=- ()
+P FieldLink.Secs.Types.SecsValue.ItemType FieldLink.Secs.Types.SecsItemType get=public set=- ()
+P FieldLink.Secs.Types.SecsValue.Length System.Int32 get=public set=- ()
+P FieldLink.Secs.Types.SecsValue.Value System.Object get=public set=- ()
+P FieldLink.Secs.Types.VariableName.ID System.Int64 get=public set=public ()
+P FieldLink.Secs.Types.VariableName.Name System.String get=public set=public ()
+P FieldLink.Secs.Types.VariableName.Units System.String get=public set=public ()
 R Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed
 R System.IO.Ports, Version=10.0.0.12, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51
 R netstandard, Version=2.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51
@@ -3489,3 +3622,17 @@ T FieldLink.Robot.YASKAWA.Protocols.YrcRobotPosition class abstract=False sealed
 T FieldLink.Robot.YASKAWA.Protocols.YrcTcpProtocol class abstract=True sealed=True base=System.Object interfaces=
 T FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequest<T> class abstract=False sealed=True base=System.Object interfaces=
 T FieldLink.Robot.YASKAWA.Protocols.YrcTcpRequestBuilder class abstract=True sealed=True base=System.Object interfaces=
+T FieldLink.Secs.Gem class abstract=False sealed=True base=System.Object interfaces=
+T FieldLink.Secs.HsmsClient class abstract=False sealed=True base=System.Object interfaces=FieldLink.Secs.ISecs,System.IDisposable
+T FieldLink.Secs.HsmsServer class abstract=False sealed=True base=System.Object interfaces=FieldLink.Communication.ICommunicationServer,System.IDisposable
+T FieldLink.Secs.HsmsSession class abstract=False sealed=True base=System.Object interfaces=FieldLink.Secs.ISecs,System.IDisposable
+T FieldLink.Secs.ISecs interface abstract=True sealed=False base=- interfaces=
+T FieldLink.Secs.Protocols.HsmsCodec class abstract=True sealed=True base=System.Object interfaces=
+T FieldLink.Secs.Protocols.Secs1MessageBuilder class abstract=True sealed=True base=System.Object interfaces=
+T FieldLink.Secs.Protocols.Secs2Codec class abstract=True sealed=True base=System.Object interfaces=
+T FieldLink.Secs.SecsProtocolException class abstract=False sealed=True base=System.IO.IOException interfaces=System.Runtime.InteropServices._Exception,System.Runtime.Serialization.ISerializable
+T FieldLink.Secs.Types.OnlineData class abstract=False sealed=True base=System.Object interfaces=
+T FieldLink.Secs.Types.SecsItemType enum abstract=False sealed=True base=System.Enum interfaces=System.IComparable,System.IConvertible,System.IFormattable
+T FieldLink.Secs.Types.SecsMessage class abstract=False sealed=True base=System.Object interfaces=
+T FieldLink.Secs.Types.SecsValue class abstract=False sealed=True base=System.Object interfaces=
+T FieldLink.Secs.Types.VariableName class abstract=False sealed=True base=System.Object interfaces=

@@ -1,0 +1,66 @@
+{
+  "sourceCommit": "2f54bb4666e7494d15f085c443d57e63017421f7",
+  "date": "2026-09-29",
+  "sourceFiles": [
+    {
+      "file": "Secs/Gem.cs",
+      "sha256": "10cf4240d496f6993b6b0c0f6b5cc09c6e81395cfbc4071c139837e4651cfc9e"
+    },
+    {
+      "file": "Secs/Helper/Secs1.cs",
+      "sha256": "45034bbc80b14260229e5bb31248e4dfba60c4f94122b68d188ab07f14590da1"
+    },
+    {
+      "file": "Secs/Helper/Secs2.cs",
+      "sha256": "26008170467040074fafd6c12f3d7f2472cc7b9ad406d57a0fe4cac933ae4381"
+    },
+    {
+      "file": "Secs/Message/SecsHsmsMessage.cs",
+      "sha256": "c0522e4d84d85f8fbf7c39637d32b3c3a7dd7a57a4c5c1d9aa37175a81c4c405"
+    },
+    {
+      "file": "Secs/SecsGemSerial.cs",
+      "sha256": "7fc1b2b54a3e6b4869c7dc4ebd3c7a183065aa4ca24a12824f9632a6522c5d0a"
+    },
+    {
+      "file": "Secs/SecsHsms.cs",
+      "sha256": "91a2d70f861263b53bd5a58f3b28c1b2664d9202417ead3d844cabf02ee66d1f"
+    },
+    {
+      "file": "Secs/SecsHsmsServer.cs",
+      "sha256": "725b975d98ec9214ed58107ff09024895d42836180ab32180cbc838dab75babf"
+    },
+    {
+      "file": "Secs/Types/ISecs.cs",
+      "sha256": "39e91528a3f3b99d37b1f0f4999ace1269026033a845c0b0b9103a6019f3ea55"
+    },
+    {
+      "file": "Secs/Types/OnlineData.cs",
+      "sha256": "d9ae0157cc6dd4ade041baa01e987a810b5ac9d58247d2bf65b8c345938ac387"
+    },
+    {
+      "file": "Secs/Types/SecsItemType.cs",
+      "sha256": "845c88a0743a62f1bbc2878adc9d61474ca6f53d1e7d5a117482ad888546486b"
+    },
+    {
+      "file": "Secs/Types/SecsMessage.cs",
+      "sha256": "c19054ed8a3942ba9ad00f4bc0ed220e15a48b9c7f57478a0bf71c2effebcc5c"
+    },
+    {
+      "file": "Secs/Types/SecsValue.cs",
+      "sha256": "ea861d610237d16ce445016849e2a7f87e49916ea925fac854521002170f53f9"
+    },
+    {
+      "file": "Secs/Types/TypeHelper.cs",
+      "sha256": "d98b7507aed157e7023491fec857ad78a5f006e4463919c01e6428c5955983e6"
+    },
+    {
+      "file": "Secs/Types/VariableName.cs",
+      "sha256": "cbfb7c3d031b3137b12c2fe9ee25ac778002610022c57439cd49550bf4bef6e4"
+    },
+    {
+      "file": "BasicFramework/SoftBasic.cs",
+      "sha256": "9ad2b0db6c7219a6f21ab347c99e11c4b90eefb184c0fdae5ba9c9a50a2e05d9"
+    }
+  ]
+}

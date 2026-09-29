@@ -3,6 +3,7 @@
 이 폴더에는 가상 프로토콜의 수명 관리 예제와 Melsec 제품 클라이언트의 사용 예제가 있습니다. FieldLink 제품 DLL에 포함되지 않습니다. 이 소스는 `netstandard2.0` 테스트 라이브러리에 직접 포함하여 컴파일하고 별도의 `net48` 실행기로 루프백 검증합니다. 제품 라이브러리도 `netstandard2.0`을 유지합니다.
 
 - [SessionDevice.cs](SessionDevice.cs): 연결별 초기화, 읽기·쓰기, 장치 오류 전달, 정상 종료와 동시 요청 차단.
+- [SecsGemExample.cs](SecsGemExample.cs): HSMS Select 후 GEM 장비 식별 조회와 로컬 응답 서버 구성. [범위·수명 계약](../../docs/secs-gem.md)을 확인하세요.
 - [ReconnectionExample.cs](ReconnectionExample.cs): 애플리케이션이 명시적으로 선택하는 연결 재시도. 횟수·간격·취소를 받으며 장치 명령은 재전송하지 않습니다.
 - [MelsecReadWordsExample.cs](MelsecReadWordsExample.cs): MC 3E Binary TCP로 D100부터 50워드를 읽고 전송 자원을 해제합니다. [사용 계약](../../docs/plc-drivers/melsec-client.md)을 확인하세요.
 - [MelsecTypedExample.cs](MelsecTypedExample.cs): `Plc.MelsecMcTcp` 하나로 연결하고 `int[]` 연속 쓰기·읽기를 수행합니다. D100~D105를 변경하는 예제이며 [간편 API 계약](../../docs/plc-drivers/mc-client-api.md)을 확인하세요.

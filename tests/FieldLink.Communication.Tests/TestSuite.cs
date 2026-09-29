@@ -25,7 +25,7 @@ public static class TestSuite
         bool protocolsOnly = args.Length > 0 && args[0] == "--protocols";
         string? filter = args.Skip(protocolsOnly ? 1 : 0).FirstOrDefault();
         Type[] suites = protocolsOnly ? protocolSuites :
-            [typeof(ApiContractTests), typeof(AddressContractTests), typeof(ValueConverterTests), typeof(ChecksumTests), typeof(SerialTests), typeof(FrameTests), typeof(TcpTests), typeof(UdpTests), typeof(WebSocketTransportTests), typeof(PushServiceTests), typeof(FileTransferTests), typeof(ClientTests), typeof(ConnectionTests), typeof(DeviceClientTests), typeof(DeviceLifecycleTests), typeof(RequestEntryTests), ..protocolSuites];
+            [typeof(ApiContractTests), typeof(SecsTests), typeof(AddressContractTests), typeof(ValueConverterTests), typeof(ChecksumTests), typeof(SerialTests), typeof(FrameTests), typeof(TcpTests), typeof(UdpTests), typeof(WebSocketTransportTests), typeof(PushServiceTests), typeof(FileTransferTests), typeof(ClientTests), typeof(ConnectionTests), typeof(DeviceClientTests), typeof(DeviceLifecycleTests), typeof(RequestEntryTests), ..protocolSuites];
         foreach (Type suite in suites)
         {
             foreach (MethodInfo method in suite.GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
