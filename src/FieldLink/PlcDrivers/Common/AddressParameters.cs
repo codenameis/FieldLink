@@ -154,27 +154,34 @@ namespace FieldLink.PlcDrivers.Common
             }
         }
 
-        /// <summary>SplitReadLength 형식의 프로토콜 데이터를 처리합니다.</summary>
+        /// <summary>읽기 길이를 양수 segment 이하로 분할하고 각 시작 주소를 계산합니다.</summary>
         /// <param name = "address">읽거나 기록할 프로토콜 주소입니다.</param>
         /// <param name = "length">요청할 데이터의 길이입니다.</param>
         /// <param name = "segment">segment에 사용할 입력값입니다.</param>
         /// <returns>명령 생성 또는 데이터 해석 결과입니다.</returns>
         public static OperationResult<int[], int[]> SplitReadLength(int address, ushort length, int segment)
         {
-            int[] segments = ProtocolBytes.SplitIntegerToArray(length, segment);
-            int[] addresses = new int[segments.Length];
-            for (int i = 0; i < addresses.Length; i++)
+            if (segment <= 0)
+                throw new ArgumentOutOfRangeException(nameof(segment), "Segment length must be positive.");
+
+            int[] segmentLengths = ProtocolBytes.SplitIntegerToArray(length, segment);
+            int[] startAddresses = new int[segmentLengths.Length];
+            for (int segmentIndex = 0; segmentIndex < startAddresses.Length; segmentIndex++)
             {
-                if (i == 0)
-                    addresses[i] = address;
+                if (segmentIndex == 0)
+                {
+                    startAddresses[segmentIndex] = address;
+                }
                 else
-                    addresses[i] = addresses[i - 1] + segments[i - 1];
+                {
+                    startAddresses[segmentIndex] = startAddresses[segmentIndex - 1] + segmentLengths[segmentIndex - 1];
+                }
             }
 
-            return OperationResult.CreateSuccessResult(addresses, segments);
+            return OperationResult.CreateSuccessResult(startAddresses, segmentLengths);
         }
 
-        /// <summary>SplitWriteData 형식의 프로토콜 데이터를 처리합니다.</summary>
+        /// <summary>주소당 원소 수(addressLength)와 양수 segment로 쓰기 데이터를 분할합니다. 두 값의 곱은 양수 Int32 범위여야 합니다.</summary>
         /// <param name = "address">읽거나 기록할 프로토콜 주소입니다.</param>
         /// <param name = "value">변환하거나 기록할 데이터입니다.</param>
         /// <param name = "segment">segment에 사용할 입력값입니다.</param>
@@ -183,17 +190,31 @@ namespace FieldLink.PlcDrivers.Common
         /// <typeparam name = "T">결과 또는 변환 데이터의 형식입니다.</typeparam>
         public static OperationResult<int[], List<T[]>> SplitWriteData<T>(int address, T[] value, ushort segment, int addressLength)
         {
-            List<T[]> segments = ProtocolBytes.ArraySplitByLength(value, segment * addressLength);
-            int[] addresses = new int[segments.Count];
-            for (int i = 0; i < addresses.Length; i++)
+            if (segment == 0)
+                throw new ArgumentOutOfRangeException(nameof(segment), "Segment length must be positive.");
+
+            // 곱셈하기 전에 나눗셈으로 검사해야 정수 범위 초과를 막을 수 있습니다.
+            if (addressLength <= 0 || addressLength > int.MaxValue / segment)
+                throw new ArgumentOutOfRangeException(nameof(addressLength), "The segment size in array elements must fit a positive Int32.");
+
+            int maximumSegmentElements = segment * addressLength;
+            List<T[]> dataSegments = ProtocolBytes.ArraySplitByLength(value, maximumSegmentElements);
+            int[] startAddresses = new int[dataSegments.Count];
+            for (int segmentIndex = 0; segmentIndex < startAddresses.Length; segmentIndex++)
             {
-                if (i == 0)
-                    addresses[i] = address;
+                if (segmentIndex == 0)
+                {
+                    startAddresses[segmentIndex] = address;
+                }
                 else
-                    addresses[i] = addresses[i - 1] + segments[i - 1].Length / addressLength;
+                {
+                    // 배열 원소 수를 장치 주소 개수로 환산해서 다음 시작 주소를 구합니다.
+                    int previousAddressCount = dataSegments[segmentIndex - 1].Length / addressLength;
+                    startAddresses[segmentIndex] = startAddresses[segmentIndex - 1] + previousAddressCount;
+                }
             }
 
-            return OperationResult.CreateSuccessResult(addresses, segments);
+            return OperationResult.CreateSuccessResult(startAddresses, dataSegments);
         }
 
         /// <summary>GetBitIndexInformation 형식의 프로토콜 데이터를 처리합니다.</summary>

@@ -26,7 +26,7 @@ namespace FieldLink.PlcDrivers.Common
         public int ConfirmedCount { get; }
         /// <summary>쓰기 응답을 확인하지 못한 현재 블록의 최대 개수입니다. 실제 반영 개수를 뜻하지 않습니다.</summary>
         public int UncertainCount { get; }
-        /// <summary>전송 실패의 원인 예외입니다. 통신 예외의 단계·소켓 코드·송신량을 보존합니다.</summary>
+        /// <summary>작업 실패의 원인 예외입니다. 변환 예외와 통신 예외의 단계·소켓 코드·송신량을 보존합니다.</summary>
         public Exception Cause { get; }
     }
 }

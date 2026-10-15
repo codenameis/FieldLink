@@ -18,15 +18,23 @@ namespace FieldLink.Secs
     {
         private readonly object sync = new object();
         private readonly TcpDuplexConnection connection;
-        private readonly Dictionary<uint, Pending> pending = new Dictionary<uint, Pending>();
+        private readonly TaskCompletionSource<bool> connectionReleased =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Dictionary<uint, PendingRequest> pending = new Dictionary<uint, PendingRequest>();
         private readonly Queue<SecsMessage> notifications = new Queue<SecsMessage>();
         private readonly int maximum;
         private readonly TimeSpan timeout;
         private readonly bool automaticGemReplies;
-        private uint nextID;
-        private bool closed, closing, dispatching, selected;
+        private uint nextMessageId;
+        // closing이면 새 요청을 막고 Separate 송신을 마칩니다. closed이면 수신 처리도 끝냅니다.
+        private bool closed;
+        private bool closing;
+        private bool dispatching;
+        private bool selected;
         private Task closeTask;
-        private Exception lastError, lastHandlerError;
+        private Exception lastError;
+        private Exception lastHandlerError;
+
         internal HsmsSession(System.Net.Sockets.TcpClient socket, ushort deviceID, TimeSpan timeout,
             int maximum, Encoding encoding, bool automaticGemReplies)
         {
@@ -38,7 +46,11 @@ namespace FieldLink.Secs
             this.automaticGemReplies = automaticGemReplies;
             Gem = new Gem(this, encoding);
         }
-        internal void Start() { Completion = Task.Run(ReceiveLoopAsync); }
+        internal void Start()
+        {
+            Completion = Task.Run(ReceiveLoopAsync);
+        }
+
         /// <summary>세션의 기본 데이터 장치 ID입니다.</summary>
         public ushort DeviceID { get; }
         /// <summary>문자열 인코딩입니다.</summary>
@@ -46,15 +58,55 @@ namespace FieldLink.Secs
         /// <summary>연결된 상대 주소입니다.</summary>
         public EndPoint RemoteEndPoint => connection.RemoteEndPoint;
         /// <summary>이 세션이 아직 닫히지 않았는지 표시합니다.</summary>
-        public bool IsOpen { get { lock (sync) return !closed && !closing; } }
+        public bool IsOpen
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return !closed && !closing;
+                }
+            }
+        }
+
         /// <summary>Select 절차를 완료한 상태입니다. 원본 호환 모드에서는 Select 없이 데이터 교환도 허용합니다.</summary>
-        public bool IsSelected { get { lock (sync) return selected && !closed && !closing; } }
+        public bool IsSelected
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return selected && !closed && !closing;
+                }
+            }
+        }
+
         /// <summary>수신 루프의 종료입니다. 오류는 LastError에 보존됩니다.</summary>
         public Task Completion { get; private set; } = Task.CompletedTask;
         /// <summary>연결을 종료시킨 마지막 오류입니다.</summary>
-        public Exception LastError { get { lock (sync) return lastError; } }
+        public Exception LastError
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return lastError;
+                }
+            }
+        }
+
         /// <summary>사용자 메시지 콜백에서 발생한 마지막 오류입니다.</summary>
-        public Exception LastMessageHandlerError { get { lock (sync) return lastHandlerError; } }
+        public Exception LastMessageHandlerError
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return lastHandlerError;
+                }
+            }
+        }
+
         /// <summary>자주 쓰는 GEM 명령입니다.</summary>
         public Gem Gem { get; }
         /// <summary>비요청 메시지입니다. 별도 직렬 콜백 큐에서 실행되므로 콜백에서 응답·요청·종료할 수 있습니다.</summary>
@@ -78,7 +130,7 @@ namespace FieldLink.Secs
             ValidatePrimary(stream, function);
             EnsureOpen();
             cancellationToken.ThrowIfCancellationRequested();
-            return ExchangeAsync(new SecsMessage(DeviceID, stream, function, NextID(), data, true),
+            return ExchangeAsync(new SecsMessage(DeviceID, stream, function, CreateMessageId(), data, true),
                 0, (byte)(function + 1), cancellationToken);
         }
         /// <summary>응답을 기다리지 않고 전송합니다. 장비 처리 성공을 의미하지 않습니다.</summary>
@@ -97,7 +149,7 @@ namespace FieldLink.Secs
             ValidateStream(stream);
             EnsureOpen();
             cancellationToken.ThrowIfCancellationRequested();
-            var message = new SecsMessage(DeviceID, stream, function, NextID(), data, replyExpected);
+            var message = new SecsMessage(DeviceID, stream, function, CreateMessageId(), data, replyExpected);
             return SendMessageAsync(message, cancellationToken);
         }
         /// <summary>수신한 primary의 장치 ID와 System Bytes를 보존하여 응답합니다.</summary>
@@ -137,12 +189,12 @@ namespace FieldLink.Secs
         {
             EnsureOpen();
             token.ThrowIfCancellationRequested();
-            return ExchangeAsync(new SecsMessage(65535, 0, 0, NextID(), sessionType: request), response, 0, token);
+            return ExchangeAsync(new SecsMessage(65535, 0, 0, CreateMessageId(), sessionType: request), response, 0, token);
         }
         private async Task<SecsMessage> ExchangeAsync(SecsMessage request, byte responseType, byte responseFunction, CancellationToken token)
         {
             byte[] frame = EncodeBounded(request);
-            var waiter = new Pending(request, responseType, responseFunction);
+            var pendingRequest = new PendingRequest(request, responseType, responseFunction);
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
             {
                 deadline.CancelAfter(timeout);
@@ -151,14 +203,14 @@ namespace FieldLink.Secs
                     EnsureOpenLocked();
                     if (pending.Count >= 1024)
                         throw new InvalidOperationException("Too many pending HSMS requests.");
-                    pending.Add(request.MessageID, waiter);
+                    pending.Add(request.MessageID, pendingRequest);
                 }
                 try
                 {
-                    using (deadline.Token.Register(() => waiter.Result.TrySetCanceled()))
+                    using (deadline.Token.Register(() => pendingRequest.Result.TrySetCanceled()))
                     {
                         await connection.SendAsync(frame, deadline.Token, EnsureOpen).ConfigureAwait(false);
-                        SecsMessage response = await waiter.Result.Task.ConfigureAwait(false);
+                        SecsMessage response = await pendingRequest.Result.Task.ConfigureAwait(false);
                         deadline.Token.ThrowIfCancellationRequested();
                         return response;
                     }
@@ -170,11 +222,14 @@ namespace FieldLink.Secs
                 finally
                 {
                     lock (sync)
-                        pending.Remove(request.MessageID);
-                    // Observe a receive failure even when send failed before awaiting the waiter.
-                    if (waiter.Result.Task.IsFaulted)
                     {
-                        var observed = waiter.Result.Task.Exception;
+                        pending.Remove(request.MessageID);
+                    }
+
+                    // 송신에서 먼저 실패해 응답 Task를 기다리지 못했어도 수신 오류를 확인합니다.
+                    if (pendingRequest.Result.Task.IsFaulted)
+                    {
+                        var observed = pendingRequest.Result.Task.Exception;
                     }
                 }
             }
@@ -190,7 +245,10 @@ namespace FieldLink.Secs
             using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
             {
                 deadline.CancelAfter(timeout);
-                try { await connection.SendAsync(frame, deadline.Token, validateSession).ConfigureAwait(false); }
+                try
+                {
+                    await connection.SendAsync(frame, deadline.Token, validateSession).ConfigureAwait(false);
+                }
                 catch (OperationCanceledException) when (!token.IsCancellationRequested)
                 {
                     throw new TimeoutException("HSMS send exceeded its total deadline.");
@@ -213,24 +271,36 @@ namespace FieldLink.Secs
                     SecsMessage message = HsmsCodec.Decode(await connection.ReceiveAsync(boundary).ConfigureAwait(false), maximum);
                     if (message.PresentationType != 0)
                         throw new InvalidDataException("Only SECS-II PType=0 is supported.");
+
+                    // 제어 메시지는 Select, Linktest, Separate 같은 연결 절차를 처리합니다.
                     if (message.SessionType != 0)
                     {
                         await HandleControlAsync(message).ConfigureAwait(false);
                         continue;
                     }
-                    Pending waiter;
+                    PendingRequest pendingRequest;
                     lock (sync)
-                        pending.TryGetValue(message.MessageID, out waiter);
-                    if (waiter != null && waiter.ResponseType == 0 && !message.W &&
-                        message.DeviceID == waiter.Request.DeviceID && message.StreamNo == waiter.Request.StreamNo &&
-                        (message.FunctionNo == waiter.ResponseFunction || message.FunctionNo == 0))
+                    {
+                        pending.TryGetValue(message.MessageID, out pendingRequest);
+                    }
+
+                    // 요청 ID와 응답 헤더가 모두 일치할 때만 기다리는 요청을 완료합니다.
+                    if (pendingRequest != null && pendingRequest.ResponseType == 0 && !message.W &&
+                        message.DeviceID == pendingRequest.Request.DeviceID && message.StreamNo == pendingRequest.Request.StreamNo &&
+                        (message.FunctionNo == pendingRequest.ResponseFunction || message.FunctionNo == 0))
                     {
                         if (message.FunctionNo == 0)
-                            waiter.Result.TrySetException(new SecsProtocolException("SECS transaction aborted by peer.", 0));
+                        {
+                            pendingRequest.Result.TrySetException(new SecsProtocolException("SECS transaction aborted by peer.", 0));
+                        }
                         else
-                            waiter.Result.TrySetResult(message);
+                        {
+                            pendingRequest.Result.TrySetResult(message);
+                        }
                         continue;
                     }
+
+                    // 자동 응답을 켠 세션은 지원하는 GEM 요청에 직접 답합니다.
                     if (IsOpen && automaticGemReplies && message.W && message.FunctionNo % 2 == 1)
                     {
                         SecsValue reply = AutomaticReply(message);
@@ -240,6 +310,8 @@ namespace FieldLink.Secs
                             continue;
                         }
                     }
+
+                    // 요청의 응답이 아닌 메시지는 사용자 콜백 큐로 전달합니다.
                     EnqueueNotification(message);
                 }
             }
@@ -247,23 +319,30 @@ namespace FieldLink.Secs
             {
                 Close(error);
             }
-            finally { Close(null); }
+            finally
+            {
+                Close(null);
+                // 소켓이 해제된 뒤 수신 완료를 알립니다. 그래야 서버가 정리 중인 세션을 놓치지 않습니다.
+                await connectionReleased.Task.ConfigureAwait(false);
+            }
         }
         private async Task HandleControlAsync(SecsMessage message)
         {
             if (message.DeviceID != 65535 || message.W || message.StreamNo != 0 || message.Body.Length != 0)
                 throw new InvalidDataException("Malformed HSMS control message.");
-            Pending waiter;
+            PendingRequest pendingRequest;
             lock (sync)
-                pending.TryGetValue(message.MessageID, out waiter);
-            if (waiter != null && waiter.ResponseType == message.SessionType)
             {
-                waiter.Result.TrySetResult(message);
+                pending.TryGetValue(message.MessageID, out pendingRequest);
+            }
+            if (pendingRequest != null && pendingRequest.ResponseType == message.SessionType)
+            {
+                pendingRequest.Result.TrySetResult(message);
                 return;
             }
             switch (message.SessionType)
             {
-                case 1:
+                case 1: // Select.req: 데이터 교환을 시작할 수 있는지 요청합니다.
                     byte status;
                     lock (sync)
                     {
@@ -272,15 +351,17 @@ namespace FieldLink.Secs
                     }
                     await SendMessageAsync(new SecsMessage(65535, 0, status, message.MessageID, sessionType: 2), default(CancellationToken)).ConfigureAwait(false);
                     break;
-                case 3:
+                case 3: // Deselect.req: 데이터 교환 선택 상태를 해제합니다.
                     lock (sync)
+                    {
                         selected = false;
+                    }
                     await SendMessageAsync(new SecsMessage(65535, 0, 0, message.MessageID, sessionType: 4), default(CancellationToken)).ConfigureAwait(false);
                     break;
-                case 5:
+                case 5: // Linktest.req: 연결 확인 요청에 응답합니다.
                     await SendMessageAsync(new SecsMessage(65535, 0, 0, message.MessageID, sessionType: 6), default(CancellationToken)).ConfigureAwait(false);
                     break;
-                case 9:
+                case 9: // Separate.req: 상대가 연결 종료를 요청했습니다.
                     Close(null);
                     break;
                 case 2:
@@ -333,25 +414,50 @@ namespace FieldLink.Secs
                     }
                     message = notifications.Dequeue();
                 }
-                try { MessageReceived?.Invoke(this, message); }
+                // 사용자 코드가 다시 요청하거나 종료할 수 있으므로 잠금 밖에서 호출합니다.
+                try
+                {
+                    MessageReceived?.Invoke(this, message);
+                }
                 catch (Exception error)
                 {
                     lock (sync)
+                    {
                         lastHandlerError = error;
+                    }
                 }
             }
         }
-        private uint NextID()
+        private uint CreateMessageId()
         {
             lock (sync)
             {
                 EnsureOpenLocked();
-                do { nextID++; } while (nextID == 0 || pending.ContainsKey(nextID));
-                return nextID;
+                do
+                {
+                    nextMessageId++;
+                }
+                while (nextMessageId == 0 || pending.ContainsKey(nextMessageId));
+
+                return nextMessageId;
             }
         }
-        private void EnsureOpen() { lock (sync) EnsureOpenLocked(); }
-        private bool IsClosed() { lock (sync) return closed; }
+        private void EnsureOpen()
+        {
+            lock (sync)
+            {
+                EnsureOpenLocked();
+            }
+        }
+
+        private bool IsClosed()
+        {
+            lock (sync)
+            {
+                return closed;
+            }
+        }
+
         private void EnsureOpenLocked()
         {
             if (closed || closing)
@@ -377,7 +483,9 @@ namespace FieldLink.Secs
                     return closeTask;
                 if (closed)
                     return Completion;
-                uint identity = NextID();
+
+                uint identity = CreateMessageId();
+                // 먼저 새 요청을 막습니다. 같은 세션의 중복 Close 호출은 같은 Task를 받습니다.
                 closing = true;
                 closeTask = Task.Run(() => FinishCloseAsync(identity, cancellationToken));
                 return closeTask;
@@ -395,38 +503,71 @@ namespace FieldLink.Secs
             }
             finally
             {
-                Close(null);
+                // 완료 통지 전에 소켓을 해제해야 수신 종료와 서로 기다리는 상황을 피할 수 있습니다.
+                Dispose();
                 await Completion.ConfigureAwait(false);
             }
         }
         /// <summary>Separate 전송 없이 즉시 연결을 닫고 진행 중인 요청을 실패시킵니다.</summary>
-        public void Dispose() => Close(null);
+        public void Dispose()
+        {
+            try
+            {
+                Close(null);
+            }
+            finally
+            {
+                // Dispose는 정상 종료 송신을 기다리지 않고 즉시 자원을 해제합니다.
+                ReleaseConnection();
+            }
+        }
+
+        private void ReleaseConnection()
+        {
+            try
+            {
+                connection.Dispose();
+            }
+            finally
+            {
+                connectionReleased.TrySetResult(true);
+            }
+        }
+
         private void Close(Exception cause)
         {
-            Pending[] requests;
+            PendingRequest[] requests;
+            bool releaseConnectionImmediately;
             lock (sync)
             {
                 if (closed)
                     return;
                 closed = true;
+                releaseConnectionImmediately = !closing;
                 lastError = cause;
-                requests = new List<Pending>(pending.Values).ToArray();
+                requests = new List<PendingRequest>(pending.Values).ToArray();
                 pending.Clear();
                 notifications.Clear();
             }
-            connection.Dispose();
+            // 상대는 Separate를 받자마자 연결을 닫을 수 있습니다. 이때 로컬 송신 완료 처리는
+            // 아직 남아 있을 수 있으므로 정상 Close가 마지막 송신과 자원 해제를 마치게 둡니다.
+            if (releaseConnectionImmediately)
+                ReleaseConnection();
             foreach (var request in requests)
                 request.Result.TrySetException(cause ?? new IOException("HSMS session closed."));
         }
-        private sealed class Pending
+        private sealed class PendingRequest
         {
             internal readonly SecsMessage Request;
-            internal readonly byte ResponseType, ResponseFunction;
+            internal readonly byte ResponseType;
+            internal readonly byte ResponseFunction;
             internal readonly TaskCompletionSource<SecsMessage> Result =
                 new TaskCompletionSource<SecsMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-            internal Pending(SecsMessage request, byte responseType, byte responseFunction)
+            internal PendingRequest(SecsMessage request, byte responseType, byte responseFunction)
             {
-                Request = request; ResponseType = responseType; ResponseFunction = responseFunction;
+                Request = request;
+                ResponseType = responseType;
+                ResponseFunction = responseFunction;
             }
         }
     }

@@ -104,58 +104,62 @@ namespace FieldLink.PlcDrivers.Common
                 return data;
         }
 
-        /// <summary>ArraySplitByLength 형식의 프로토콜 데이터를 처리합니다.</summary>
+        /// <summary>배열을 양수 길이 이하의 독립된 배열로 분할합니다. null과 빈 배열은 빈 목록을 반환합니다.</summary>
         /// <param name = "array">array에 사용할 입력값입니다.</param>
         /// <param name = "length">요청할 데이터의 길이입니다.</param>
         /// <returns>명령 생성 또는 데이터 해석 결과입니다.</returns>
         /// <typeparam name = "T">결과 또는 변환 데이터의 형식입니다.</typeparam>
         public static List<T[]> ArraySplitByLength<T>(T[] array, int length)
         {
+            if (length <= 0)
+                throw new ArgumentOutOfRangeException(nameof(length), "Split length must be positive.");
+
+            List<T[]> segments = new List<T[]>();
             if (array == null)
-                return new List<T[]>();
-            List<T[]> result = new List<T[]>();
-            int index = 0;
-            while (index < array.Length)
+                return segments;
+
+            int sourceIndex = 0;
+            while (sourceIndex < array.Length)
             {
-                if (index + length < array.Length)
-                {
-                    T[] tmp = new T[length];
-                    Array.Copy(array, index, tmp, 0, length);
-                    index += length;
-                    result.Add(tmp);
-                }
-                else
-                {
-                    T[] tmp = new T[array.Length - index];
-                    Array.Copy(array, index, tmp, 0, tmp.Length);
-                    index += length;
-                    result.Add(tmp);
-                }
+                // 마지막 조각은 요청한 길이보다 짧을 수 있습니다.
+                int segmentLength = Math.Min(length, array.Length - sourceIndex);
+                T[] segment = new T[segmentLength];
+                Array.Copy(array, sourceIndex, segment, 0, segmentLength);
+                segments.Add(segment);
+                sourceIndex += segmentLength;
             }
 
-            return result;
+            return segments;
         }
 
-        /// <summary>SplitIntegerToArray 형식의 프로토콜 데이터를 처리합니다.</summary>
+        /// <summary>0 이상의 전체 길이를 양수 분할 길이 이하로 나눕니다. 전체 길이 0은 빈 배열을 반환합니다.</summary>
         /// <param name = "integer">integer에 사용할 입력값입니다.</param>
         /// <param name = "everyLength">everyLength에 사용할 입력값입니다.</param>
         /// <returns>명령 생성 또는 데이터 해석 결과입니다.</returns>
         public static int[] SplitIntegerToArray(int integer, int everyLength)
         {
-            int[] result = new int[(integer / everyLength) + ((integer % everyLength) == 0 ? 0 : 1)];
-            for (int i = 0; i < result.Length; i++)
+            if (integer < 0)
+                throw new ArgumentOutOfRangeException(nameof(integer), "Total length cannot be negative.");
+            if (everyLength <= 0)
+                throw new ArgumentOutOfRangeException(nameof(everyLength), "Split length must be positive.");
+
+            // 예: 전체 길이 17, 분할 길이 8이면 [8, 8, 1]을 반환합니다.
+            int fullSegmentCount = integer / everyLength;
+            int remainingLength = integer % everyLength;
+            int segmentCount = fullSegmentCount;
+            if (remainingLength > 0)
+                segmentCount++;
+
+            int[] segmentLengths = new int[segmentCount];
+            for (int segmentIndex = 0; segmentIndex < fullSegmentCount; segmentIndex++)
             {
-                if (i == result.Length - 1)
-                {
-                    result[i] = (integer % everyLength) == 0 ? everyLength : (integer % everyLength);
-                }
-                else
-                {
-                    result[i] = everyLength;
-                }
+                segmentLengths[segmentIndex] = everyLength;
             }
 
-            return result;
+            if (remainingLength > 0)
+                segmentLengths[fullSegmentCount] = remainingLength;
+
+            return segmentLengths;
         }
 
         /// <summary>ByteToHexString 형식의 프로토콜 데이터를 처리합니다.</summary>
