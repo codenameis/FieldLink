@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 전송 계층: TCP·UDP·Serial로 바이트를 주고받고 프레임 경계를 판정한다. PLC를 전혀 모른다. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>FieldLink.Transport</RootNamespace>
+    <Version>0.1.0</Version>
+    <Description>산업용 장치 통신을 위한 TCP·UDP·Serial 전송과 프레임 경계 판정.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FieldLink.Transport.Tests" />
+  </ItemGroup>
+
+</Project>

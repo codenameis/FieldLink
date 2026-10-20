@@ -1,0 +1,24 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".editorconfig" />
+    <File Path="AGENTS.md" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="LICENSE" />
+    <File Path="docs/architecture.md" />
+    <File Path="docs/clean-room/README.md" />
+    <File Path="docs/clean-room/spec-template.md" />
+    <File Path="docs/naming-map.md" />
+    <File Path="docs/review-checklist.md" />
+    <File Path="docs/vendor-protocol-map.md" />
+    <File Path="docs/specs/modbus.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/FieldLink.Transport/FieldLink.Transport.csproj" />
+    <Project Path="src/FieldLink.Plc/FieldLink.Plc.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FieldLink.Transport.Tests/FieldLink.Transport.Tests.csproj" />
+    <Project Path="tests/FieldLink.Plc.Tests/FieldLink.Plc.Tests.csproj" />
+  </Folder>
+</Solution>

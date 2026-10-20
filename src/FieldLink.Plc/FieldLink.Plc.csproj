@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- PLC 계층: 공통 계약·값 변환·체크섬, 제조사별 프로토콜, 사용자용 PlcClient. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>FieldLink.Plc</RootNamespace>
+    <Version>0.1.0</Version>
+    <Description>제조사별 PLC 통신 프로토콜과 자료형 단위 읽기·쓰기 API.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FieldLink.Transport\FieldLink.Transport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FieldLink.Plc.Tests" />
+  </ItemGroup>
+
+</Project>

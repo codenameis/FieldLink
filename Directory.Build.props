@@ -1,0 +1,26 @@
+<Project>
+
+  <!-- 모든 프로젝트 공통 설정. 프로젝트별 차이(TargetFramework 등)만 각 .csproj에 둔다. -->
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+
+    <!-- .editorconfig의 이름·스타일 규칙을 빌드 오류로 강제한다. 리뷰 전에 기계가 먼저 거른다. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
+
+    <Authors>codenameis</Authors>
+    <Copyright>Copyright (c) 2026 codenameis</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <!-- 제품(src) 프로젝트 공통: netstandard2.0에 없는 컴파일러 지원 타입을 한 곳에서 공급한다. -->
+  <ItemGroup Condition="$(MSBuildProjectDirectory.Contains('\src\'))">
+    <Compile Include="$(MSBuildThisFileDirectory)src\Shared\Polyfills\*.cs" Link="Polyfills\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

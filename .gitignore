@@ -1,0 +1,20 @@
+bin/
+obj/
+.vs/
+*.user
+TestResults/
+docs/
+
+# AI 에이전트 관련 파일 (README.md 제외)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.agents/
+.agent/
+.gemini/
+.claude/
+.cursor/
+.cursorrules
+.windsurf/
+.aider*
+.github/copilot-instructions.md

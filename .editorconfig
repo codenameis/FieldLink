@@ -1,0 +1,163 @@
+# FieldLink 코드 스타일 규칙
+# - 이 파일의 규칙은 Directory.Build.props(EnforceCodeStyleInBuild)에 의해 빌드에서 검사된다.
+# - 규칙을 끄거나 #pragma로 억제하려면 리뷰어 승인과 사유 주석이 필요하다.
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{csproj,props,targets,slnx,xml,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+end_of_line = crlf
+
+#### using / namespace ####
+dotnet_sort_system_directives_first = true
+csharp_using_directive_placement = outside_namespace:error
+csharp_style_namespace_declarations = file_scoped:error
+dotnet_diagnostic.IDE0161.severity = error   # file-scoped namespace
+dotnet_diagnostic.IDE0065.severity = error   # using 위치
+dotnet_diagnostic.IDE0005.severity = error   # 사용하지 않는 using
+
+#### 중괄호·제어문 ####
+csharp_prefer_braces = true:error
+dotnet_diagnostic.IDE0011.severity = error   # if/for/foreach/while 본문은 항상 { }
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+
+#### 접근 제한자·불변성 ####
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:error
+dotnet_diagnostic.IDE0040.severity = error   # 접근 제한자 명시
+dotnet_style_readonly_field = true:error
+dotnet_diagnostic.IDE0044.severity = error   # 바뀌지 않는 필드는 readonly
+
+#### 죽은 코드 ####
+dotnet_diagnostic.IDE0051.severity = error   # 사용하지 않는 private 멤버
+dotnet_diagnostic.IDE0052.severity = error   # 읽지 않는 private 멤버
+dotnet_diagnostic.IDE0060.severity = error   # 사용하지 않는 매개변수
+dotnet_diagnostic.IDE0059.severity = error   # 불필요한 값 할당
+
+#### this. / 형식 ####
+dotnet_style_qualification_for_field = false:error
+dotnet_style_qualification_for_property = false:error
+dotnet_style_qualification_for_method = false:error
+dotnet_style_qualification_for_event = false:error
+dotnet_diagnostic.IDE0003.severity = error
+dotnet_style_predefined_type_for_locals_parameters_members = true:error
+dotnet_style_predefined_type_for_member_access = true:error
+dotnet_diagnostic.IDE0049.severity = error   # Int32 대신 int
+
+#### var ####
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:suggestion
+
+#### 표현식 ####
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = true:suggestion
+dotnet_style_prefer_conditional_expression_over_return = false:none
+dotnet_diagnostic.IDE0055.severity = suggestion   # 서식은 dotnet format으로 검사(DoD)
+
+#### 이름 규칙 (Microsoft C# 식별자 이름 규칙) ####
+dotnet_diagnostic.IDE1006.severity = error
+
+# 기호 정의
+dotnet_naming_symbols.interfaces.applicable_kinds = interface
+dotnet_naming_symbols.type_parameters.applicable_kinds = type_parameter
+dotnet_naming_symbols.types.applicable_kinds = class, struct, enum, delegate
+dotnet_naming_symbols.members.applicable_kinds = method, property, event, local_function
+dotnet_naming_symbols.constants.applicable_kinds = field, local
+dotnet_naming_symbols.constants.required_modifiers = const
+dotnet_naming_symbols.static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.static_readonly_fields.required_modifiers = static, readonly
+dotnet_naming_symbols.public_fields.applicable_kinds = field
+dotnet_naming_symbols.public_fields.applicable_accessibilities = public, internal, protected, protected_internal
+dotnet_naming_symbols.private_static_fields.applicable_kinds = field
+dotnet_naming_symbols.private_static_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_static_fields.required_modifiers = static
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private, private_protected
+dotnet_naming_symbols.parameters_and_locals.applicable_kinds = parameter, local
+dotnet_naming_symbols.async_methods.applicable_kinds = method
+dotnet_naming_symbols.async_methods.required_modifiers = async
+
+# 스타일 정의
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+dotnet_naming_style.camel_case.capitalization = camel_case
+dotnet_naming_style.i_prefix.required_prefix = I
+dotnet_naming_style.i_prefix.capitalization = pascal_case
+dotnet_naming_style.t_prefix.required_prefix = T
+dotnet_naming_style.t_prefix.capitalization = pascal_case
+dotnet_naming_style.underscore_camel.required_prefix = _
+dotnet_naming_style.underscore_camel.capitalization = camel_case
+dotnet_naming_style.s_underscore_camel.required_prefix = s_
+dotnet_naming_style.s_underscore_camel.capitalization = camel_case
+dotnet_naming_style.async_suffix.required_suffix = Async
+dotnet_naming_style.async_suffix.capitalization = pascal_case
+
+# 규칙 (위에서부터 먼저 적용)
+dotnet_naming_rule.interfaces_rule.symbols = interfaces
+dotnet_naming_rule.interfaces_rule.style = i_prefix
+dotnet_naming_rule.interfaces_rule.severity = error
+
+dotnet_naming_rule.type_parameters_rule.symbols = type_parameters
+dotnet_naming_rule.type_parameters_rule.style = t_prefix
+dotnet_naming_rule.type_parameters_rule.severity = error
+
+dotnet_naming_rule.async_methods_rule.symbols = async_methods
+dotnet_naming_rule.async_methods_rule.style = async_suffix
+dotnet_naming_rule.async_methods_rule.severity = error
+
+dotnet_naming_rule.types_rule.symbols = types
+dotnet_naming_rule.types_rule.style = pascal_case
+dotnet_naming_rule.types_rule.severity = error
+
+dotnet_naming_rule.members_rule.symbols = members
+dotnet_naming_rule.members_rule.style = pascal_case
+dotnet_naming_rule.members_rule.severity = error
+
+dotnet_naming_rule.constants_rule.symbols = constants
+dotnet_naming_rule.constants_rule.style = pascal_case
+dotnet_naming_rule.constants_rule.severity = error
+
+dotnet_naming_rule.static_readonly_fields_rule.symbols = static_readonly_fields
+dotnet_naming_rule.static_readonly_fields_rule.style = pascal_case
+dotnet_naming_rule.static_readonly_fields_rule.severity = error
+
+dotnet_naming_rule.public_fields_rule.symbols = public_fields
+dotnet_naming_rule.public_fields_rule.style = pascal_case
+dotnet_naming_rule.public_fields_rule.severity = error
+
+dotnet_naming_rule.private_static_fields_rule.symbols = private_static_fields
+dotnet_naming_rule.private_static_fields_rule.style = s_underscore_camel
+dotnet_naming_rule.private_static_fields_rule.severity = error
+
+dotnet_naming_rule.private_fields_rule.symbols = private_fields
+dotnet_naming_rule.private_fields_rule.style = underscore_camel
+dotnet_naming_rule.private_fields_rule.severity = error
+
+dotnet_naming_rule.parameters_and_locals_rule.symbols = parameters_and_locals
+dotnet_naming_rule.parameters_and_locals_rule.style = camel_case
+dotnet_naming_rule.parameters_and_locals_rule.severity = error
+
+#### 라이브러리 비동기 규칙 (제품 코드) ####
+[src/**.cs]
+dotnet_diagnostic.CA2007.severity = error    # await에는 ConfigureAwait(false)
+
+#### 테스트 코드 ####
+[tests/**.cs]
+dotnet_diagnostic.CS1591.severity = none     # 테스트는 XML 문서 주석 면제
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA1707.severity = none     # 테스트 메서드 이름의 밑줄 허용 (Method_Condition_Result)
+dotnet_naming_rule.members_rule.severity = none
+dotnet_naming_rule.async_methods_rule.severity = none   # 테스트 이름은 대상_조건_기대결과 형식을 우선
