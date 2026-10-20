@@ -1,59 +1,74 @@
 using System;
 using System.Text;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Panasonic;
 
 /// <summary>Panasonic MEWTOCOL-COM 응답 프레임을 검증하고 데이터를 파싱합니다. (사양서 §2)</summary>
 public static class MewtocolResponseParser
 {
-    /// <summary>단일 접점 읽기(#RCS) 응답을 검증하고 1바이트(0 또는 1)를 반환합니다.</summary>
+    /// <summary>단일 비트 읽기(RC) 응답을 검증하고 비트 값(0 또는 1)을 반환합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임 바이트 배열입니다.</param>
+    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <returns>읽어온 비트 값(0 또는 1)입니다.</returns>
     public static byte ParseReadSingleBit(byte[] frame, byte expectedStation)
     {
-        string data = ValidateAndExtractData(frame, expectedStation, "RC");
-        if (data.Length < 1)
+        int dataLen = ValidateHeaderAndBcc(frame, expectedStation, "RC");
+        if (dataLen < 1)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "비트 응답 데이터가 비어 있습니다.");
         }
 
-        return (byte)(data[0] == '1' ? 1 : 0);
+        return frame[6] switch
+        {
+            (byte)'1' => 1,
+            (byte)'0' => 0,
+            _ => throw new PlcException(PlcErrorKind.InvalidResponse, $"유효하지 않은 비트 응답 문자입니다: 0x{frame[6]:X2}")
+        };
     }
 
-    /// <summary>연속 워드 읽기(#RD) 응답을 검증하고 리틀엔디언 바이트 배열을 반환합니다.</summary>
+    /// <summary>연속 워드 읽기(RD) 응답을 검증하고 리틀 엔디언 바이트 배열을 추출합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임 바이트 배열입니다.</param>
+    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedWordCount">기대하는 워드 수입니다.</param>
+    /// <returns>추출된 워드 데이터 바이트 배열(리틀 엔디언)입니다.</returns>
     public static byte[] ParseReadWords(byte[] frame, byte expectedStation, ushort expectedWordCount)
     {
-        string data = ValidateAndExtractData(frame, expectedStation, "RD");
+        int dataLen = ValidateHeaderAndBcc(frame, expectedStation, "RD");
         int expectedChars = expectedWordCount * 4;
-        if (data.Length < expectedChars)
+        if (dataLen < expectedChars)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"수신 데이터 길이 부족: 필요 {expectedChars}, 수신 {data.Length}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"수신 데이터 길이 부족: 필요 {expectedChars}, 수신 {dataLen}");
         }
 
         byte[] result = new byte[expectedWordCount * 2];
         for (int i = 0; i < result.Length; i++)
         {
-            string hexByte = data.Substring(i * 2, 2);
-            if (!byte.TryParse(hexByte, System.Globalization.NumberStyles.HexNumber, null, out byte b))
-            {
-                throw new PlcException(PlcErrorKind.InvalidResponse, $"16진 바이트 파싱 실패: {hexByte}");
-            }
-
-            result[i] = b;
+            result[i] = (byte)BinaryBuffer.ReadAsciiHex(frame, 6 + (i * 2), 2);
         }
 
         return result;
     }
 
-    /// <summary>쓰기 명령(#WCS, #WD) 응답을 검증합니다.</summary>
+    /// <summary>쓰기 명령 응답을 검증합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임 바이트 배열입니다.</param>
+    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedEcho">기대하는 2글자 명령 에코(예: "WC", "WD")입니다.</param>
     public static void VerifyWriteResponse(byte[] frame, byte expectedStation, string expectedEcho)
     {
-        ValidateAndExtractData(frame, expectedStation, expectedEcho);
+        ValidateHeaderAndBcc(frame, expectedStation, expectedEcho);
     }
 
-    private static string ValidateAndExtractData(byte[] frame, byte expectedStation, string expectedEcho)
+    private static int ValidateHeaderAndBcc(byte[] frame, byte expectedStation, string expectedEcho)
     {
         if (frame is null || frame.Length < 9)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "MEWTOCOL 응답 프레임 길이가 너무 짧습니다.");
+        }
+
+        if (frame[0] != (byte)'%' && frame[0] != (byte)'<')
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"MEWTOCOL 시작 헤더('%' 또는 '<')가 올바르지 않습니다: 0x{frame[0]:X2}");
         }
 
         if (frame[frame.Length - 1] != 0x0D)
@@ -63,17 +78,16 @@ public static class MewtocolResponseParser
 
         ValidateBcc(frame);
 
-        string full = Encoding.ASCII.GetString(frame);
-        string stationStr = full.Substring(1, 2);
-        if (!byte.TryParse(stationStr, System.Globalization.NumberStyles.HexNumber, null, out byte st) || st != expectedStation)
+        byte station = (byte)BinaryBuffer.ReadAsciiHex(frame, 1, 2);
+        if (station != expectedStation)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"MEWTOCOL 국번 불일치: 예상 {expectedStation:X2}, 수신 {stationStr}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"MEWTOCOL 국번 불일치: 예상 {expectedStation:X2}, 수신 {station:X2}");
         }
 
-        char status = full[3];
+        char status = (char)frame[3];
         if (status == '!')
         {
-            string errCode = full.Substring(4, 2);
+            string errCode = Encoding.ASCII.GetString(frame, 4, 2);
             int codeVal = int.TryParse(errCode, out int n) ? n : -1;
             string message = GetErrorMessage(errCode);
             throw new PlcDeviceException(codeVal, $"MEWTOCOL 에러 (코드 {errCode}): {message}");
@@ -84,15 +98,13 @@ public static class MewtocolResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"알 수 없는 MEWTOCOL 상태 마커: {status}");
         }
 
-        string cmdEcho = full.Substring(4, 2);
+        string cmdEcho = Encoding.ASCII.GetString(frame, 4, 2);
         if (!string.Equals(cmdEcho, expectedEcho, StringComparison.OrdinalIgnoreCase))
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"MEWTOCOL 명령 에코 불일치: 예상 {expectedEcho}, 수신 {cmdEcho}");
         }
 
-        // 데이터는 오프셋 6부터 BCC(2자리) 및 CR(1자리) 직전까지
-        int dataLen = (full.Length - 3) - 6;
-        return dataLen > 0 ? full.Substring(6, dataLen) : string.Empty;
+        return (frame.Length - 3) - 6;
     }
 
     private static void ValidateBcc(byte[] frame)
@@ -103,10 +115,10 @@ public static class MewtocolResponseParser
             calculatedBcc ^= frame[i];
         }
 
-        string bccStr = Encoding.ASCII.GetString(frame, frame.Length - 3, 2);
-        if (!byte.TryParse(bccStr, System.Globalization.NumberStyles.HexNumber, null, out byte actualBcc) || calculatedBcc != actualBcc)
+        byte actualBcc = (byte)BinaryBuffer.ReadAsciiHex(frame, frame.Length - 3, 2);
+        if (calculatedBcc != actualBcc)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"MEWTOCOL BCC 불일치: 계산 {calculatedBcc:X2}, 수신 {bccStr}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"MEWTOCOL BCC 불일치: 계산 {calculatedBcc:X2}, 수신 {actualBcc:X2}");
         }
     }
 

@@ -1,4 +1,3 @@
-using System;
 using System.Threading.Tasks;
 using FieldLink.Plc.Abstractions;
 using FieldLink.Plc.Protocols.Yokogawa;
@@ -35,14 +34,15 @@ public class YokogawaProtocolTests
     }
 
     [Fact]
-    public void ParseReadResponse_DeviceError_ThrowsInvalidOperationException()
+    public void ParseReadResponse_DeviceError_ThrowsPlcDeviceException()
     {
         // Subheader 0x91, EndCode: 0x03 (ER03 디바이스 오류)
         byte[] response = [0x91, 0x03, 0x00, 0x00];
 
-        var ex = Assert.Throws<InvalidOperationException>(() =>
+        var ex = Assert.Throws<PlcDeviceException>(() =>
             YokogawaResponseParser.ParseReadResponse(response, expectedCommand: 0x11));
 
+        Assert.Equal(0x03, ex.DeviceErrorCode);
         Assert.Contains("ER03", ex.Message);
     }
 

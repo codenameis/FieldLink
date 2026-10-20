@@ -1,5 +1,5 @@
 using System;
-using System.IO;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Vigor;
 
@@ -13,6 +13,16 @@ public static class VigorRequestBuilder
     /// <summary>연속 워드/비트 읽기 요청 프레임을 생성합니다. (기능 코드 0x20/0x21)</summary>
     public static byte[] BuildReadRequest(byte station, VigorAddress address, ushort count)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (count == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), "읽기 개수는 1 이상이어야 합니다.");
+        }
+
         byte functionCode = address.IsBit ? (byte)0x21 : (byte)0x20;
         byte[] body =
         [
@@ -34,21 +44,22 @@ public static class VigorRequestBuilder
     /// <summary>연속 워드 쓰기 요청 프레임을 생성합니다. (기능 코드 0x28)</summary>
     public static byte[] BuildWriteWordRequest(byte station, VigorAddress address, byte[] data)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (data is null || data.Length == 0)
+        {
+            throw new ArgumentException("쓸 워드 데이터가 비어 있습니다.", nameof(data));
+        }
+
         ushort wordCount = address.Is32BitWord ? (ushort)(data.Length / 4) : (ushort)(data.Length / 2);
         ushort bodyLen = (ushort)(7 + data.Length);
 
         byte[] body = new byte[3 + bodyLen];
-        body[0] = station;
-        body[1] = (byte)(bodyLen & 0xFF);
-        body[2] = (byte)((bodyLen >> 8) & 0xFF);
-        body[3] = 0x28;
-        body[4] = address.DeviceCode;
-        body[5] = address.BcdAddress[0];
-        body[6] = address.BcdAddress[1];
-        body[7] = address.BcdAddress[2];
-        body[8] = (byte)(wordCount & 0xFF);
-        body[9] = (byte)((wordCount >> 8) & 0xFF);
-        Array.Copy(data, 0, body, 10, data.Length);
+        FillBodyHeader(body, station, bodyLen, functionCode: 0x28, address, wordCount);
+        Buffer.BlockCopy(data, 0, body, 10, data.Length);
 
         return WrapFrame(body);
     }
@@ -56,68 +67,84 @@ public static class VigorRequestBuilder
     /// <summary>연속 비트 쓰기 요청 프레임을 생성합니다. (기능 코드 0x29)</summary>
     public static byte[] BuildWriteBitRequest(byte station, VigorAddress address, bool[] values)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (values is null || values.Length == 0)
+        {
+            throw new ArgumentException("쓸 비트 데이터가 비어 있습니다.", nameof(values));
+        }
+
         int byteCount = (values.Length + 7) / 8;
-        byte[] packed = new byte[byteCount];
+        ushort bodyLen = (ushort)(7 + byteCount);
+        byte[] body = new byte[3 + bodyLen];
+        FillBodyHeader(body, station, bodyLen, functionCode: 0x29, address, (ushort)values.Length);
+
         for (int i = 0; i < values.Length; i++)
         {
             if (values[i])
             {
-                packed[i / 8] |= (byte)(1 << (i % 8));
+                body[10 + (i / 8)] |= (byte)(1 << (i % 8));
             }
         }
 
-        ushort bodyLen = (ushort)(7 + byteCount);
-        byte[] body = new byte[3 + bodyLen];
+        return WrapFrame(body);
+    }
+
+    private static void FillBodyHeader(
+        byte[] body,
+        byte station,
+        ushort bodyLen,
+        byte functionCode,
+        VigorAddress address,
+        ushort count)
+    {
         body[0] = station;
-        body[1] = (byte)(bodyLen & 0xFF);
-        body[2] = (byte)((bodyLen >> 8) & 0xFF);
-        body[3] = 0x29;
+        BinaryBuffer.WriteUInt16LE(body, 1, bodyLen);
+        body[3] = functionCode;
         body[4] = address.DeviceCode;
         body[5] = address.BcdAddress[0];
         body[6] = address.BcdAddress[1];
         body[7] = address.BcdAddress[2];
-        body[8] = (byte)(values.Length & 0xFF);
-        body[9] = (byte)((values.Length >> 8) & 0xFF);
-        Array.Copy(packed, 0, body, 10, byteCount);
-
-        return WrapFrame(body);
+        BinaryBuffer.WriteUInt16LE(body, 8, count);
     }
 
     private static byte[] WrapFrame(byte[] body)
     {
         byte sum = 0;
-        foreach (byte b in body)
+        int dleCount = 0;
+        for (int i = 0; i < body.Length; i++)
         {
+            byte b = body[i];
             sum = (byte)(sum + b);
-        }
-
-        string hex = sum.ToString("X2");
-        byte c0 = (byte)hex[0];
-        byte c1 = (byte)hex[1];
-
-        using (MemoryStream ms = new MemoryStream())
-        {
-            ms.WriteByte(Dle);
-            ms.WriteByte(Stx);
-            foreach (byte b in body)
+            if (b == Dle)
             {
-                if (b == Dle)
-                {
-                    ms.WriteByte(Dle);
-                    ms.WriteByte(Dle);
-                }
-                else
-                {
-                    ms.WriteByte(b);
-                }
+                dleCount++;
             }
-
-            ms.WriteByte(Dle);
-            ms.WriteByte(Etx);
-            ms.WriteByte(c0);
-            ms.WriteByte(c1);
-
-            return ms.ToArray();
         }
+
+        // DLE(1) + STX(1) + EscapedBody(body.Length + dleCount) + DLE(1) + ETX(1) + ChecksumHex(2)
+        byte[] frame = new byte[6 + body.Length + dleCount];
+        int offset = 0;
+        frame[offset++] = Dle;
+        frame[offset++] = Stx;
+
+        for (int i = 0; i < body.Length; i++)
+        {
+            byte b = body[i];
+            frame[offset++] = b;
+            if (b == Dle)
+            {
+                frame[offset++] = Dle;
+            }
+        }
+
+        frame[offset++] = Dle;
+        frame[offset++] = Etx;
+        BinaryBuffer.WriteAsciiHexByte(frame, offset, sum);
+
+        return frame;
     }
 }

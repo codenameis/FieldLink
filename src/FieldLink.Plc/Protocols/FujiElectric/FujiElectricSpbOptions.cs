@@ -11,4 +11,7 @@ public sealed class FujiElectricSpbOptions
 
     /// <summary>1회 요청당 최대 쓰기 워드 수입니다. 기본값은 64입니다.</summary>
     public int MaxWriteWords { get; set; } = 64;
+
+    /// <summary>요청 프레임에 2바이트 ASCII LRC 체크섬을 포함할지 여부입니다. 기본값은 false입니다.</summary>
+    public bool IncludeLrc { get; set; }
 }

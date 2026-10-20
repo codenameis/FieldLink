@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Siemens.S7Comm;
 
@@ -28,7 +28,7 @@ public static class S7CommRequestBuilder
     private const byte DataTransportSizeBit = 0x03;
     private const byte DataTransportSizeByte = 0x04;
     private const int BitsPerByte = 8;
-    private const int ConcurrentRequestCount = 1;
+    private const ushort ConcurrentRequestCount = 1;
 
     /// <summary>COTP 연결 요청 프레임을 만듭니다. (사양서 §3-2)</summary>
     public static byte[] BuildConnectionRequest(S7CommOptions options)
@@ -38,13 +38,32 @@ public static class S7CommRequestBuilder
             throw new ArgumentNullException(nameof(options));
         }
 
-        var cotp = new List<byte> { 0x00, CotpConnectionRequest, 0x00, 0x00, 0x00, 0x01, 0x00 };
-        AddTsapParameter(cotp, CallingTsapCode, options.LocalTsap);
-        AddTsapParameter(cotp, CalledTsapCode, options.RemoteTsap);
-        cotp.AddRange(new byte[] { TpduSizeCode, 0x01, TpduSizeExponent });
-        cotp[0] = (byte)(cotp.Count - 1);
+        byte[] frame = new byte[22];
+        frame[0] = TpktVersion;
+        frame[1] = 0x00;
+        BinaryBuffer.WriteUInt16BE(frame, 2, 22);
 
-        return WrapWithTpkt(cotp);
+        frame[4] = 17; // COTP Length
+        frame[5] = CotpConnectionRequest;
+        frame[6] = 0x00;
+        frame[7] = 0x00;
+        frame[8] = 0x00;
+        frame[9] = 0x01;
+        frame[10] = 0x00;
+
+        frame[11] = CallingTsapCode;
+        frame[12] = 0x02;
+        BinaryBuffer.WriteUInt16BE(frame, 13, options.LocalTsap);
+
+        frame[15] = CalledTsapCode;
+        frame[16] = 0x02;
+        BinaryBuffer.WriteUInt16BE(frame, 17, options.RemoteTsap);
+
+        frame[19] = TpduSizeCode;
+        frame[20] = 0x01;
+        frame[21] = TpduSizeExponent;
+
+        return frame;
     }
 
     /// <summary>Setup Communication 요청 프레임을 만듭니다. (사양서 §3-6)</summary>
@@ -55,18 +74,20 @@ public static class S7CommRequestBuilder
             throw new ArgumentNullException(nameof(options));
         }
 
-        var parameters = new List<byte> { FunctionSetupCommunication, 0x00 };
-        AddUInt16(parameters, ConcurrentRequestCount);
-        AddUInt16(parameters, ConcurrentRequestCount);
-        AddUInt16(parameters, (ushort)options.RequestedPduLength);
+        byte[] frame = new byte[25];
+        WriteTpktAndCotpDataHeader(frame, totalFrameLength: 25);
+        WriteS7Header(frame, pduReference, paramLength: 8, dataLength: 0);
 
-        return WrapDataTransfer(BuildS7Pdu(pduReference, parameters, Array.Empty<byte>()));
+        frame[17] = FunctionSetupCommunication;
+        frame[18] = 0x00;
+        BinaryBuffer.WriteUInt16BE(frame, 19, ConcurrentRequestCount);
+        BinaryBuffer.WriteUInt16BE(frame, 21, ConcurrentRequestCount);
+        BinaryBuffer.WriteUInt16BE(frame, 23, (ushort)options.RequestedPduLength);
+
+        return frame;
     }
 
     /// <summary>읽기 요청 프레임을 만듭니다. (사양서 §3-7)</summary>
-    /// <param name="pduReference">요청마다 증가하는 PDU 참조입니다.</param>
-    /// <param name="address">읽기 시작 주소입니다.</param>
-    /// <param name="count">읽을 바이트 수입니다. 비트 주소는 1이어야 합니다.</param>
     public static byte[] BuildReadRequest(ushort pduReference, S7CommAddress address, ushort count)
     {
         if (address is null)
@@ -84,14 +105,15 @@ public static class S7CommRequestBuilder
             throw new ArgumentException("비트 주소는 요청 하나에 비트 하나만 읽을 수 있습니다.", nameof(count));
         }
 
-        List<byte> parameters = BuildItemParameters(FunctionReadVariable, address, count);
-        return WrapDataTransfer(BuildS7Pdu(pduReference, parameters, Array.Empty<byte>()));
+        byte[] frame = new byte[31];
+        WriteTpktAndCotpDataHeader(frame, totalFrameLength: 31);
+        WriteS7Header(frame, pduReference, paramLength: 14, dataLength: 0);
+        WriteItemParameters(frame, offset: 17, FunctionReadVariable, address, count);
+
+        return frame;
     }
 
     /// <summary>쓰기 요청 프레임을 만듭니다. (사양서 §3-8)</summary>
-    /// <param name="pduReference">요청마다 증가하는 PDU 참조입니다.</param>
-    /// <param name="address">쓰기 시작 주소입니다.</param>
-    /// <param name="data">쓸 바이트입니다. 비트 주소는 1바이트(0 이외는 켜짐)여야 합니다.</param>
     public static byte[] BuildWriteRequest(ushort pduReference, S7CommAddress address, byte[] data)
     {
         if (address is null)
@@ -114,87 +136,62 @@ public static class S7CommRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(data), data.Length, "한 요청에 쓸 수 있는 바이트 수를 넘었습니다.");
         }
 
-        List<byte> parameters = BuildItemParameters(FunctionWriteVariable, address, (ushort)data.Length);
-        return WrapDataTransfer(BuildS7Pdu(pduReference, parameters, BuildWriteDataSection(address, data)));
-    }
+        ushort dataSectionLength = (ushort)(4 + data.Length);
+        ushort totalLength = (ushort)(31 + dataSectionLength);
+        byte[] frame = new byte[totalLength];
 
-    private static List<byte> BuildItemParameters(byte function, S7CommAddress address, ushort count)
-    {
-        var parameters = new List<byte>
-        {
-            function,
-            0x01,
-            VariableSpecification,
-            AddressLength,
-            SyntaxIdS7Any,
-            address.IsBit ? RequestTransportSizeBit : RequestTransportSizeByte,
-        };
+        WriteTpktAndCotpDataHeader(frame, totalLength);
+        WriteS7Header(frame, pduReference, paramLength: 14, dataLength: dataSectionLength);
+        WriteItemParameters(frame, offset: 17, FunctionWriteVariable, address, (ushort)data.Length);
 
-        AddUInt16(parameters, count);
-        AddUInt16(parameters, (ushort)address.DataBlockNumber);
-        parameters.Add((byte)address.Area);
-        parameters.Add((byte)(address.StartBitAddress >> 16));
-        parameters.Add((byte)(address.StartBitAddress >> 8));
-        parameters.Add((byte)address.StartBitAddress);
-        return parameters;
-    }
-
-    private static byte[] BuildWriteDataSection(S7CommAddress address, byte[] data)
-    {
-        var section = new List<byte> { 0x00, address.IsBit ? DataTransportSizeBit : DataTransportSizeByte };
-
-        // 사양서 §3-8: 바이트 접근의 길이는 비트 수, 비트 접근의 길이는 개수(1)이다.
-        AddUInt16(section, address.IsBit ? (ushort)1 : (ushort)(data.Length * BitsPerByte));
+        frame[31] = 0x00;
+        frame[32] = address.IsBit ? DataTransportSizeBit : DataTransportSizeByte;
+        BinaryBuffer.WriteUInt16BE(frame, 33, address.IsBit ? (ushort)1 : (ushort)(data.Length * BitsPerByte));
 
         if (address.IsBit)
         {
-            section.Add(data[0] != 0 ? (byte)0x01 : (byte)0x00);
+            frame[35] = data[0] != 0 ? (byte)0x01 : (byte)0x00;
         }
         else
         {
-            section.AddRange(data);
+            Buffer.BlockCopy(data, 0, frame, 35, data.Length);
         }
 
-        return section.ToArray();
+        return frame;
     }
 
-    private static List<byte> BuildS7Pdu(ushort pduReference, List<byte> parameters, byte[] dataSection)
+    private static void WriteTpktAndCotpDataHeader(byte[] frame, ushort totalFrameLength)
     {
-        var pdu = new List<byte> { ProtocolId, MessageTypeRequest, 0x00, 0x00 };
-        AddUInt16(pdu, pduReference);
-        AddUInt16(pdu, (ushort)parameters.Count);
-        AddUInt16(pdu, (ushort)dataSection.Length);
-        pdu.AddRange(parameters);
-        pdu.AddRange(dataSection);
-        return pdu;
+        frame[0] = TpktVersion;
+        frame[1] = 0x00;
+        BinaryBuffer.WriteUInt16BE(frame, 2, totalFrameLength);
+        frame[4] = CotpDataHeaderLength;
+        frame[5] = CotpDataTransfer;
+        frame[6] = CotpLastFragment;
     }
 
-    private static byte[] WrapDataTransfer(List<byte> s7Pdu)
+    private static void WriteS7Header(byte[] frame, ushort pduReference, ushort paramLength, ushort dataLength)
     {
-        var cotp = new List<byte> { CotpDataHeaderLength, CotpDataTransfer, CotpLastFragment };
-        cotp.AddRange(s7Pdu);
-        return WrapWithTpkt(cotp);
+        frame[7] = ProtocolId;
+        frame[8] = MessageTypeRequest;
+        frame[9] = 0x00;
+        frame[10] = 0x00;
+        BinaryBuffer.WriteUInt16BE(frame, 11, pduReference);
+        BinaryBuffer.WriteUInt16BE(frame, 13, paramLength);
+        BinaryBuffer.WriteUInt16BE(frame, 15, dataLength);
     }
 
-    private static byte[] WrapWithTpkt(List<byte> payload)
+    private static void WriteItemParameters(byte[] frame, int offset, byte function, S7CommAddress address, ushort count)
     {
-        var frame = new List<byte> { TpktVersion, 0x00 };
-        AddUInt16(frame, (ushort)(payload.Count + 4));
-        frame.AddRange(payload);
-        return frame.ToArray();
-    }
-
-    private static void AddTsapParameter(List<byte> cotp, byte parameterCode, ushort tsap)
-    {
-        cotp.Add(parameterCode);
-        cotp.Add(0x02);
-        AddUInt16(cotp, tsap);
-    }
-
-    private static void AddUInt16(List<byte> buffer, ushort value)
-    {
-        // S7 계열은 모든 다중 바이트 값이 빅엔디언이다. (사양서 §5)
-        buffer.Add((byte)(value >> 8));
-        buffer.Add((byte)value);
+        frame[offset] = function;
+        frame[offset + 1] = 0x01;
+        frame[offset + 2] = VariableSpecification;
+        frame[offset + 3] = AddressLength;
+        frame[offset + 4] = SyntaxIdS7Any;
+        frame[offset + 5] = address.IsBit ? RequestTransportSizeBit : RequestTransportSizeByte;
+        BinaryBuffer.WriteUInt16BE(frame, offset + 6, count);
+        BinaryBuffer.WriteUInt16BE(frame, offset + 8, (ushort)address.DataBlockNumber);
+        frame[offset + 10] = (byte)address.Area;
+        BinaryBuffer.WriteUInt24BE(frame, offset + 11, address.StartBitAddress);
     }
 }

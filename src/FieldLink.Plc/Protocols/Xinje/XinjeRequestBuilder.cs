@@ -1,4 +1,5 @@
 using System;
+using FieldLink.Plc.Conversion;
 using FieldLink.Plc.Protocols.Modbus;
 
 namespace FieldLink.Plc.Protocols.Xinje;
@@ -9,6 +10,16 @@ public static class XinjeRequestBuilder
     /// <summary>확장 Modbus 연속 읽기 PDU를 생성합니다. (0x1E 비트, 0x20 워드)</summary>
     public static byte[] BuildExtendedReadPdu(XinjeAddress address, ushort count)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (count == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), "읽기 개수는 1 이상이어야 합니다.");
+        }
+
         byte functionCode = address.IsBit ? (byte)0x1E : (byte)0x20;
         byte[] addrBytes = address.Get24BitAddressBytes();
 
@@ -27,6 +38,21 @@ public static class XinjeRequestBuilder
     /// <summary>확장 Modbus 연속 워드 쓰기 PDU를 생성합니다. (0x21)</summary>
     public static byte[] BuildExtendedWriteWordPdu(XinjeAddress address, ushort count, byte[] data)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (count is < 1 or > 125)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "확장 워드 쓰기 수량은 1~125 사이여야 합니다.");
+        }
+
+        if (data is null || data.Length < count * 2)
+        {
+            throw new ArgumentException("워드 쓰기 데이터 길이가 부족합니다.", nameof(data));
+        }
+
         byte[] addrBytes = address.Get24BitAddressBytes();
         byte byteCount = (byte)(count * 2);
 
@@ -36,10 +62,9 @@ public static class XinjeRequestBuilder
         pdu[2] = addrBytes[0];
         pdu[3] = addrBytes[1];
         pdu[4] = addrBytes[2];
-        pdu[5] = (byte)((count >> 8) & 0xFF);
-        pdu[6] = (byte)(count & 0xFF);
+        BinaryBuffer.WriteUInt16BE(pdu, 5, count);
         pdu[7] = byteCount;
-        Array.Copy(data, 0, pdu, 8, byteCount);
+        Buffer.BlockCopy(data, 0, pdu, 8, byteCount);
 
         return pdu;
     }
@@ -47,16 +72,23 @@ public static class XinjeRequestBuilder
     /// <summary>확장 Modbus 연속 비트 쓰기 PDU를 생성합니다. (0x1F)</summary>
     public static byte[] BuildExtendedWriteBitPdu(XinjeAddress address, ushort count, bool[] bits)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (count is < 1 or > 2000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "확장 비트 쓰기 수량은 1~2000 사이여야 합니다.");
+        }
+
+        if (bits is null || bits.Length < count)
+        {
+            throw new ArgumentException("비트 쓰기 배열 길이가 부족합니다.", nameof(bits));
+        }
+
         byte[] addrBytes = address.Get24BitAddressBytes();
         byte byteCount = (byte)((count + 7) / 8);
-        byte[] packed = new byte[byteCount];
-        for (int i = 0; i < count; i++)
-        {
-            if (bits[i])
-            {
-                packed[i / 8] |= (byte)(1 << (i % 8));
-            }
-        }
 
         byte[] pdu = new byte[8 + byteCount];
         pdu[0] = 0x1F;
@@ -64,10 +96,16 @@ public static class XinjeRequestBuilder
         pdu[2] = addrBytes[0];
         pdu[3] = addrBytes[1];
         pdu[4] = addrBytes[2];
-        pdu[5] = (byte)((count >> 8) & 0xFF);
-        pdu[6] = (byte)(count & 0xFF);
+        BinaryBuffer.WriteUInt16BE(pdu, 5, count);
         pdu[7] = byteCount;
-        Array.Copy(packed, 0, pdu, 8, byteCount);
+
+        for (int i = 0; i < count; i++)
+        {
+            if (bits[i])
+            {
+                pdu[8 + (i / 8)] |= (byte)(1 << (i % 8));
+            }
+        }
 
         return pdu;
     }

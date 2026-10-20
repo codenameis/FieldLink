@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.FujiElectric;
 
@@ -9,23 +10,20 @@ public static class FujiElectricSpbResponseParser
     /// <summary>워드 읽기 응답을 검증하고 리틀엔디언 바이트 배열을 추출합니다.</summary>
     public static byte[] ParseReadWords(byte[] frame, byte expectedStation, ushort expectedCount)
     {
-        string ascii = ValidateAndExtractData(frame, expectedStation, "0000");
+        int dataOffset = ValidateHeaderAndLrc(frame, expectedStation, "0000", out int availableDataChars);
         int expectedChars = expectedCount * 4;
-        if (ascii.Length < expectedChars)
+
+        if (availableDataChars < expectedChars)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"수신 데이터 길이 부족: 필요 {expectedChars}, 수신 {ascii.Length}");
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"수신 데이터 길이 부족: 필요 {expectedChars}, 수신 {availableDataChars}");
         }
 
         byte[] result = new byte[expectedCount * 2];
         for (int i = 0; i < result.Length; i++)
         {
-            string byteHex = ascii.Substring(i * 2, 2);
-            if (!byte.TryParse(byteHex, System.Globalization.NumberStyles.HexNumber, null, out byte b))
-            {
-                throw new PlcException(PlcErrorKind.InvalidResponse, $"16진 바이트 파싱 실패: {byteHex}");
-            }
-
-            result[i] = b;
+            result[i] = (byte)BinaryBuffer.ReadAsciiHex(frame, dataOffset + (i * 2), 2);
         }
 
         return result;
@@ -34,10 +32,10 @@ public static class FujiElectricSpbResponseParser
     /// <summary>쓰기 명령(워드 또는 비트) 응답을 검증합니다.</summary>
     public static void VerifyWriteResponse(byte[] frame, byte expectedStation, string expectedCmdSubcmd)
     {
-        ValidateAndExtractData(frame, expectedStation, expectedCmdSubcmd);
+        ValidateHeaderAndLrc(frame, expectedStation, expectedCmdSubcmd, out _);
     }
 
-    private static string ValidateAndExtractData(byte[] frame, byte expectedStation, string expectedCmdSubcmd)
+    private static int ValidateHeaderAndLrc(byte[] frame, byte expectedStation, string expectedCmdSubcmd, out int dataCharCount)
     {
         if (frame is null || frame.Length < 17)
         {
@@ -49,30 +47,53 @@ public static class FujiElectricSpbResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, "Fuji SPB 프레임 헤더(:) 또는 종료(CRLF)가 올바르지 않습니다.");
         }
 
-        string full = Encoding.ASCII.GetString(frame);
-        string stationStr = full.Substring(1, 2);
-        if (!byte.TryParse(stationStr, System.Globalization.NumberStyles.HexNumber, null, out byte st) || st != expectedStation)
+        byte station = (byte)BinaryBuffer.ReadAsciiHex(frame, 1, 2);
+        if (station != expectedStation)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"Fuji SPB 국번 불일치: 예상 {expectedStation:X2}, 수신 {stationStr}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"Fuji SPB 국번 불일치: 예상 {expectedStation:X2}, 수신 {station:X2}");
         }
 
-        string endCode = full.Substring(9, 2);
-        if (endCode != "00")
+        int declaredByteLength = BinaryBuffer.ReadAsciiHex(frame, 3, 2);
+        byte endCodeVal = (byte)BinaryBuffer.ReadAsciiHex(frame, 9, 2);
+        if (endCodeVal != 0x00)
         {
-            int errNum = int.TryParse(endCode, System.Globalization.NumberStyles.HexNumber, null, out int code) ? code : -1;
-            string message = GetErrorMessage(endCode);
-            throw new PlcDeviceException(errNum, $"Fuji SPB 장치 오류 (코드 {endCode}): {message}");
+            string endCodeHex = Encoding.ASCII.GetString(frame, 9, 2).ToUpperInvariant();
+            string message = GetErrorMessage(endCodeHex);
+            throw new PlcDeviceException(endCodeVal, $"Fuji SPB 장치 오류 (코드 {endCodeHex}): {message}");
         }
 
-        string cmdEcho = full.Substring(11, 4);
+        string cmdEcho = Encoding.ASCII.GetString(frame, 11, 4);
         if (!string.Equals(cmdEcho, expectedCmdSubcmd, StringComparison.OrdinalIgnoreCase))
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"Fuji SPB 명령 에코 불일치: 예상 {expectedCmdSubcmd}, 수신 {cmdEcho}");
         }
 
-        // 데이터는 오프셋 15부터 CRLF 전까지
-        int dataLen = (full.Length - 2) - 15;
-        return dataLen > 0 ? full.Substring(15, dataLen) : string.Empty;
+        // ':'(1) + Station(2) + Len(2) + Body(declaredByteLength * 2) + LRC(2) + CRLF(2)
+        int expectedLengthWithLrc = 1 + 4 + (declaredByteLength * 2) + 2 + 2;
+        if (frame.Length == expectedLengthWithLrc)
+        {
+            int lrcOffset = frame.Length - 4;
+            int sum = 0;
+            for (int i = 1; i < lrcOffset; i++)
+            {
+                sum += frame[i];
+            }
+
+            byte expectedLrc = (byte)((-sum) & 0xFF);
+            byte actualLrc = (byte)BinaryBuffer.ReadAsciiHex(frame, lrcOffset, 2);
+            if (expectedLrc != actualLrc)
+            {
+                throw new PlcException(PlcErrorKind.InvalidResponse, $"Fuji SPB LRC 체크섬 불일치: 계산 {expectedLrc:X2}, 수신 {actualLrc:X2}");
+            }
+
+            dataCharCount = lrcOffset - 15;
+        }
+        else
+        {
+            dataCharCount = (frame.Length - 2) - 15;
+        }
+
+        return 15;
     }
 
     private static string GetErrorMessage(string code) => code switch

@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.LsElectric.FEnet;
 
@@ -16,7 +17,7 @@ public static class FEnetRequestBuilder
 
     /// <summary>연속 읽기 요청 프레임 전체(20바이트 헤더 + 명령어)를 빌드합니다.</summary>
     /// <param name="invokeId">시퀀스 트랜잭션 번호입니다.</param>
-    /// <param name="variableName">대상 변수명 문자열입니다. (예: "%DW100")</param>
+    /// <param name="variableName">대상 바이트 변수명 문자열입니다. (예: "%DB200")</param>
     /// <param name="byteCount">읽을 바이트 수입니다.</param>
     /// <param name="cpuInfo">CPU 모델 정보 바이트입니다. 기본값은 0xA0입니다.</param>
     public static byte[] BuildContinuousRead(ushort invokeId, string variableName, ushort byteCount, byte cpuInfo = DefaultCpuInfo)
@@ -37,22 +38,21 @@ public static class FEnetRequestBuilder
 
         BuildHeader(frame, invokeId, instructionLength, cpuInfo);
 
-        // Instruction (Offset 20~)
         int offset = 20;
-        WriteUInt16LE(frame, offset, CommandRead);
-        WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
-        WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
-        WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
-        WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
-        Array.Copy(varBytes, 0, frame, offset + 10, varBytes.Length);
-        WriteUInt16LE(frame, offset + 10 + varBytes.Length, byteCount);
+        BinaryBuffer.WriteUInt16LE(frame, offset, CommandRead);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
+        BinaryBuffer.WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
+        BinaryBuffer.WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
+        Buffer.BlockCopy(varBytes, 0, frame, offset + 10, varBytes.Length);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 10 + varBytes.Length, byteCount);
 
         return frame;
     }
 
     /// <summary>연속 쓰기 요청 프레임 전체(20바이트 헤더 + 명령어 + 데이터)를 빌드합니다.</summary>
     /// <param name="invokeId">시퀀스 트랜잭션 번호입니다.</param>
-    /// <param name="variableName">대상 변수명 문자열입니다. (예: "%DW100")</param>
+    /// <param name="variableName">대상 바이트 변수명 문자열입니다. (예: "%DB200")</param>
     /// <param name="data">기록할 바이트 데이터입니다.</param>
     /// <param name="cpuInfo">CPU 모델 정보 바이트입니다. 기본값은 0xA0입니다.</param>
     public static byte[] BuildContinuousWrite(ushort invokeId, string variableName, byte[] data, byte cpuInfo = DefaultCpuInfo)
@@ -73,32 +73,28 @@ public static class FEnetRequestBuilder
 
         BuildHeader(frame, invokeId, instructionLength, cpuInfo);
 
-        // Instruction (Offset 20~)
         int offset = 20;
-        WriteUInt16LE(frame, offset, CommandWrite);
-        WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
-        WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
-        WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
-        WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
-        Array.Copy(varBytes, 0, frame, offset + 10, varBytes.Length);
-        WriteUInt16LE(frame, offset + 10 + varBytes.Length, (ushort)data.Length);
-        Array.Copy(data, 0, frame, offset + 12 + varBytes.Length, data.Length);
+        BinaryBuffer.WriteUInt16LE(frame, offset, CommandWrite);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
+        BinaryBuffer.WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
+        BinaryBuffer.WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
+        Buffer.BlockCopy(varBytes, 0, frame, offset + 10, varBytes.Length);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 10 + varBytes.Length, (ushort)data.Length);
+        Buffer.BlockCopy(data, 0, frame, offset + 12 + varBytes.Length, data.Length);
 
         return frame;
     }
 
     private static void BuildHeader(byte[] buffer, ushort invokeId, ushort instructionLength, byte cpuInfo)
     {
-        Array.Copy(CompanyId, 0, buffer, 0, 8);
-        buffer[8] = 0x00;
-        buffer[9] = 0x00;
-        buffer[10] = 0x00;
-        buffer[11] = 0x00;
+        Buffer.BlockCopy(CompanyId, 0, buffer, 0, 8);
+        // Offset 8~9: CompanyId Null Padding (0x0000), Offset 10~11: PLC Info (0x0000)
         buffer[12] = cpuInfo;
         buffer[13] = SourceClient;
-        WriteUInt16LE(buffer, 14, invokeId);
-        WriteUInt16LE(buffer, 16, instructionLength);
-        buffer[18] = 0x00; // Position
+        BinaryBuffer.WriteUInt16LE(buffer, 14, invokeId);
+        BinaryBuffer.WriteUInt16LE(buffer, 16, instructionLength);
+        buffer[18] = 0x00; // FEnet Position
 
         byte bcc = 0;
         for (int i = 0; i < 19; i++)
@@ -107,11 +103,5 @@ public static class FEnetRequestBuilder
         }
 
         buffer[19] = bcc;
-    }
-
-    private static void WriteUInt16LE(byte[] buffer, int offset, ushort value)
-    {
-        buffer[offset] = (byte)value;
-        buffer[offset + 1] = (byte)(value >> 8);
     }
 }

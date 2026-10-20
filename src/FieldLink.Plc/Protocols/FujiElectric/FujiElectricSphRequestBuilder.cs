@@ -1,4 +1,5 @@
 using System;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.FujiElectric;
 
@@ -11,6 +12,11 @@ public static class FujiElectricSphRequestBuilder
     /// <summary>연속 워드 읽기 요청 프레임을 조립합니다.</summary>
     public static byte[] BuildReadWords(byte connectionId, FujiElectricSphAddress address, ushort wordCount)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
         if (wordCount is < 1 or > 230)
         {
             throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 읽기 개수는 1~230 사이여야 합니다.");
@@ -25,6 +31,11 @@ public static class FujiElectricSphRequestBuilder
     /// <summary>연속 워드 쓰기 요청 프레임을 조립합니다.</summary>
     public static byte[] BuildWriteWords(byte connectionId, FujiElectricSphAddress address, ushort wordCount, byte[] wordData)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
         if (wordCount is < 1 or > 230)
         {
             throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 쓰기 개수는 1~230 사이여야 합니다.");
@@ -45,7 +56,7 @@ public static class FujiElectricSphRequestBuilder
 
         FillHeader(frame, connectionId, command: 0x01, payloadLen);
         FillDescriptor(frame, address, wordCount);
-        Array.Copy(wordData, 0, frame, 26, wordData.Length);
+        Buffer.BlockCopy(wordData, 0, frame, 26, wordData.Length);
         return frame;
     }
 
@@ -65,8 +76,7 @@ public static class FujiElectricSphRequestBuilder
         frame[15] = 0x00;
         frame[16] = 0x00;
         frame[17] = 0x01; // 1블록
-        frame[18] = (byte)(payloadLength & 0xFF);
-        frame[19] = (byte)((payloadLength >> 8) & 0xFF);
+        BinaryBuffer.WriteUInt16LE(frame, 18, payloadLength);
     }
 
     private static void FillDescriptor(byte[] frame, FujiElectricSphAddress address, ushort wordCount)
@@ -75,7 +85,6 @@ public static class FujiElectricSphRequestBuilder
         frame[21] = (byte)(address.WordAddress & 0xFF);
         frame[22] = (byte)((address.WordAddress >> 8) & 0xFF);
         frame[23] = (byte)((address.WordAddress >> 16) & 0xFF);
-        frame[24] = (byte)(wordCount & 0xFF);
-        frame[25] = (byte)((wordCount >> 8) & 0xFF);
+        BinaryBuffer.WriteUInt16LE(frame, 24, wordCount);
     }
 }

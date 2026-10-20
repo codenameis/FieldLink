@@ -33,6 +33,37 @@ public class FujiElectricProtocolTests
     }
 
     [Fact]
+    public async Task ReadAsync_Spb_WithLrc_ParsesSuccessfully()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new FujiElectricSpbProtocol(transport, new FujiElectricSpbOptions { Station = 1 });
+
+        // Response with LRC (0x36) for payload "0107FFFF0000003412":
+        byte[] response = Encoding.ASCII.GetBytes(":0107FFFF000000341236\r\n");
+        transport.EnqueueResponse(response);
+
+        var request = new PlcReadRequest("D100", PlcDataType.Int16, 1);
+        byte[] result = await protocol.ReadAsync(request, default);
+
+        Assert.Equal(2, result.Length);
+        Assert.Equal(0x34, result[0]);
+        Assert.Equal(0x12, result[1]);
+    }
+
+    [Fact]
+    public void ParseReadWords_Spb_LrcMismatch_ThrowsPlcException()
+    {
+        // Response with invalid LRC "00" instead of "56":
+        byte[] response = Encoding.ASCII.GetBytes(":0107FFFF000000341200\r\n");
+
+        var ex = Assert.Throws<PlcException>(() =>
+            FujiElectricSpbResponseParser.ParseReadWords(response, expectedStation: 1, expectedCount: 1));
+
+        Assert.Equal(PlcErrorKind.InvalidResponse, ex.Kind);
+        Assert.Contains("LRC 체크섬 불일치", ex.Message);
+    }
+
+    [Fact]
     public async Task WriteAsync_Spb_D100_2Words_BuildsExpectedRequest()
     {
         var transport = new ScriptedTransport();

@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Mitsubishi.MC;
 
@@ -12,23 +12,13 @@ public static class MCBinaryRequestBuilder
     private const byte BitOnNibbleLow = 0x01;
 
     /// <summary>디바이스 일괄 읽기 요청 프레임을 만듭니다.</summary>
-    /// <param name="options">프레임 종류·시리즈·액세스 경로 설정입니다.</param>
-    /// <param name="serialNumber">4E 프레임의 시리얼 번호입니다. 3E에서는 쓰이지 않습니다.</param>
-    /// <param name="address">읽기 시작 주소입니다.</param>
-    /// <param name="pointCount">읽을 점수입니다. 비트 디바이스는 비트 수, 워드 디바이스는 워드 수입니다.</param>
     public static byte[] BuildReadRequest(MCOptions options, ushort serialNumber, MCAddress address, ushort pointCount)
     {
         ValidateRequest(options, address, pointCount);
-        byte[] body = BuildBody(options, MCCommand.BatchRead, address, pointCount, Array.Empty<byte>());
-        return WrapWithHeader(options, serialNumber, body);
+        return BuildFrame(options, serialNumber, MCCommand.BatchRead, address, pointCount, Array.Empty<byte>());
     }
 
     /// <summary>디바이스 일괄 쓰기 요청 프레임을 만듭니다.</summary>
-    /// <param name="options">프레임 종류·시리즈·액세스 경로 설정입니다.</param>
-    /// <param name="serialNumber">4E 프레임의 시리얼 번호입니다. 3E에서는 쓰이지 않습니다.</param>
-    /// <param name="address">쓰기 시작 주소입니다.</param>
-    /// <param name="pointCount">쓸 점수입니다.</param>
-    /// <param name="data">워드 디바이스는 점수 × 2바이트(리틀 엔디언), 비트 디바이스는 점수 × 1바이트(0 또는 1)입니다.</param>
     public static byte[] BuildWriteRequest(
         MCOptions options,
         ushort serialNumber,
@@ -48,9 +38,8 @@ public static class MCBinaryRequestBuilder
             throw new ArgumentException($"쓰기 데이터는 {expectedLength}바이트여야 합니다. (실제: {data.Length})", nameof(data));
         }
 
-        byte[] payload = address.IsBit ? PackBitNibbles(data) : (byte[])data.Clone();
-        byte[] body = BuildBody(options, MCCommand.BatchWrite, address, pointCount, payload);
-        return WrapWithHeader(options, serialNumber, body);
+        byte[] payload = address.IsBit ? PackBitNibbles(data) : data;
+        return BuildFrame(options, serialNumber, MCCommand.BatchWrite, address, pointCount, payload);
     }
 
     private static void ValidateRequest(MCOptions options, MCAddress address, ushort pointCount)
@@ -76,43 +65,66 @@ public static class MCBinaryRequestBuilder
         }
     }
 
-    private static byte[] BuildBody(MCOptions options, MCCommand command, MCAddress address, ushort pointCount, byte[] payload)
+    private static byte[] BuildFrame(
+        MCOptions options,
+        ushort serialNumber,
+        MCCommand command,
+        MCAddress address,
+        ushort pointCount,
+        byte[] payload)
     {
-        var body = new List<byte>();
-        AddUInt16(body, options.MonitoringTimer);
-        AddUInt16(body, (ushort)command);
-        AddUInt16(body, (ushort)options.Series.GetSubcommand(address.IsBit));
-        AddLittleEndian(body, address.DeviceNumber, options.Series.GetDeviceNumberByteCount());
-        AddLittleEndian(body, address.Device.Code, options.Series.GetDeviceCodeByteCount());
-        AddUInt16(body, pointCount);
-        body.AddRange(payload);
-        return body.ToArray();
-    }
-
-    private static byte[] WrapWithHeader(MCOptions options, ushort serialNumber, byte[] body)
-    {
-        var frame = new List<byte>();
         bool is4E = options.FrameType == MCFrameType.Frame4E;
+        int headerLength = is4E ? 13 : 9;
+        int devNumBytes = options.Series.GetDeviceNumberByteCount();
+        int devCodeBytes = options.Series.GetDeviceCodeByteCount();
+        int bodyLength = 6 + devNumBytes + devCodeBytes + 2 + payload.Length;
 
-        AddUInt16(frame, is4E ? Request4ESubheader : Request3ESubheader);
+        byte[] frame = new byte[headerLength + bodyLength];
+        int offset = 0;
+
+        // 1. 서브헤더 (3E: 50 00, 4E: 54 00 + Serial + Reserved)
+        BinaryBuffer.WriteUInt16LE(frame, offset, is4E ? Request4ESubheader : Request3ESubheader);
+        offset += 2;
+
         if (is4E)
         {
-            AddUInt16(frame, serialNumber);
-            AddUInt16(frame, 0x0000); // 예약
+            BinaryBuffer.WriteUInt16LE(frame, offset, serialNumber);
+            BinaryBuffer.WriteUInt16LE(frame, offset + 2, 0x0000);
+            offset += 4;
         }
 
-        frame.Add(options.NetworkNumber);
-        frame.Add(options.PcNumber);
-        AddUInt16(frame, options.ModuleIoNumber);
-        frame.Add(options.ModuleStationNumber);
-        AddUInt16(frame, (ushort)body.Length);
-        frame.AddRange(body);
-        return frame.ToArray();
+        // 2. 액세스 경로 (5 Bytes) 및 요청 데이터 길이 (2 Bytes)
+        frame[offset++] = options.NetworkNumber;
+        frame[offset++] = options.PcNumber;
+        BinaryBuffer.WriteUInt16LE(frame, offset, options.ModuleIoNumber);
+        offset += 2;
+        frame[offset++] = options.ModuleStationNumber;
+        BinaryBuffer.WriteUInt16LE(frame, offset, (ushort)bodyLength);
+        offset += 2;
+
+        // 3. 감시 타이머, 커맨드, 서브커맨드 (6 Bytes)
+        BinaryBuffer.WriteUInt16LE(frame, offset, options.MonitoringTimer);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 2, (ushort)command);
+        BinaryBuffer.WriteUInt16LE(frame, offset + 4, (ushort)options.Series.GetSubcommand(address.IsBit));
+        offset += 6;
+
+        // 4. 선두 디바이스 번호, 디바이스 코드, 디바이스 점수
+        WriteLittleEndian(frame, ref offset, address.DeviceNumber, devNumBytes);
+        WriteLittleEndian(frame, ref offset, address.Device.Code, devCodeBytes);
+        BinaryBuffer.WriteUInt16LE(frame, offset, pointCount);
+        offset += 2;
+
+        // 5. 쓰기 데이터 페이로드
+        if (payload.Length > 0)
+        {
+            Buffer.BlockCopy(payload, 0, frame, offset, payload.Length);
+        }
+
+        return frame;
     }
 
     private static byte[] PackBitNibbles(byte[] bitValues)
     {
-        // 사양서 §4: 첫 번째 점은 상위 니블, 두 번째 점은 하위 니블. 홀수 개면 마지막 하위 니블은 0.
         var packed = new byte[(bitValues.Length + 1) / 2];
         for (int bitIndex = 0; bitIndex < bitValues.Length; bitIndex++)
         {
@@ -125,17 +137,11 @@ public static class MCBinaryRequestBuilder
         return packed;
     }
 
-    private static void AddUInt16(List<byte> buffer, ushort value)
-    {
-        buffer.Add((byte)value);
-        buffer.Add((byte)(value >> 8));
-    }
-
-    private static void AddLittleEndian(List<byte> buffer, uint value, int byteCount)
+    private static void WriteLittleEndian(byte[] buffer, ref int offset, uint value, int byteCount)
     {
         for (int byteIndex = 0; byteIndex < byteCount; byteIndex++)
         {
-            buffer.Add((byte)(value >> (8 * byteIndex)));
+            buffer[offset++] = (byte)(value >> (8 * byteIndex));
         }
     }
 }

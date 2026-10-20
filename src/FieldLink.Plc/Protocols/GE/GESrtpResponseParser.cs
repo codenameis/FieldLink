@@ -1,4 +1,5 @@
 using System;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.GE;
 
@@ -34,21 +35,21 @@ public static class GESrtpResponseParser
             }
 
             byte[] result = new byte[expectedByteCount];
-            Array.Copy(frame, 44, result, 0, expectedByteCount);
+            Buffer.BlockCopy(frame, 44, result, 0, expectedByteCount);
             return result;
         }
 
         if (msgType == 0x94)
         {
             // 확장 페이로드 응답 (오프셋 56 이후)
-            int payloadLen = frame[4] | (frame[5] << 8);
+            int payloadLen = BinaryBuffer.ReadUInt16LE(frame, 4);
             if (payloadLen < expectedByteCount || frame.Length < 56 + expectedByteCount)
             {
                 throw new PlcException(PlcErrorKind.InvalidResponse, $"SRTP 페이로드 길이 부족: 필요 {expectedByteCount}, 수신 {payloadLen}");
             }
 
             byte[] result = new byte[expectedByteCount];
-            Array.Copy(frame, 56, result, 0, expectedByteCount);
+            Buffer.BlockCopy(frame, 56, result, 0, expectedByteCount);
             return result;
         }
 
@@ -59,6 +60,12 @@ public static class GESrtpResponseParser
     public static void VerifyWriteResponse(byte[] frame, ushort expectedSequenceId)
     {
         ValidateResponseHeader(frame, expectedSequenceId);
+
+        byte msgType = frame[31];
+        if (msgType != 0xD4 && msgType != 0x94)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"지원하지 않는 SRTP 쓰기 응답 메시지 타입입니다: 0x{msgType:X2}");
+        }
     }
 
     private static void ValidateResponseHeader(byte[] frame, ushort expectedSequenceId)
@@ -73,13 +80,13 @@ public static class GESrtpResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"SRTP 응답 타입 불일치 (예상 0x03, 수신 0x{frame[0]:X2})");
         }
 
-        ushort seq = (ushort)(frame[2] | (frame[3] << 8));
+        ushort seq = BinaryBuffer.ReadUInt16LE(frame, 2);
         if (seq != expectedSequenceId)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"SRTP 시퀀스 ID 불일치 (예상 {expectedSequenceId}, 수신 {seq})");
         }
 
-        ushort status = (ushort)(frame[42] | (frame[43] << 8));
+        ushort status = BinaryBuffer.ReadUInt16LE(frame, 42);
         if (status != 0)
         {
             throw new PlcDeviceException(status, $"SRTP 장치 처리 오류 (상태 코드: 0x{status:X4})");

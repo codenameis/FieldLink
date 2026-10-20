@@ -1,4 +1,5 @@
 using System;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.FujiElectric;
 
@@ -19,7 +20,7 @@ public static class FujiElectricSphResponseParser
         }
 
         byte[] result = new byte[expectedBytes];
-        Array.Copy(frame, 26, result, 0, expectedBytes);
+        Buffer.BlockCopy(frame, 26, result, 0, expectedBytes);
         return result;
     }
 
@@ -56,6 +57,12 @@ public static class FujiElectricSphResponseParser
         if (frame[14] != expectedCommand)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 명령 에코 불일치: 예상 0x{expectedCommand:X2}, 수신 0x{frame[14]:X2}");
+        }
+
+        ushort declaredPayloadLength = BinaryBuffer.ReadUInt16LE(frame, 18);
+        if (frame.Length - 20 < declaredPayloadLength)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 응답 페이로드 길이가 선언된 크기({declaredPayloadLength})보다 작습니다. (실제: {frame.Length - 20})");
         }
     }
 

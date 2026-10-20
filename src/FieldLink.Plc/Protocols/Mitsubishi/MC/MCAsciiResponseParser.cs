@@ -1,4 +1,5 @@
 using System;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Mitsubishi.MC;
 
@@ -12,8 +13,9 @@ public static class MCAsciiResponseParser
     private const string Response3ESubheader = "D000";
     private const string Response4ESubheader = "D400";
 
-    /// <summary>4E 응답 프레임의 시리얼 번호를 읽습니다. 늦게 도착한 응답을 걸러낼 때 씁니다.</summary>
-    /// <exception cref="PlcException">프레임이 너무 짧거나 16진 문자가 아닐 때.</exception>
+    /// <summary>4E ASCII 응답 프레임의 시리얼 번호를 읽습니다.</summary>
+    /// <param name="frame">수신된 응답 프레임 바이트 배열입니다.</param>
+    /// <returns>응답 시리얼 번호입니다.</returns>
     public static ushort ReadSerialNumber(byte[] frame)
     {
         if (frame is null)
@@ -26,18 +28,16 @@ public static class MCAsciiResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"4E 응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
         }
 
-        return (ushort)ReadHex(frame, 4, 4);
+        return (ushort)BinaryBuffer.ReadAsciiHex(frame, 4, 4);
     }
 
-    /// <summary>일괄 읽기 응답에서 데이터를 꺼냅니다.</summary>
-    /// <param name="options">프레임 종류 설정입니다.</param>
-    /// <param name="expectedSerialNumber">4E에서 기대하는 시리얼 번호입니다.</param>
-    /// <param name="frame">수신한 응답 프레임 전체입니다.</param>
-    /// <param name="address">읽기를 요청한 주소입니다. 비트·워드 구분에 씁니다.</param>
-    /// <param name="pointCount">요청한 점수입니다.</param>
-    /// <returns>워드 디바이스는 점수 × 2바이트(리틀 엔디언), 비트 디바이스는 점수 × 1바이트(0 또는 1)입니다.</returns>
-    /// <exception cref="PlcDeviceException">종료 코드가 정상이 아닐 때.</exception>
-    /// <exception cref="PlcException">프레임이 손상되었거나 형식에 맞지 않을 때.</exception>
+    /// <summary>ASCII 읽기 응답 프레임에서 데이터를 추출합니다.</summary>
+    /// <param name="options">MC 프로토콜 옵션입니다.</param>
+    /// <param name="expectedSerialNumber">4E 프레임에서 기대하는 시리얼 번호입니다.</param>
+    /// <param name="frame">수신된 응답 프레임 바이트 배열입니다.</param>
+    /// <param name="address">읽기를 요청한 디바이스 주소입니다.</param>
+    /// <param name="pointCount">읽기를 요청한 점수입니다.</param>
+    /// <returns>추출된 바이트 배열(워드는 리틀 엔디언, 비트는 0/1 바이트)입니다.</returns>
     public static byte[] ParseRead(
         MCOptions options,
         ushort expectedSerialNumber,
@@ -54,9 +54,10 @@ public static class MCAsciiResponseParser
         return address.IsBit ? ParseBits(data, pointCount) : ParseWords(data, pointCount);
     }
 
-    /// <summary>일괄 쓰기 응답을 검증합니다.</summary>
-    /// <exception cref="PlcDeviceException">종료 코드가 정상이 아닐 때.</exception>
-    /// <exception cref="PlcException">프레임이 손상되었거나 형식에 맞지 않을 때.</exception>
+    /// <summary>ASCII 쓰기 응답 프레임을 검증합니다.</summary>
+    /// <param name="options">MC 프로토콜 옵션입니다.</param>
+    /// <param name="expectedSerialNumber">4E 프레임에서 기대하는 시리얼 번호입니다.</param>
+    /// <param name="frame">수신된 응답 프레임 바이트 배열입니다.</param>
     public static void ParseWrite(MCOptions options, ushort expectedSerialNumber, byte[] frame)
     {
         byte[] data = ExtractData(options, expectedSerialNumber, frame);
@@ -86,10 +87,10 @@ public static class MCAsciiResponseParser
 
         ValidateHeader(options.FrameType, expectedSerialNumber, frame);
         ValidateLength(frame, headerLength);
-        MCEndCodeExtensions.EnsureSuccess((ushort)ReadHex(frame, headerLength, EndCodeCharacterCount));
+        MCEndCodeExtensions.EnsureSuccess((ushort)BinaryBuffer.ReadAsciiHex(frame, headerLength, EndCodeCharacterCount));
 
         var data = new byte[frame.Length - headerLength - EndCodeCharacterCount];
-        Array.Copy(frame, headerLength + EndCodeCharacterCount, data, 0, data.Length);
+        Buffer.BlockCopy(frame, headerLength + EndCodeCharacterCount, data, 0, data.Length);
         return data;
     }
 
@@ -112,7 +113,7 @@ public static class MCAsciiResponseParser
 
     private static void ValidateLength(byte[] frame, int headerLength)
     {
-        int lengthField = ReadHex(frame, headerLength - 4, 4);
+        int lengthField = BinaryBuffer.ReadAsciiHex(frame, headerLength - 4, 4);
         if (frame.Length != headerLength + lengthField)
         {
             throw new PlcException(
@@ -128,13 +129,11 @@ public static class MCAsciiResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"읽은 워드 데이터 크기가 맞지 않습니다. (기대: {pointCount * WordCharacterCount}문자, 수신: {data.Length}문자)");
         }
 
-        // 사양서 §4: 워드는 상위 바이트가 먼저 오므로 리틀 엔디언 바이트로 뒤집어 돌려준다.
         var words = new byte[pointCount * 2];
         for (int wordIndex = 0; wordIndex < pointCount; wordIndex++)
         {
-            int word = ReadHex(data, wordIndex * WordCharacterCount, WordCharacterCount);
-            words[wordIndex * 2] = (byte)word;
-            words[(wordIndex * 2) + 1] = (byte)(word >> 8);
+            ushort word = (ushort)BinaryBuffer.ReadAsciiHex(data, wordIndex * WordCharacterCount, WordCharacterCount);
+            BinaryBuffer.WriteUInt16LE(words, wordIndex * 2, word);
         }
 
         return words;
@@ -159,36 +158,5 @@ public static class MCAsciiResponseParser
         }
 
         return bits;
-    }
-
-    private static int ReadHex(byte[] buffer, int offset, int characterCount)
-    {
-        int value = 0;
-        for (int index = 0; index < characterCount; index++)
-        {
-            value = (value << 4) | GetHexDigitValue(buffer[offset + index]);
-        }
-
-        return value;
-    }
-
-    private static int GetHexDigitValue(byte character)
-    {
-        if (character is >= (byte)'0' and <= (byte)'9')
-        {
-            return character - '0';
-        }
-
-        if (character is >= (byte)'A' and <= (byte)'F')
-        {
-            return character - 'A' + 10;
-        }
-
-        if (character is >= (byte)'a' and <= (byte)'f')
-        {
-            return character - 'a' + 10;
-        }
-
-        throw new PlcException(PlcErrorKind.InvalidResponse, $"16진 문자가 아닙니다. (0x{character:X2})");
     }
 }
