@@ -3,8 +3,6 @@
 > 고성능·무의존 산업용 PLC 통신 라이브러리 (.NET Standard 2.0 / .NET 8)  
 > **MIT License** | **Cleanroom Architecture**
 
-FieldLink는 제조사별 공식 통신 사양서와 검증된 패킷 구조를 기반으로 완전한 **클린룸(Cleanroom)** 방식으로 설계된 오픈소스 산업용 통신 라이브러리입니다. 외부 상용 라이브러리나 카피레프트(GPL/LGPL) 코드에 대한 의존성 없이, 단일화된 고수준 API(`PlcClient`, `PlcClientFactory`)를 통해 다양한 산업용 PLC와 즉시 통신할 수 있습니다.
-
 ---
 
 ## 1. 지원 제조사 및 프로토콜 일람
@@ -329,22 +327,3 @@ var ts1 = await client.ReadInt16Async("TS1");
 var y1 = await client.ReadBooleanAsync("Y1");
 var i10 = await client.ReadBooleanAsync("I10");
 ```
-
----
-
-## 4. 아키텍처 및 품질 보증
-
-```mermaid
-graph TD
-    App[사용자 응용 프로그램] --> Factory[PlcClientFactory]
-    Factory --> Client[PlcClient (Facade)]
-    Client --> Protocol[IPlcProtocol (16개 제조사 구현체)]
-    Protocol --> Transport[ITransport (TcpTransport / SerialTransport / UdpTransport)]
-    Transport --> Physical[물리 PLC / 통신 모듈]
-```
-
-- **Cleanroom Implementation**: 레거시/GPL 오염 코드를 일절 참조하지 않고 공식 제조사 사양서만으로 독립 개발
-- **No Warnings**: `TreatWarningsAsErrors=true`로 모든 프로젝트 컴파일 경고 0건 유지
-- **Strict Code Style**: `EnforceCodeStyleInBuild=true`, `dotnet format --verify-no-changes` 전수 통과
-- **High Test Coverage**: 582개 단위 테스트 전수 통과 (100% 녹색불)
-- **Zero Alloc Framing**: 프레임 버퍼 관리 및 청크 분할(`RequestChunker`)로 고속 데이터 수집 최적화
