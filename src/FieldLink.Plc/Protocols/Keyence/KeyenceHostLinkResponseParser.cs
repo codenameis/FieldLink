@@ -1,5 +1,7 @@
 using System;
+using System.Globalization;
 using System.Text;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Keyence;
 
@@ -8,7 +10,8 @@ public static class KeyenceHostLinkResponseParser
 {
     private static readonly char[] SpaceSeparator = [' '];
 
-    /// <summary>연결 개시(CR) 응답("CC\r\n")을 검증합니다.</summary>
+    /// <summary>상위 링크 통신 접속(CR) 응답이 "CC"인지 검증합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
     public static void VerifyConnectResponse(byte[] frame)
     {
         string text = ExtractText(frame);
@@ -18,7 +21,8 @@ public static class KeyenceHostLinkResponseParser
         }
     }
 
-    /// <summary>쓰기 명령(WRS) 응답("OK\r\n")을 검증합니다.</summary>
+    /// <summary>쓰기 명령에 대한 응답이 "OK"인지 검증합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
     public static void VerifyWriteResponse(byte[] frame)
     {
         string text = ExtractText(frame);
@@ -28,7 +32,10 @@ public static class KeyenceHostLinkResponseParser
         }
     }
 
-    /// <summary>워드 읽기(RDS) 응답에서 공백 구분 16비트 워드를 추출하여 리틀엔디언 바이트로 반환합니다.</summary>
+    /// <summary>연속 워드 읽기 응답 문자열에서 워드 데이터 바이트(리틀 엔디언)를 추출합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedCount">기대하는 워드 수입니다.</param>
+    /// <returns>추출된 워드 데이터 바이트 배열(리틀 엔디언)입니다.</returns>
     public static byte[] ParseReadWords(byte[] frame, ushort expectedCount)
     {
         string text = ExtractText(frame);
@@ -41,19 +48,21 @@ public static class KeyenceHostLinkResponseParser
         byte[] result = new byte[expectedCount * 2];
         for (int i = 0; i < expectedCount; i++)
         {
-            if (!ushort.TryParse(tokens[i], out ushort value))
+            if (!ushort.TryParse(tokens[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out ushort value))
             {
                 throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 값 파싱 실패: {tokens[i]}");
             }
 
-            result[i * 2] = (byte)(value & 0xFF);
-            result[(i * 2) + 1] = (byte)((value >> 8) & 0xFF);
+            BinaryBuffer.WriteUInt16LE(result, i * 2, value);
         }
 
         return result;
     }
 
-    /// <summary>비트 읽기(RDS) 응답에서 공백 구분 비트 상태를 추출합니다.</summary>
+    /// <summary>연속 비트 읽기 응답 문자열에서 비트 바이트 배열(0 또는 1)을 추출합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedCount">기대하는 비트 수입니다.</param>
+    /// <returns>추출된 비트 바이트 배열입니다.</returns>
     public static byte[] ParseReadBits(byte[] frame, ushort expectedCount)
     {
         string text = ExtractText(frame);
@@ -66,7 +75,12 @@ public static class KeyenceHostLinkResponseParser
         byte[] result = new byte[expectedCount];
         for (int i = 0; i < expectedCount; i++)
         {
-            result[i] = (byte)(tokens[i] == "1" ? 1 : 0);
+            result[i] = tokens[i] switch
+            {
+                "1" => 1,
+                "0" => 0,
+                _ => throw new PlcException(PlcErrorKind.InvalidResponse, $"유효하지 않은 비트 응답 토큰: {tokens[i]}")
+            };
         }
 
         return result;
@@ -82,9 +96,9 @@ public static class KeyenceHostLinkResponseParser
         string full = Encoding.ASCII.GetString(frame).TrimEnd('\r', '\n');
         if (full.StartsWith("E", StringComparison.OrdinalIgnoreCase) && full.Length >= 2)
         {
-            string errCode = full.Substring(0, 2);
+            string errCode = full.Substring(0, 2).ToUpperInvariant();
             string message = GetErrorMessage(errCode);
-            int codeNum = int.TryParse(full.Substring(1), out int n) ? n : -1;
+            int codeNum = int.TryParse(full.Substring(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) ? n : -1;
             throw new PlcDeviceException(codeNum, $"상위 링크 에러 ({errCode}): {message}");
         }
 

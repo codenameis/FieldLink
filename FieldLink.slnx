@@ -21,4 +21,7 @@
     <Project Path="tests/FieldLink.Transport.Tests/FieldLink.Transport.Tests.csproj" />
     <Project Path="tests/FieldLink.Plc.Tests/FieldLink.Plc.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/FieldLink.PacketBench/FieldLink.PacketBench.csproj" />
+  </Folder>
 </Solution>

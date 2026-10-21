@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    FieldLink 패킷 벤치: 클라이언트를 바꿔 가며 가상 PLC 와 패킷을 확인하는 개발용 도구.
+    라이브러리(src)가 아니므로 배포 패키지에 포함되지 않는다.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>FieldLink.PacketBench</RootNamespace>
+    <AssemblyName>FieldLink.PacketBench</AssemblyName>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationDefaultFont>Malgun Gothic, 9pt</ApplicationDefaultFont>
+    <!-- IDE0005(불필요한 using)를 빌드에서 검사하려면 문서 파일 생성이 켜져 있어야 한다.
+         이 프로젝트의 타입은 모두 internal 이므로 CS1591(공개 API 문서 누락)은 발생하지 않는다. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FieldLink.Plc\FieldLink.Plc.csproj" />
+  </ItemGroup>
+
+</Project>

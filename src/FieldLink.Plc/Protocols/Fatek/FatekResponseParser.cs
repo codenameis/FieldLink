@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Fatek;
 
@@ -9,58 +10,67 @@ public static class FatekResponseParser
     private const byte Stx = 0x02;
     private const byte Etx = 0x03;
 
-    /// <summary>비트 읽기(명령 44) 응답을 검증하고 비트 배열을 추출합니다.</summary>
+    /// <summary>연속 비트 읽기 응답을 검증하고 비트 바이트 배열(0 또는 1)을 추출합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedCount">기대하는 비트 수입니다.</param>
+    /// <returns>추출된 비트 바이트 배열입니다.</returns>
     public static byte[] ParseReadBits(byte[] frame, byte expectedStation, ushort expectedCount)
     {
-        string body = ValidateAndExtractBody(frame, expectedStation, "44");
-        if (body.Length < expectedCount)
+        int bodyLength = ValidateHeaderAndChecksum(frame, expectedStation, "44");
+        if (bodyLength < expectedCount)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"수신된 비트 응답 길이가 부족합니다. (필요: {expectedCount}, 수신: {body.Length})");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"수신된 비트 응답 길이가 부족합니다. (필요: {expectedCount}, 수신: {bodyLength})");
         }
 
         byte[] result = new byte[expectedCount];
         for (int i = 0; i < expectedCount; i++)
         {
-            result[i] = (byte)(body[i] == '1' ? 1 : 0);
+            result[i] = frame[6 + i] switch
+            {
+                (byte)'1' => 1,
+                (byte)'0' => 0,
+                _ => throw new PlcException(PlcErrorKind.InvalidResponse, $"유효하지 않은 FATEK 비트 문자입니다: 0x{frame[6 + i]:X2}")
+            };
         }
 
         return result;
     }
 
-    /// <summary>워드 읽기(명령 46) 응답을 검증하고 16비트 리틀엔디언 바이트 배열을 추출합니다.</summary>
+    /// <summary>연속 워드 읽기 응답을 검증하고 리틀 엔디언 바이트 배열을 추출합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedCount">기대하는 워드 수입니다.</param>
+    /// <returns>추출된 워드 데이터 바이트 배열(리틀 엔디언)입니다.</returns>
     public static byte[] ParseReadWords(byte[] frame, byte expectedStation, ushort expectedCount)
     {
-        string body = ValidateAndExtractBody(frame, expectedStation, "46");
+        int bodyLength = ValidateHeaderAndChecksum(frame, expectedStation, "46");
         int requiredChars = expectedCount * 4;
-        if (body.Length < requiredChars)
+        if (bodyLength < requiredChars)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"수신된 워드 응답 길이가 부족합니다. (필요: {requiredChars}, 수신: {body.Length})");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"수신된 워드 응답 길이가 부족합니다. (필요: {requiredChars}, 수신: {bodyLength})");
         }
 
         byte[] result = new byte[expectedCount * 2];
         for (int i = 0; i < expectedCount; i++)
         {
-            string hex4 = body.Substring(i * 4, 4);
-            if (!ushort.TryParse(hex4, System.Globalization.NumberStyles.HexNumber, null, out ushort value))
-            {
-                throw new PlcException(PlcErrorKind.InvalidResponse, $"16진 워드 파싱 실패: {hex4}");
-            }
-
-            // 리틀엔디언 저장 [lo, hi]
-            result[i * 2] = (byte)(value & 0xFF);
-            result[(i * 2) + 1] = (byte)((value >> 8) & 0xFF);
+            ushort value = (ushort)BinaryBuffer.ReadAsciiHex(frame, 6 + (i * 4), 4);
+            BinaryBuffer.WriteUInt16LE(result, i * 2, value);
         }
 
         return result;
     }
 
-    /// <summary>쓰기 명령(명령 45, 47, 41) 응답을 검증합니다.</summary>
+    /// <summary>쓰기 명령(비트 또는 워드) 응답을 검증합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedCommand">기대하는 2문자 명령 에코(예: "45", "47")입니다.</param>
     public static void VerifyWriteResponse(byte[] frame, byte expectedStation, string expectedCommand)
     {
-        ValidateAndExtractBody(frame, expectedStation, expectedCommand);
+        ValidateHeaderAndChecksum(frame, expectedStation, expectedCommand);
     }
 
-    private static string ValidateAndExtractBody(byte[] frame, byte expectedStation, string expectedCommand)
+    private static int ValidateHeaderAndChecksum(byte[] frame, byte expectedStation, string expectedCommand)
     {
         if (frame is null || frame.Length < 9)
         {
@@ -74,10 +84,10 @@ public static class FatekResponseParser
 
         ValidateChecksum(frame);
 
-        string stationHex = Encoding.ASCII.GetString(frame, 1, 2);
-        if (!byte.TryParse(stationHex, System.Globalization.NumberStyles.HexNumber, null, out byte st) || st != expectedStation)
+        byte station = (byte)BinaryBuffer.ReadAsciiHex(frame, 1, 2);
+        if (station != expectedStation)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"국번 불일치: 예상 {expectedStation:X2}, 수신 {stationHex}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"국번 불일치: 예상 {expectedStation:X2}, 수신 {station:X2}");
         }
 
         string command = Encoding.ASCII.GetString(frame, 3, 2);
@@ -90,11 +100,10 @@ public static class FatekResponseParser
         if (status != '0')
         {
             string message = GetErrorMessage(status);
-            throw new PlcDeviceException((int)status, $"FATEK 장치 오류 (코드 '{status}'): {message}");
+            throw new PlcDeviceException(status, $"FATEK 장치 오류 (코드 '{status}'): {message}");
         }
 
-        int dataLength = frame.Length - 9; // 전체 - STX(1) - 국번(2) - 명령(2) - 오류코드(1) - 체크섬(2) - ETX(1)
-        return dataLength > 0 ? Encoding.ASCII.GetString(frame, 6, dataLength) : string.Empty;
+        return frame.Length - 9;
     }
 
     private static void ValidateChecksum(byte[] frame)
@@ -106,10 +115,10 @@ public static class FatekResponseParser
         }
 
         byte expectedLrc = (byte)(sum & 0xFF);
-        string lrcStr = Encoding.ASCII.GetString(frame, frame.Length - 3, 2);
-        if (!byte.TryParse(lrcStr, System.Globalization.NumberStyles.HexNumber, null, out byte actualLrc) || expectedLrc != actualLrc)
+        byte actualLrc = (byte)BinaryBuffer.ReadAsciiHex(frame, frame.Length - 3, 2);
+        if (expectedLrc != actualLrc)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"FATEK 체크섬 불일치: 계산 {expectedLrc:X2}, 수신 {lrcStr}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"FATEK 체크섬 불일치: 계산 {expectedLrc:X2}, 수신 {actualLrc:X2}");
         }
     }
 

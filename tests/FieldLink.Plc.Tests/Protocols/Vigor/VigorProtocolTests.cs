@@ -1,4 +1,3 @@
-using System;
 using System.Threading.Tasks;
 using FieldLink.Plc.Abstractions;
 using FieldLink.Plc.Protocols.Vigor;
@@ -52,7 +51,7 @@ public class VigorProtocolTests
     }
 
     [Fact]
-    public void ParseResponse_ErrorCode_ThrowsInvalidOperationException()
+    public void ParseResponse_ErrorCode_ThrowsPlcDeviceException()
     {
         // Error 0x06: Body [01, 01, 00, 06] -> sum = 1 + 1 + 0 + 6 = 8 -> "08" (0x30, 0x38)
         byte[] response =
@@ -60,9 +59,10 @@ public class VigorProtocolTests
             0x10, 0x02, 0x01, 0x01, 0x00, 0x06, 0x10, 0x03, 0x30, 0x38
         ];
 
-        var ex = Assert.Throws<InvalidOperationException>(() =>
+        var ex = Assert.Throws<PlcDeviceException>(() =>
             VigorResponseParser.ParseResponse(response, expectedStation: 1));
 
+        Assert.Equal(0x06, ex.DeviceErrorCode);
         Assert.Contains("0x06", ex.Message);
     }
 

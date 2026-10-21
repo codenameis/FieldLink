@@ -1,4 +1,5 @@
 using System;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Jtekt;
 
@@ -28,7 +29,7 @@ public static class ToyopucResponseParser
         }
 
         byte[] result = new byte[expectedBytes];
-        Array.Copy(frame, 5, result, 0, expectedBytes);
+        Buffer.BlockCopy(frame, 5, result, 0, expectedBytes);
         return result;
     }
 
@@ -48,6 +49,12 @@ public static class ToyopucResponseParser
         if (frame[0] != 0x80)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"올바르지 않은 TOYOPUC 응답 프레임 타입: 0x{frame[0]:X2}");
+        }
+
+        ushort declaredBodyLength = BinaryBuffer.ReadUInt16LE(frame, 2);
+        if (frame.Length - 4 < declaredBodyLength)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"TOYOPUC 프레임 본문 길이({frame.Length - 4})가 선언된 길이({declaredBodyLength})보다 작습니다.");
         }
 
         byte rc = frame[1];

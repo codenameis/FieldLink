@@ -1,4 +1,5 @@
 using System;
+using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Mitsubishi.MC;
 
@@ -25,7 +26,7 @@ public static class MCBinaryResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"4E 응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
         }
 
-        return (ushort)(frame[2] | (frame[3] << 8));
+        return BinaryBuffer.ReadUInt16LE(frame, 2);
     }
 
     /// <summary>일괄 읽기 응답에서 데이터를 꺼냅니다.</summary>
@@ -85,16 +86,16 @@ public static class MCBinaryResponseParser
 
         ValidateHeader(options.FrameType, expectedSerialNumber, frame);
         ValidateLength(frame, headerLength);
-        MCEndCodeExtensions.EnsureSuccess((ushort)(frame[headerLength] | (frame[headerLength + 1] << 8)));
+        MCEndCodeExtensions.EnsureSuccess(BinaryBuffer.ReadUInt16LE(frame, headerLength));
 
         var data = new byte[frame.Length - headerLength - EndCodeByteCount];
-        Array.Copy(frame, headerLength + EndCodeByteCount, data, 0, data.Length);
+        Buffer.BlockCopy(frame, headerLength + EndCodeByteCount, data, 0, data.Length);
         return data;
     }
 
     private static void ValidateHeader(MCFrameType frameType, ushort expectedSerialNumber, byte[] frame)
     {
-        ushort subheader = (ushort)(frame[0] | (frame[1] << 8));
+        ushort subheader = BinaryBuffer.ReadUInt16LE(frame, 0);
         ushort expectedSubheader = frameType == MCFrameType.Frame4E ? Response4ESubheader : Response3ESubheader;
         if (subheader != expectedSubheader)
         {
@@ -109,7 +110,7 @@ public static class MCBinaryResponseParser
 
     private static void ValidateLength(byte[] frame, int headerLength)
     {
-        int lengthField = frame[headerLength - 2] | (frame[headerLength - 1] << 8);
+        int lengthField = BinaryBuffer.ReadUInt16LE(frame, headerLength - 2);
         if (frame.Length != headerLength + lengthField)
         {
             throw new PlcException(

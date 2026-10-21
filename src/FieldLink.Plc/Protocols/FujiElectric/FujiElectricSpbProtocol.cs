@@ -69,7 +69,7 @@ public sealed class FujiElectricSpbProtocol : IPlcProtocol
                 FujiElectricSpbAddress chunkAddress = address.Offset(chunk.ElementOffset);
                 ushort count = (ushort)chunk.ElementCount;
 
-                byte[] requestFrame = FujiElectricSpbRequestBuilder.BuildReadWords(_options.Station, chunkAddress, count);
+                byte[] requestFrame = FujiElectricSpbRequestBuilder.BuildReadWords(_options.Station, chunkAddress, count, _options.IncludeLrc);
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
                 byte[] data = FujiElectricSpbResponseParser.ParseReadWords(responseFrame, _options.Station, count);
 
@@ -123,7 +123,7 @@ public sealed class FujiElectricSpbProtocol : IPlcProtocol
         if (request.DataType == PlcDataType.Boolean && request.Count == 1)
         {
             bool bitVal = request.GetData()[0] != 0;
-            byte[] requestFrame = FujiElectricSpbRequestBuilder.BuildWriteBit(_options.Station, address, bitVal);
+            byte[] requestFrame = FujiElectricSpbRequestBuilder.BuildWriteBit(_options.Station, address, bitVal, _options.IncludeLrc);
             await _transport.RunExclusiveAsync<bool>(async session =>
             {
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
@@ -146,7 +146,7 @@ public sealed class FujiElectricSpbProtocol : IPlcProtocol
                 ushort count = (ushort)chunk.ElementCount;
                 byte[] chunkData = request.GetData(chunk.ElementOffset / wordsPerElement, chunk.ElementCount / wordsPerElement);
 
-                byte[] requestFrame = FujiElectricSpbRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, count, chunkData);
+                byte[] requestFrame = FujiElectricSpbRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, count, chunkData, _options.IncludeLrc);
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
                 FujiElectricSpbResponseParser.VerifyWriteResponse(responseFrame, _options.Station, "0100");
             }
