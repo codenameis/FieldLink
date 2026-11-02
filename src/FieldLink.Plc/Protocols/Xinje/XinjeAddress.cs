@@ -7,6 +7,9 @@ namespace FieldLink.Plc.Protocols.Xinje;
 /// <summary>XINJE PLC 디바이스 주소 표현 및 Modbus/확장 매핑입니다. (사양서 Part A §A.1.4, Part B)</summary>
 public sealed class XinjeAddress
 {
+    private const int ExtendedAddressThreshold = 20480;
+    private const int Max24BitAddressNumber = 0xFFFFFF;
+
     private XinjeAddress(
         string original,
         string device,
@@ -40,6 +43,12 @@ public sealed class XinjeAddress
 
     /// <summary>PLC 시리즈입니다.</summary>
     public XinjeSeries Series { get; }
+
+    /// <summary>확장 주소 영역(표준 16비트 오프셋 초과 또는 정전유지/플래시 확장 디바이스) 여부입니다.</summary>
+    public bool IsExtended =>
+        Number >= ExtendedAddressThreshold ||
+        Device is "ET" or "HM" or "HS" or "HT" or "HC" or "HSC" or "SEM"
+            or "ETD" or "HD" or "HSD" or "HTD" or "HCD" or "HSCD" or "FD" or "SFD" or "FS" or "FSD";
 
     /// <summary>확장 Modbus 24비트(3바이트 BE) 주소 바이트를 반환합니다.</summary>
     public byte[] Get24BitAddressBytes()
@@ -207,6 +216,12 @@ public sealed class XinjeAddress
         int number;
         if (devicePrefix is "X" or "Y")
         {
+            if (!IsValidOctalDigits(numberText))
+            {
+                errorMessage = $"유효하지 않은 8진수 XINJE 주소입니다: {address}";
+                return false;
+            }
+
             try
             {
                 number = Convert.ToInt32(numberText, 8);
@@ -226,7 +241,31 @@ public sealed class XinjeAddress
             }
         }
 
+        if (number is < 0 or > Max24BitAddressNumber)
+        {
+            errorMessage = $"XINJE 주소 번호가 24비트 허용 범위를 벗어났습니다: {address}";
+            return false;
+        }
+
         return TryResolveExtendedDevice(trimmed, devicePrefix, number, series, isBitAccess, out result, out errorMessage);
+    }
+
+    private static bool IsValidOctalDigits(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] is < '0' or > '7')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool TryExtractDevice(string trimmed, out string devicePrefix, out string numberText)
@@ -275,8 +314,8 @@ public sealed class XinjeAddress
             case "Y": code = 0x02; isBit = true; break;
             case "M": code = 0x03; isBit = true; break;
             case "S": code = 0x04; isBit = true; break;
-            case "T": code = 0x05; isBit = true; break;
-            case "C": code = 0x06; isBit = true; break;
+            case "T": code = 0x05; isBit = series != XinjeSeries.XC || isBitAccess; break;
+            case "C": code = 0x06; isBit = series != XinjeSeries.XC || isBitAccess; break;
             case "ET": code = 0x07; isBit = true; break;
             case "HM": code = 0x08; isBit = true; break;
             case "HS": code = 0x09; isBit = true; break;
@@ -305,11 +344,6 @@ public sealed class XinjeAddress
             default:
                 errorMessage = $"알 수 없는 XINJE 디바이스입니다: {devicePrefix}";
                 return false;
-        }
-
-        if (isBitAccess)
-        {
-            isBit = true;
         }
 
         result = new XinjeAddress(original, devicePrefix, number, code, isBit, series);

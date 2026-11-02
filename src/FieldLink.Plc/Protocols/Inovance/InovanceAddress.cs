@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using FieldLink.Plc.Protocols.Modbus;
 
 namespace FieldLink.Plc.Protocols.Inovance;
@@ -7,13 +8,19 @@ namespace FieldLink.Plc.Protocols.Inovance;
 /// <summary>Inovance PLC 디바이스 주소를 Modbus PDU 주소로 변환한 값 객체입니다. (사양서 §1)</summary>
 public sealed class InovanceAddress
 {
+    private const int BitsPerWord = 16;
+    private const int H3uCounter32Start = 200;
+    private const int WordsPer32BitCounter = 2;
+
     private InovanceAddress(
         string originalAddress,
         InovanceSeries series,
         ModbusArea area,
         ushort pduAddress,
         bool isBit,
-        byte? bitIndexInWord = null)
+        byte? bitIndexInWord = null,
+        string deviceType = "",
+        int number = 0)
     {
         OriginalAddress = originalAddress;
         Series = series;
@@ -21,6 +28,8 @@ public sealed class InovanceAddress
         PduAddress = pduAddress;
         IsBit = isBit;
         BitIndexInWord = bitIndexInWord;
+        DeviceType = deviceType;
+        Number = number;
     }
 
     /// <summary>해석 전 원본 주소 문자열입니다.</summary>
@@ -40,6 +49,18 @@ public sealed class InovanceAddress
 
     /// <summary>워드 내 비트 인덱스 (AM %MX 접근 시 0~15)입니다.</summary>
     public byte? BitIndexInWord { get; }
+
+    /// <summary>디바이스 종류 문자열입니다. (예: "D", "M", "C")</summary>
+    public string DeviceType { get; }
+
+    /// <summary>파싱된 디바이스 번호입니다.</summary>
+    public int Number { get; }
+
+    /// <summary>32비트 워드 디바이스(AM MD 또는 H3U C200~C255) 여부입니다.</summary>
+    public bool Is32BitWord =>
+        !IsBit &&
+        ((Series == InovanceSeries.AM && DeviceType == "MD") ||
+         (Series == InovanceSeries.H3u && DeviceType == "C" && Number >= H3uCounter32Start));
 
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static InovanceAddress Parse(string address, InovanceSeries series, bool isBitAccess = false)
@@ -109,20 +130,25 @@ public sealed class InovanceAddress
 
         if (trimmed.StartsWith("MD", StringComparison.Ordinal))
         {
-            return ParseAmNumber(trimmed, 2, n => (ushort)(n * 2), ModbusArea.HoldingRegister, false, out result, out errorMessage);
+            return ParseAmNumber(trimmed, 2, "MD", 32767, n => (ushort)(n * 2), ModbusArea.HoldingRegister, false, out result, out errorMessage);
         }
 
         if (trimmed.StartsWith("MW", StringComparison.Ordinal) || trimmed.StartsWith("M", StringComparison.Ordinal))
         {
             int pLen = trimmed.StartsWith("MW", StringComparison.Ordinal) ? 2 : 1;
-            return ParseAmNumber(trimmed, pLen, n => (ushort)n, ModbusArea.HoldingRegister, false, out result, out errorMessage);
+            return ParseAmNumber(trimmed, pLen, "MW", 65535, n => (ushort)n, ModbusArea.HoldingRegister, false, out result, out errorMessage);
         }
 
         errorMessage = $"지원하지 않는 Inovance AM 주소입니다: {trimmed}";
         return false;
     }
 
-    private static bool ParseAmBitArea(string original, int prefixLen, ModbusArea area, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool ParseAmBitArea(
+        string original,
+        int prefixLen,
+        ModbusArea area,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
@@ -130,7 +156,9 @@ public sealed class InovanceAddress
         int dot = numberText.IndexOf('.');
         if (dot >= 0)
         {
-            if (!int.TryParse(numberText.Substring(0, dot), out int n) || !byte.TryParse(numberText.Substring(dot + 1), out byte b) || b > 7)
+            if (!int.TryParse(numberText.Substring(0, dot), NumberStyles.None, CultureInfo.InvariantCulture, out int n) ||
+                !byte.TryParse(numberText.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out byte b) ||
+                b > 7)
             {
                 errorMessage = $"유효하지 않은 AM 비트 주소: {original}";
                 return false;
@@ -140,7 +168,7 @@ public sealed class InovanceAddress
             return true;
         }
 
-        if (!int.TryParse(numberText, out int singleNum))
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int singleNum))
         {
             errorMessage = $"유효하지 않은 AM 주소 번호: {original}";
             return false;
@@ -150,7 +178,11 @@ public sealed class InovanceAddress
         return true;
     }
 
-    private static bool ParseAmMx(string original, bool isBitAccess, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool ParseAmMx(
+        string original,
+        bool isBitAccess,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
@@ -158,15 +190,28 @@ public sealed class InovanceAddress
         int dot = numberText.IndexOf('.');
         if (dot >= 0 || isBitAccess)
         {
-            int byteNum = dot >= 0 ? int.Parse(numberText.Substring(0, dot)) : int.Parse(numberText);
-            byte bitNum = dot >= 0 ? byte.Parse(numberText.Substring(dot + 1)) : (byte)0;
+            string bytePart = dot >= 0 ? numberText.Substring(0, dot) : numberText;
+            if (!int.TryParse(bytePart, NumberStyles.None, CultureInfo.InvariantCulture, out int byteNum))
+            {
+                errorMessage = $"유효하지 않은 AM MX 바이트 번호: {original}";
+                return false;
+            }
+
+            byte bitNum = 0;
+            if (dot >= 0 &&
+                (!byte.TryParse(numberText.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out bitNum) || bitNum > 7))
+            {
+                errorMessage = $"유효하지 않은 AM MX 비트 번호(0~7): {original}";
+                return false;
+            }
+
             ushort wordAddr = (ushort)(byteNum / 2);
             byte bitInWord = (byte)(((byteNum % 2) * 8) + bitNum);
             result = new InovanceAddress(original, InovanceSeries.AM, ModbusArea.HoldingRegister, wordAddr, isBit: true, bitInWord);
             return true;
         }
 
-        if (!int.TryParse(numberText, out int byteOffset))
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int byteOffset))
         {
             errorMessage = $"유효하지 않은 AM MX 주소: {original}";
             return false;
@@ -176,17 +221,28 @@ public sealed class InovanceAddress
         return true;
     }
 
-    private static bool ParseAmNumber(string original, int prefixLen, Func<int, ushort> pduCalc, ModbusArea area, bool isBit, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool ParseAmNumber(
+        string original,
+        int prefixLen,
+        string deviceType,
+        int maxNumber,
+        Func<int, ushort> pduCalc,
+        ModbusArea area,
+        bool isBit,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
-        if (!int.TryParse(original.Substring(prefixLen), out int parsedNumber) || parsedNumber < 0 || parsedNumber > 65535)
+        if (!int.TryParse(original.Substring(prefixLen), NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber) ||
+            parsedNumber < 0 ||
+            parsedNumber > maxNumber)
         {
             errorMessage = $"유효하지 않은 AM 주소 번호: {original}";
             return false;
         }
 
-        result = new InovanceAddress(original, InovanceSeries.AM, area, pduCalc(parsedNumber), isBit);
+        result = new InovanceAddress(original, InovanceSeries.AM, area, pduCalc(parsedNumber), isBit, deviceType: deviceType, number: parsedNumber);
         return true;
     }
 
@@ -218,7 +274,12 @@ public sealed class InovanceAddress
         if (trimmed.StartsWith("SM", StringComparison.Ordinal) || trimmed.StartsWith("SD", StringComparison.Ordinal))
         {
             bool isSm = trimmed.StartsWith("SM", StringComparison.Ordinal);
-            int n = int.Parse(trimmed.Substring(2));
+            if (!int.TryParse(trimmed.Substring(2), NumberStyles.None, CultureInfo.InvariantCulture, out int n))
+            {
+                errorMessage = $"유효하지 않은 H3U 주소 번호: {trimmed}";
+                return false;
+            }
+
             ModbusArea a = isSm ? ModbusArea.Coil : ModbusArea.HoldingRegister;
             result = new InovanceAddress(trimmed, InovanceSeries.H3u, a, (ushort)(0x2400 + n), isBit: isSm);
             return true;
@@ -227,11 +288,17 @@ public sealed class InovanceAddress
         return TryParseH3uGeneral(trimmed, p1, numberText, isBitAccess, out result, out errorMessage);
     }
 
-    private static bool TryParseH3uGeneral(string original, char p1, string numberText, bool isBitAccess, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool TryParseH3uGeneral(
+        string original,
+        char p1,
+        string numberText,
+        bool isBitAccess,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
-        if (!int.TryParse(numberText, out int parsedNumber))
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber))
         {
             errorMessage = $"유효하지 않은 H3U 주소 번호: {original}";
             return false;
@@ -241,30 +308,32 @@ public sealed class InovanceAddress
         {
             case 'M':
                 ushort mPdu = parsedNumber < 8000 ? (ushort)parsedNumber : (ushort)((parsedNumber - 8000) + 0x1F40);
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, mPdu, isBit: true);
+                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, mPdu, isBit: true, deviceType: "M", number: parsedNumber);
                 return true;
             case 'S':
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (ushort)(0xE000 + parsedNumber), isBit: true);
+                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (ushort)(0xE000 + parsedNumber), isBit: true, deviceType: "S", number: parsedNumber);
                 return true;
             case 'D':
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (ushort)parsedNumber, isBit: false);
+                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (ushort)parsedNumber, isBit: false, deviceType: "D", number: parsedNumber);
                 return true;
             case 'R':
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (ushort)(0x3000 + parsedNumber), isBit: false);
+                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (ushort)(0x3000 + parsedNumber), isBit: false, deviceType: "R", number: parsedNumber);
                 return true;
             case 'T':
                 ModbusArea tArea = isBitAccess ? ModbusArea.Coil : ModbusArea.HoldingRegister;
-                result = new InovanceAddress(original, InovanceSeries.H3u, tArea, (ushort)(0xF000 + parsedNumber), isBit: isBitAccess);
+                result = new InovanceAddress(original, InovanceSeries.H3u, tArea, (ushort)(0xF000 + parsedNumber), isBit: isBitAccess, deviceType: "T", number: parsedNumber);
                 return true;
             case 'C':
                 if (isBitAccess)
                 {
-                    result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (ushort)(0xF400 + parsedNumber), isBit: true);
+                    result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (ushort)(0xF400 + parsedNumber), isBit: true, deviceType: "C", number: parsedNumber);
                     return true;
                 }
 
-                ushort cPdu = parsedNumber < 200 ? (ushort)(0xF400 + parsedNumber) : (ushort)(0xF700 + ((parsedNumber - 200) * 2));
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, cPdu, isBit: false);
+                ushort cPdu = parsedNumber < H3uCounter32Start
+                    ? (ushort)(0xF400 + parsedNumber)
+                    : (ushort)(0xF700 + ((parsedNumber - H3uCounter32Start) * WordsPer32BitCounter));
+                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, cPdu, isBit: false, deviceType: "C", number: parsedNumber);
                 return true;
             default:
                 errorMessage = $"지원하지 않는 H3U 디바이스입니다: {original}";
@@ -296,7 +365,7 @@ public sealed class InovanceAddress
             return true;
         }
 
-        if (!int.TryParse(numberText, out int parsedNumber))
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber))
         {
             errorMessage = $"유효하지 않은 H5U 주소 번호: {trimmed}";
             return false;
@@ -328,6 +397,11 @@ public sealed class InovanceAddress
     private static bool TryParseOctal(string text, out ushort result)
     {
         result = 0;
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
         foreach (char c in text)
         {
             if (c is < '0' or > '7')
@@ -350,7 +424,16 @@ public sealed class InovanceAddress
     /// <summary>오프셋만큼 주소를 이동한 새 <see cref="InovanceAddress"/>를 반환합니다.</summary>
     public InovanceAddress Offset(int count)
     {
-        ushort newPdu = (ushort)(PduAddress + count);
-        return new InovanceAddress($"{OriginalAddress}+{count}", Series, Area, newPdu, IsBit, BitIndexInWord);
+        if (BitIndexInWord.HasValue)
+        {
+            int totalBitIndex = (PduAddress * BitsPerWord) + BitIndexInWord.Value + count;
+            ushort nextWordPdu = (ushort)(totalBitIndex / BitsPerWord);
+            byte nextBitInWord = (byte)(totalBitIndex % BitsPerWord);
+            return new InovanceAddress($"{OriginalAddress}+{count}", Series, Area, nextWordPdu, IsBit, nextBitInWord, DeviceType, Number + count);
+        }
+
+        int pduStep = Is32BitWord ? count * WordsPer32BitCounter : count;
+        ushort newPdu = (ushort)(PduAddress + pduStep);
+        return new InovanceAddress($"{OriginalAddress}+{count}", Series, Area, newPdu, IsBit, BitIndexInWord, DeviceType, Number + count);
     }
 }

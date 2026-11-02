@@ -13,6 +13,7 @@ internal sealed class StreamTransportSession : ITransportSession
     private const int MaximumBufferSize = 65536;
 
     private readonly Stream _stream;
+    private readonly Action? _onBeforeSend;
     private byte[] _buffer;
     private int _bufferedCount;
 
@@ -20,18 +21,34 @@ internal sealed class StreamTransportSession : ITransportSession
         long connectionId,
         Stream stream,
         CancellationToken cancellationToken,
-        int initialBufferSize = DefaultInitialBufferSize)
+        int initialBufferSize = DefaultInitialBufferSize,
+        Action? onBeforeSend = null)
     {
         ConnectionId = connectionId;
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         CancellationToken = cancellationToken;
+        _onBeforeSend = onBeforeSend;
         _buffer = new byte[Math.Max(initialBufferSize, DefaultInitialBufferSize)];
         _bufferedCount = 0;
     }
 
     public long ConnectionId { get; }
 
-    public CancellationToken CancellationToken { get; }
+    public CancellationToken CancellationToken { get; private set; }
+
+    public void SetCancellationToken(CancellationToken cancellationToken)
+    {
+        CancellationToken = cancellationToken;
+    }
+
+    public void ClearReceiveBuffer()
+    {
+        if (_bufferedCount > 0)
+        {
+            Array.Clear(_buffer, 0, _bufferedCount);
+            _bufferedCount = 0;
+        }
+    }
 
     public async Task SendAsync(byte[] frame)
     {
@@ -44,6 +61,9 @@ internal sealed class StreamTransportSession : ITransportSession
         {
             return;
         }
+
+        ClearReceiveBuffer();
+        _onBeforeSend?.Invoke();
 
         try
         {
@@ -78,34 +98,20 @@ internal sealed class StreamTransportSession : ITransportSession
                 var segment = new ArraySegment<byte>(_buffer, 0, _bufferedCount);
                 if (decoder.TryGetFrameLength(segment, out int frameLength))
                 {
+                    if (frameLength <= 0 || frameLength > _bufferedCount || frameLength > MaximumBufferSize)
+                    {
+                        throw new TransportException(
+                            TransportFailure.InvalidFrame,
+                            $"디코더가 보고한 프레임 길이({frameLength} 바이트)가 유효 범위를 벗어났습니다.");
+                    }
+
                     return ExtractFrame(frameLength);
                 }
             }
 
             EnsureCapacity();
 
-            int bytesRead;
-            try
-            {
-                bytesRead = await _stream.ReadAsync(
-                    _buffer,
-                    _bufferedCount,
-                    _buffer.Length - _bufferedCount,
-                    CancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                throw new TransportException(
-                    TransportFailure.ReceiveFailed,
-                    "프레임을 수신하는 중 입출력 오류가 발생했습니다.",
-                    isRequestSent: true,
-                    innerException: exception);
-            }
-
+            int bytesRead = await ReadNextChunkAsync().ConfigureAwait(false);
             if (bytesRead == 0)
             {
                 throw new TransportException(
@@ -115,6 +121,47 @@ internal sealed class StreamTransportSession : ITransportSession
             }
 
             _bufferedCount += bytesRead;
+        }
+    }
+
+    private async Task<int> ReadNextChunkAsync()
+    {
+        try
+        {
+            Task<int> readTask = _stream.ReadAsync(
+                _buffer,
+                _bufferedCount,
+                _buffer.Length - _bufferedCount,
+                CancellationToken);
+
+            if (!readTask.IsCompleted && CancellationToken.CanBeCanceled)
+            {
+                var cancellationSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using (CancellationToken.Register(
+                    static state => ((TaskCompletionSource<bool>)state!).TrySetResult(true),
+                    cancellationSource))
+                {
+                    Task completedTask = await Task.WhenAny(readTask, cancellationSource.Task).ConfigureAwait(false);
+                    if (completedTask != readTask)
+                    {
+                        CancellationToken.ThrowIfCancellationRequested();
+                    }
+                }
+            }
+
+            return await readTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new TransportException(
+                TransportFailure.ReceiveFailed,
+                "프레임을 수신하는 중 입출력 오류가 발생했습니다.",
+                isRequestSent: true,
+                innerException: exception);
         }
     }
 
@@ -129,6 +176,7 @@ internal sealed class StreamTransportSession : ITransportSession
             Array.Copy(_buffer, frameLength, _buffer, 0, remainingBytes);
         }
 
+        Array.Clear(_buffer, remainingBytes, frameLength);
         _bufferedCount = remainingBytes;
         return frame;
     }

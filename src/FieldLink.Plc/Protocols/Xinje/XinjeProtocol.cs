@@ -14,18 +14,25 @@ namespace FieldLink.Plc.Protocols.Xinje;
 /// <summary>XINJE PLC 확장 및 표준 Modbus 프로토콜 클라이언트 드라이버입니다. (사양서 Part A, B)</summary>
 public sealed class XinjeProtocol : IPlcProtocol
 {
-    private const int MaxExtendedWordChunk = 120;
-    private const int MaxExtendedBitChunk = 1920;
+    private const int BytesPerWord = 2;
+    private const int StandardModbusMaxWords = 120;
+    private const int ExtendedProtocolMaxWords = 250;
 
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly XinjeOptions _options;
     private readonly XinjeTransportEncoding _encoding;
     private readonly IFrameDecoder _frameDecoder;
-    private int _transactionId;
+    private readonly object _txIdLock = new();
+
+    private ushort _transactionId;
+    private long _lastConnectionId = -1;
 
     /// <summary><see cref="XinjeProtocol"/>의 새 인스턴스를 초기화합니다.</summary>
+    /// <param name="transport">바이트 송수신 전송 구현체입니다.</param>
+    /// <param name="options">XINJE 프로토콜 설정입니다.</param>
+    /// <param name="encoding">RTU 또는 TCP 전송 인코딩입니다.</param>
     public XinjeProtocol(
         ITransport transport,
         XinjeOptions? options = null,
@@ -45,9 +52,6 @@ public sealed class XinjeProtocol : IPlcProtocol
     public PlcProtocolTraits Traits { get; }
 
     /// <inheritdoc />
-    public ITransport Transport => _transport;
-
-    /// <inheritdoc />
     public Task ConnectAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     /// <inheritdoc />
@@ -63,128 +67,18 @@ public sealed class XinjeProtocol : IPlcProtocol
 
         bool isBit = request.DataType == PlcDataType.Boolean;
         var address = XinjeAddress.Parse(request.Address, _options.Series, isBit);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        if (_options.UseExtendedProtocol && _options.Series == XinjeSeries.XdXl)
-        {
-            return isBit
-                ? await ReadExtendedBitsAsync(address, request.Count, cancellationToken).ConfigureAwait(false)
-                : await ReadExtendedWordsAsync(address, request, cancellationToken).ConfigureAwait(false);
-        }
+        int requestedByteCount = request.ByteCount;
+        PlcReadRequest effectiveRequest = address.IsBit ? request : ProtocolExecutionGuard.NormalizeWordReadRequest(request);
 
-        return await ReadStandardModbusAsync(address, request, isBit, cancellationToken).ConfigureAwait(false);
-    }
+        byte[] buffer = (_options.UseExtendedProtocol && _options.Series == XinjeSeries.XdXl)
+            ? (address.IsBit
+                ? await ReadExtendedBitsAsync(address, effectiveRequest.Count, cancellationToken).ConfigureAwait(false)
+                : await ReadExtendedWordsAsync(address, effectiveRequest, cancellationToken).ConfigureAwait(false))
+            : await ReadStandardModbusAsync(address, effectiveRequest, cancellationToken).ConfigureAwait(false);
 
-    private async Task<byte[]> ReadExtendedBitsAsync(XinjeAddress address, int totalBits, CancellationToken cancellationToken)
-    {
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, MaxExtendedBitChunk);
-        byte[] result = new byte[totalBits];
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            foreach (RequestChunker.Chunk chunk in chunks)
-            {
-                XinjeAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                ushort transactionId = NextTransactionId();
-
-                byte[] pdu = XinjeRequestBuilder.BuildExtendedReadPdu(chunkAddress, count);
-                byte[] adu = XinjeRequestBuilder.WrapAdu(pdu, _options.Station, _encoding, transactionId);
-                byte[] responseFrame = await session.ExchangeAsync(adu, _frameDecoder).ConfigureAwait(false);
-
-                byte[] resPdu = XinjeResponseParser.ExtractPdu(responseFrame, _options.Station, _encoding, transactionId);
-                byte[] packed = XinjeResponseParser.ParseExtendedReadResponse(resPdu, 0x1E);
-
-                for (int i = 0; i < count; i++)
-                {
-                    bool bit = (packed[i / 8] & (1 << (i % 8))) != 0;
-                    result[chunk.ElementOffset + i] = bit ? (byte)1 : (byte)0;
-                }
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
-
-        return result;
-    }
-
-    private async Task<byte[]> ReadExtendedWordsAsync(XinjeAddress address, PlcReadRequest request, CancellationToken cancellationToken)
-    {
-        int bytesPerElement = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, bytesPerElement / 2);
-        int totalWords = request.Count * wordsPerElement;
-
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, MaxExtendedWordChunk);
-        byte[] combinedBuffer = new byte[request.ByteCount];
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            foreach (RequestChunker.Chunk chunk in chunks)
-            {
-                XinjeAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                ushort transactionId = NextTransactionId();
-
-                byte[] pdu = XinjeRequestBuilder.BuildExtendedReadPdu(chunkAddress, count);
-                byte[] adu = XinjeRequestBuilder.WrapAdu(pdu, _options.Station, _encoding, transactionId);
-                byte[] responseFrame = await session.ExchangeAsync(adu, _frameDecoder).ConfigureAwait(false);
-
-                byte[] resPdu = XinjeResponseParser.ExtractPdu(responseFrame, _options.Station, _encoding, transactionId);
-                byte[] chunkData = XinjeResponseParser.ParseExtendedReadResponse(resPdu, 0x20);
-
-                int destOffset = chunk.ElementOffset * 2;
-                Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
-
-        return combinedBuffer;
-    }
-
-    private async Task<byte[]> ReadStandardModbusAsync(
-        XinjeAddress address,
-        PlcReadRequest request,
-        bool isBit,
-        CancellationToken cancellationToken)
-    {
-        ushort pduAddr = address.ToModbusPduAddress();
-        ModbusArea area = isBit ? ModbusArea.Coil : ModbusArea.HoldingRegister;
-        int maxChunk = isBit ? 2000 : 120;
-        int totalElements = isBit ? request.Count : request.Count * Math.Max(1, request.DataType.GetElementSize() / 2);
-
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalElements, maxChunk);
-        byte[] combinedBuffer = new byte[request.ByteCount];
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            foreach (RequestChunker.Chunk chunk in chunks)
-            {
-                ushort chunkPdu = (ushort)(pduAddr + chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                ushort transactionId = NextTransactionId();
-
-                byte[] pdu = ModbusRequestBuilder.BuildRead(area, chunkPdu, count);
-                byte[] adu = XinjeRequestBuilder.WrapAdu(pdu, _options.Station, _encoding, transactionId);
-                byte[] responseFrame = await session.ExchangeAsync(adu, _frameDecoder).ConfigureAwait(false);
-
-                byte[] resPdu = XinjeResponseParser.ExtractPdu(responseFrame, _options.Station, _encoding, transactionId);
-
-                if (isBit)
-                {
-                    byte[] bits = ModbusResponseParser.ParseReadBits(resPdu, (ModbusFunctionCode)pdu[0], count);
-                    Array.Copy(bits, 0, combinedBuffer, chunk.ElementOffset, count);
-                }
-                else
-                {
-                    byte[] data = ModbusResponseParser.ParseReadRegisters(resPdu, (ModbusFunctionCode)pdu[0], count);
-                    Array.Copy(data, 0, combinedBuffer, chunk.ElementOffset * 2, data.Length);
-                }
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
-
-        return combinedBuffer;
+        return ProtocolExecutionGuard.TrimReadResult(buffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -197,119 +91,370 @@ public sealed class XinjeProtocol : IPlcProtocol
 
         bool isBit = request.DataType == PlcDataType.Boolean;
         var address = XinjeAddress.Parse(request.Address, _options.Series, isBit);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
+        int totalOriginalCount = request.Count;
+        int originalElementsPerUnit = 1;
+        PlcWriteRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit);
+
+        var context = new WriteContext(address, effectiveRequest, originalElementsPerUnit, totalOriginalCount);
         if (_options.UseExtendedProtocol && _options.Series == XinjeSeries.XdXl)
         {
-            if (isBit)
+            if (address.IsBit)
             {
-                await WriteExtendedBitsAsync(address, request, cancellationToken).ConfigureAwait(false);
+                await WriteExtendedBitsAsync(context, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                await WriteExtendedWordsAsync(address, request, cancellationToken).ConfigureAwait(false);
+                await WriteExtendedWordsAsync(context, cancellationToken).ConfigureAwait(false);
             }
+
+            return;
         }
-        else
-        {
-            await WriteStandardModbusAsync(address, request, isBit, cancellationToken).ConfigureAwait(false);
-        }
+
+        await WriteStandardModbusAsync(context, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task WriteExtendedBitsAsync(XinjeAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
+    private async Task<byte[]> ReadExtendedBitsAsync(XinjeAddress address, int totalBits, CancellationToken cancellationToken)
     {
-        int count = request.Count;
-        byte[] raw = request.GetData();
-        bool[] bools = new bool[count];
-        for (int i = 0; i < count; i++)
-        {
-            bools[i] = raw[i] != 0;
-        }
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, _options.MaxReadBits);
+        byte[] combinedBuffer = new byte[totalBits];
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(count, MaxExtendedBitChunk);
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        await _transport.RunExclusiveAsync(async session =>
         {
+            ResetTransactionIdIfNewConnection(session.ConnectionId);
+
             foreach (RequestChunker.Chunk chunk in chunks)
             {
                 XinjeAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                bool[] subBools = new bool[chunk.ElementCount];
-                Array.Copy(bools, chunk.ElementOffset, subBools, 0, chunk.ElementCount);
-                ushort transactionId = NextTransactionId();
+                ushort bitCount = (ushort)chunk.ElementCount;
+                byte[] requestPdu = XinjeRequestBuilder.BuildExtendedReadPdu(chunkAddress, bitCount);
+                byte[] responsePdu = await ExchangePduAsync(session, requestPdu).ConfigureAwait(false);
 
-                byte[] pdu = XinjeRequestBuilder.BuildExtendedWriteBitPdu(chunkAddress, (ushort)chunk.ElementCount, subBools);
-                byte[] adu = XinjeRequestBuilder.WrapAdu(pdu, _options.Station, _encoding, transactionId);
-                byte[] responseFrame = await session.ExchangeAsync(adu, _frameDecoder).ConfigureAwait(false);
+                int expectedByteCount = BitPacking.GetPackedByteCount(bitCount);
+                byte[] packedBytes = XinjeResponseParser.ParseExtendedReadResponse(
+                    responsePdu,
+                    XinjeRequestBuilder.ExtendedReadBitsFunctionCode,
+                    expectedByteCount);
 
-                byte[] resPdu = XinjeResponseParser.ExtractPdu(responseFrame, _options.Station, _encoding, transactionId);
-                XinjeResponseParser.VerifyExtendedWriteResponse(resPdu, 0x1F);
+                bool[] unpackedBits = BitPacking.Unpack(packedBytes, bitCount);
+                for (int i = 0; i < bitCount; i++)
+                {
+                    combinedBuffer[chunk.ElementOffset + i] = unpackedBits[i] ? (byte)1 : (byte)0;
+                }
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
+
+        return combinedBuffer;
     }
 
-    private async Task WriteExtendedWordsAsync(XinjeAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
+    private async Task<byte[]> ReadExtendedWordsAsync(XinjeAddress address, PlcReadRequest request, CancellationToken cancellationToken)
     {
         int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
+        int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
+        int maxWords = address.IsExtended
+            ? Math.Min(_options.MaxReadWords, ExtendedProtocolMaxWords)
+            : Math.Min(_options.MaxReadWords, StandardModbusMaxWords);
+        int maxElements = RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        byte[] combinedBuffer = new byte[request.ByteCount];
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, MaxExtendedWordChunk);
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        await _transport.RunExclusiveAsync(async session =>
         {
+            ResetTransactionIdIfNewConnection(session.ConnectionId);
+
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                XinjeAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                byte[] chunkData = request.GetData(chunk.ElementOffset / wordsPerElement, chunk.ElementCount / wordsPerElement);
-                ushort transactionId = NextTransactionId();
+                XinjeAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
+                ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                byte[] requestPdu = XinjeRequestBuilder.BuildExtendedReadPdu(chunkAddress, wordCount);
+                byte[] responsePdu = await ExchangePduAsync(session, requestPdu).ConfigureAwait(false);
 
-                byte[] pdu = XinjeRequestBuilder.BuildExtendedWriteWordPdu(chunkAddress, (ushort)chunk.ElementCount, chunkData);
-                byte[] adu = XinjeRequestBuilder.WrapAdu(pdu, _options.Station, _encoding, transactionId);
-                byte[] responseFrame = await session.ExchangeAsync(adu, _frameDecoder).ConfigureAwait(false);
+                int expectedByteCount = wordCount * BytesPerWord;
+                byte[] chunkData = XinjeResponseParser.ParseExtendedReadResponse(
+                    responsePdu,
+                    XinjeRequestBuilder.ExtendedReadWordsFunctionCode,
+                    expectedByteCount);
 
-                byte[] resPdu = XinjeResponseParser.ExtractPdu(responseFrame, _options.Station, _encoding, transactionId);
-                XinjeResponseParser.VerifyExtendedWriteResponse(resPdu, 0x21);
+                int destinationOffset = chunk.ElementOffset * elementSize;
+                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
+
+        return combinedBuffer;
     }
 
-    private async Task WriteStandardModbusAsync(
-        XinjeAddress address,
-        PlcWriteRequest request,
-        bool isBit,
-        CancellationToken cancellationToken)
+    private async Task<byte[]> ReadStandardModbusAsync(XinjeAddress address, PlcReadRequest request, CancellationToken cancellationToken)
     {
-        ushort pduAddr = address.ToModbusPduAddress();
+        int elementSize = request.DataType.GetElementSize();
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, elementSize / BytesPerWord);
+        ValidateStandardModbusContiguousRange(address, request.Count * wordsPerElement, nameof(request));
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        int maxWords = Math.Min(_options.MaxReadWords, StandardModbusMaxWords);
+        int maxElements = address.IsBit
+            ? _options.MaxReadBits
+            : RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        byte[] combinedBuffer = new byte[request.ByteCount];
+
+        await _transport.RunExclusiveAsync(async session =>
         {
-            ushort transactionId = NextTransactionId();
-            byte[] pdu = isBit
-                ? ModbusRequestBuilder.BuildWriteSingleCoil(pduAddr, request.GetData()[0] != 0)
-                : ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddr, (ushort)request.Count, request.GetData());
+            ResetTransactionIdIfNewConnection(session.ConnectionId);
 
-            byte[] adu = XinjeRequestBuilder.WrapAdu(pdu, _options.Station, _encoding, transactionId);
-            byte[] responseFrame = await session.ExchangeAsync(adu, _frameDecoder).ConfigureAwait(false);
+            foreach (RequestChunker.Chunk chunk in chunks)
+            {
+                ushort chunkPduAddress = address.Offset(chunk.ElementOffset * wordsPerElement).ToModbusPduAddress();
+                ushort quantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
+                byte[] chunkData = await ReadStandardChunkAsync(session, address.IsBit, chunkPduAddress, quantity).ConfigureAwait(false);
 
-            byte[] resPdu = XinjeResponseParser.ExtractPdu(responseFrame, _options.Station, _encoding, transactionId);
-            if (isBit)
-            {
-                ModbusResponseParser.ParseWriteSingleResponse(resPdu, pdu);
-            }
-            else
-            {
-                ModbusResponseParser.ParseWriteMultipleResponse(resPdu, (ModbusFunctionCode)pdu[0], pduAddr, (ushort)request.Count);
+                int destinationOffset = chunk.ElementOffset * elementSize;
+                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
+
+        return combinedBuffer;
+    }
+
+    private async Task<byte[]> ReadStandardChunkAsync(ITransportSession session, bool isBit, ushort pduAddress, ushort quantity)
+    {
+        ModbusArea area = isBit ? ModbusArea.Coil : ModbusArea.HoldingRegister;
+        byte[] requestPdu = ModbusRequestBuilder.BuildRead(area, pduAddress, quantity);
+        byte[] responsePdu = await ExchangePduAsync(session, requestPdu).ConfigureAwait(false);
+
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
+        return isBit
+            ? ModbusResponseParser.ParseReadBits(responsePdu, functionCode, quantity)
+            : ModbusResponseParser.ParseReadRegisters(responsePdu, functionCode, quantity);
+    }
+
+    private async Task WriteExtendedBitsAsync(WriteContext context, CancellationToken cancellationToken)
+    {
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(context.Request.Count, _options.MaxWriteBits);
+        int completedElements = 0;
+
+        try
+        {
+            await _transport.RunExclusiveAsync(async session =>
+            {
+                ResetTransactionIdIfNewConnection(session.ConnectionId);
+
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    XinjeAddress chunkAddress = context.Address.Offset(chunk.ElementOffset);
+                    byte[] chunkData = context.Request.GetData(chunk.ElementOffset, chunk.ElementCount);
+                    await WriteExtendedBitChunkAsync(session, chunkAddress, chunkData).ConfigureAwait(false);
+                    completedElements = context.AdvanceCompleted(completedElements, chunk.ElementCount);
+                }
+
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
+
+    private async Task WriteExtendedBitChunkAsync(ITransportSession session, XinjeAddress chunkAddress, byte[] chunkData)
+    {
+        ushort bitCount = (ushort)chunkData.Length;
+        bool[] bits = ConvertToBools(chunkData);
+        byte[] requestPdu = XinjeRequestBuilder.BuildExtendedWriteBitPdu(chunkAddress, bitCount, bits);
+        byte[] responsePdu = await ExchangePduAsync(session, requestPdu).ConfigureAwait(false);
+
+        XinjeResponseParser.VerifyExtendedWriteResponse(
+            responsePdu,
+            XinjeRequestBuilder.ExtendedWriteBitsFunctionCode,
+            chunkAddress,
+            bitCount);
+    }
+
+    private async Task WriteExtendedWordsAsync(WriteContext context, CancellationToken cancellationToken)
+    {
+        int elementSize = context.Request.DataType.GetElementSize();
+        int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
+        int maxWords = context.Address.IsExtended
+            ? Math.Min(_options.MaxWriteWords, ExtendedProtocolMaxWords)
+            : Math.Min(_options.MaxWriteWords, StandardModbusMaxWords);
+        int maxElements = RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(context.Request.Count, maxElements);
+        int completedElements = 0;
+
+        try
+        {
+            await _transport.RunExclusiveAsync(async session =>
+            {
+                ResetTransactionIdIfNewConnection(session.ConnectionId);
+
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    XinjeAddress chunkAddress = context.Address.Offset(chunk.ElementOffset * wordsPerElement);
+                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                    byte[] chunkData = context.Request.GetData(chunk.ElementOffset, chunk.ElementCount);
+
+                    byte[] requestPdu = XinjeRequestBuilder.BuildExtendedWriteWordPdu(chunkAddress, wordCount, chunkData);
+                    byte[] responsePdu = await ExchangePduAsync(session, requestPdu).ConfigureAwait(false);
+                    XinjeResponseParser.VerifyExtendedWriteResponse(
+                        responsePdu,
+                        XinjeRequestBuilder.ExtendedWriteWordsFunctionCode,
+                        chunkAddress,
+                        wordCount);
+
+                    completedElements = context.AdvanceCompleted(completedElements, chunk.ElementCount);
+                }
+
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
+
+    private async Task WriteStandardModbusAsync(WriteContext context, CancellationToken cancellationToken)
+    {
+        int elementSize = context.Request.DataType.GetElementSize();
+        int wordsPerElement = context.Address.IsBit ? 1 : Math.Max(1, elementSize / BytesPerWord);
+        ValidateStandardModbusContiguousRange(context.Address, context.Request.Count * wordsPerElement, nameof(context));
+
+        int maxWords = Math.Min(_options.MaxWriteWords, StandardModbusMaxWords);
+        int maxElements = context.Address.IsBit
+            ? _options.MaxWriteBits
+            : RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(context.Request.Count, maxElements);
+        int completedElements = 0;
+
+        try
+        {
+            await _transport.RunExclusiveAsync(async session =>
+            {
+                ResetTransactionIdIfNewConnection(session.ConnectionId);
+
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    ushort chunkPduAddress = context.Address.Offset(chunk.ElementOffset * wordsPerElement).ToModbusPduAddress();
+                    byte[] chunkData = context.Request.GetData(chunk.ElementOffset, chunk.ElementCount);
+                    await WriteStandardChunkAsync(session, chunkPduAddress, context.Address.IsBit, chunkData).ConfigureAwait(false);
+                    completedElements = context.AdvanceCompleted(completedElements, chunk.ElementCount);
+                }
+
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
+
+    private static void ValidateStandardModbusContiguousRange(XinjeAddress startAddress, int totalUnits, string paramName)
+    {
+        ushort startPdu = startAddress.ToModbusPduAddress();
+        ushort endPdu = startAddress.Offset(Math.Max(0, totalUnits - 1)).ToModbusPduAddress();
+        if (endPdu - startPdu != totalUnits - 1)
+        {
+            throw new ArgumentException("표준 Modbus 불연속 주소 경계를 가로지르는 요청은 지원하지 않습니다.", paramName);
+        }
+    }
+
+    private async Task WriteStandardChunkAsync(ITransportSession session, ushort pduAddress, bool isBit, byte[] chunkData)
+    {
+        byte[] requestPdu = BuildStandardWritePdu(pduAddress, isBit, chunkData);
+        byte[] responsePdu = await ExchangePduAsync(session, requestPdu).ConfigureAwait(false);
+
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
+        if (functionCode == ModbusFunctionCode.WriteSingleCoil)
+        {
+            ModbusResponseParser.ParseWriteSingleResponse(responsePdu, requestPdu);
+            return;
+        }
+
+        ushort expectedQuantity = (ushort)(isBit ? chunkData.Length : chunkData.Length / BytesPerWord);
+        ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, pduAddress, expectedQuantity);
+    }
+
+    private static byte[] BuildStandardWritePdu(ushort pduAddress, bool isBit, byte[] chunkData)
+    {
+        if (!isBit)
+        {
+            ushort wordCount = (ushort)(chunkData.Length / BytesPerWord);
+            return ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, wordCount, chunkData);
+        }
+
+        if (chunkData.Length == 1)
+        {
+            return ModbusRequestBuilder.BuildWriteSingleCoil(pduAddress, chunkData[0] != 0);
+        }
+
+        bool[] bits = ConvertToBools(chunkData);
+        byte[] packedCoilBytes = BitPacking.Pack(bits);
+        return ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, (ushort)chunkData.Length, packedCoilBytes);
+    }
+
+    private static bool[] ConvertToBools(byte[] rawBitData)
+    {
+        bool[] bits = new bool[rawBitData.Length];
+        for (int i = 0; i < rawBitData.Length; i++)
+        {
+            bits[i] = rawBitData[i] != 0;
+        }
+
+        return bits;
+    }
+
+    private async Task<byte[]> ExchangePduAsync(ITransportSession session, byte[] requestPdu)
+    {
+        ushort transactionId = NextTransactionId();
+        byte[] requestAdu = XinjeRequestBuilder.WrapAdu(requestPdu, _options.Station, _encoding, transactionId);
+        byte[] responseFrame = await session.ExchangeAsync(requestAdu, _frameDecoder).ConfigureAwait(false);
+        return XinjeResponseParser.ExtractPdu(responseFrame, _options.Station, _encoding, transactionId);
     }
 
     private ushort NextTransactionId()
     {
-        return (ushort)(Interlocked.Increment(ref _transactionId) & 0xFFFF);
+        lock (_txIdLock)
+        {
+            _transactionId = (ushort)(_transactionId == ushort.MaxValue ? 1 : _transactionId + 1);
+            return _transactionId;
+        }
+    }
+
+    private void ResetTransactionIdIfNewConnection(long connectionId)
+    {
+        lock (_txIdLock)
+        {
+            if (_lastConnectionId != connectionId)
+            {
+                _lastConnectionId = connectionId;
+                _transactionId = 0;
+            }
+        }
+    }
+
+    private readonly record struct WriteContext(
+        XinjeAddress Address,
+        PlcWriteRequest Request,
+        int OriginalElementsPerUnit,
+        int TotalOriginalCount)
+    {
+        public int AdvanceCompleted(int currentCompleted, int chunkElementCount)
+        {
+            return ProtocolExecutionGuard.AdvanceCompletedCount(
+                currentCompleted,
+                chunkElementCount,
+                OriginalElementsPerUnit,
+                TotalOriginalCount);
+        }
     }
 }

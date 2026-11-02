@@ -1,11 +1,18 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace FieldLink.Plc.Protocols.Fatek;
 
 /// <summary>FATEK 통신 프로토콜 컴포넌트 주소 값 객체입니다. (사양서 §1.2)</summary>
 public sealed class FatekAddress
 {
+    private const int FourDigitPadding = 4;
+    private const int FiveDigitPadding = 5;
+    private const int MaxFourDigitNumber = 9999;
+    private const int MaxFiveDigitNumber = 65535;
+    private const int BitsPerWordGroup = 16;
+
     private FatekAddress(
         string originalAddress,
         string device,
@@ -36,6 +43,9 @@ public sealed class FatekAddress
 
     /// <summary>이산 접점을 16비트 워드로 묶은 그룹(WX~WC)인지 여부입니다.</summary>
     public bool IsWordGroup { get; }
+
+    /// <summary>32비트(4바이트) 폭을 가지는 카운터 레지스터(DRC)인지 여부입니다.</summary>
+    public bool Is32Bit => string.Equals(Device, "DRC", StringComparison.Ordinal);
 
     /// <summary>FATEK 통신 프레임 본문에 실리는 5/6/7문자 포맷 주소입니다.</summary>
     public string WireString { get; }
@@ -80,31 +90,30 @@ public sealed class FatekAddress
 
         if (trimmed.StartsWith("DRC", StringComparison.Ordinal))
         {
-            return TryParseCustom(trimmed, "DRC", 3, 4, isBit: false, isWordGroup: false, out result, out errorMessage);
+            return TryParseCustom(trimmed, "DRC", prefixLength: 3, FourDigitPadding, isBit: false, isWordGroup: false, out result, out errorMessage);
         }
 
         if (trimmed.StartsWith("RT", StringComparison.Ordinal) || trimmed.StartsWith("RC", StringComparison.Ordinal))
         {
-            string twoCharPrefixes = trimmed.Substring(0, 2);
-            return TryParseCustom(trimmed, twoCharPrefixes, 2, 4, isBit: false, isWordGroup: false, out result, out errorMessage);
+            string twoCharPrefix = trimmed.Substring(0, 2);
+            return TryParseCustom(trimmed, twoCharPrefix, prefixLength: 2, FourDigitPadding, isBit: false, isWordGroup: false, out result, out errorMessage);
         }
 
         if (trimmed.Length >= 2 && trimmed[0] == 'W' && IsDiscretePrefix(trimmed[1]))
         {
-            string devGroup = trimmed.Substring(0, 2);
-            return TryParseCustom(trimmed, devGroup, 2, 4, isBit: false, isWordGroup: true, out result, out errorMessage);
+            string wordGroupPrefix = trimmed.Substring(0, 2);
+            return TryParseCustom(trimmed, wordGroupPrefix, prefixLength: 2, FourDigitPadding, isBit: false, isWordGroup: true, out result, out errorMessage);
         }
 
-        char prefix = trimmed[0];
-
-        if (IsDiscretePrefix(prefix))
+        char firstChar = trimmed[0];
+        if (IsDiscretePrefix(firstChar))
         {
-            return TryParseCustom(trimmed, prefix.ToString(), 1, 4, isBit: true, isWordGroup: false, out result, out errorMessage);
+            return TryParseCustom(trimmed, firstChar.ToString(), prefixLength: 1, FourDigitPadding, isBit: true, isWordGroup: false, out result, out errorMessage);
         }
 
-        if (prefix is 'R' or 'D' or 'F')
+        if (firstChar is 'R' or 'D' or 'F')
         {
-            return TryParseCustom(trimmed, prefix.ToString(), 1, 5, isBit: false, isWordGroup: false, out result, out errorMessage);
+            return TryParseCustom(trimmed, firstChar.ToString(), prefixLength: 1, FiveDigitPadding, isBit: false, isWordGroup: false, out result, out errorMessage);
         }
 
         errorMessage = $"지원하지 않는 FATEK 디바이스 접두사입니다: {address}";
@@ -114,7 +123,7 @@ public sealed class FatekAddress
     private static bool TryParseCustom(
         string original,
         string devicePrefix,
-        int prefixLen,
+        int prefixLength,
         int padDigits,
         bool isBit,
         bool isWordGroup,
@@ -124,27 +133,30 @@ public sealed class FatekAddress
         result = null;
         errorMessage = null;
 
-        string numberText = original.Substring(prefixLen);
-        int maxNum = padDigits == 4 ? 9999 : 65535;
-        if (!int.TryParse(numberText, out int parsedNumber) || parsedNumber < 0 || parsedNumber > maxNum)
+        string numberText = original.Substring(prefixLength);
+        int maxAddressNumber = padDigits == FourDigitPadding ? MaxFourDigitNumber : MaxFiveDigitNumber;
+        if (!int.TryParse(numberText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedNumber)
+            || parsedNumber < 0
+            || parsedNumber > maxAddressNumber)
         {
             errorMessage = $"유효하지 않은 FATEK 주소 번호입니다: {original}";
             return false;
         }
 
-        string format = padDigits == 4 ? "D4" : "D5";
-        string wire = $"{devicePrefix}{parsedNumber.ToString(format)}";
+        string formatSpecifier = padDigits == FourDigitPadding ? "D4" : "D5";
+        string wireString = $"{devicePrefix}{parsedNumber.ToString(formatSpecifier, CultureInfo.InvariantCulture)}";
 
-        result = new FatekAddress(original, devicePrefix, parsedNumber, isBit, isWordGroup, wire);
+        result = new FatekAddress(original, devicePrefix, parsedNumber, isBit, isWordGroup, wireString);
         return true;
     }
 
-    private static bool IsDiscretePrefix(char c) => c is 'X' or 'Y' or 'M' or 'S' or 'T' or 'C';
+    private static bool IsDiscretePrefix(char candidate) =>
+        candidate is 'X' or 'Y' or 'M' or 'S' or 'T' or 'C';
 
     /// <summary>오프셋만큼 증가된 새로운 <see cref="FatekAddress"/>를 반환합니다.</summary>
     public FatekAddress Offset(int elementOffset)
     {
-        int nextIndex = IsWordGroup ? Index + (elementOffset * 16) : Index + elementOffset;
+        int nextIndex = IsWordGroup ? Index + (elementOffset * BitsPerWordGroup) : Index + elementOffset;
         string newOriginal = $"{Device}{nextIndex}";
         return Parse(newOriginal);
     }

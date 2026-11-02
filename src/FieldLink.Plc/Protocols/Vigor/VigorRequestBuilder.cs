@@ -10,6 +10,20 @@ public static class VigorRequestBuilder
     private const byte Stx = 0x02;
     private const byte Etx = 0x03;
 
+    private const byte FunctionReadWords = 0x20;
+    private const byte FunctionReadBits = 0x21;
+    private const byte FunctionWriteWords = 0x28;
+    private const byte FunctionWriteBits = 0x29;
+
+    private const ushort ReadBodyCommandLength = 7;
+    private const int BodyPrefixLength = 3;
+    private const int CommandHeaderLength = 7;
+    private const int WritePayloadOffset = 10;
+    private const int BytesPer16BitWord = 2;
+    private const int BytesPer32BitCounter = 4;
+    private const int BitsPerByte = 8;
+    private const int FrameEnvelopeOverhead = 6;
+
     /// <summary>연속 워드/비트 읽기 요청 프레임을 생성합니다. (기능 코드 0x20/0x21)</summary>
     public static byte[] BuildReadRequest(byte station, VigorAddress address, ushort count)
     {
@@ -23,21 +37,9 @@ public static class VigorRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(count), "읽기 개수는 1 이상이어야 합니다.");
         }
 
-        byte functionCode = address.IsBit ? (byte)0x21 : (byte)0x20;
-        byte[] body =
-        [
-            station,
-            0x07,
-            0x00,
-            functionCode,
-            address.DeviceCode,
-            address.BcdAddress[0],
-            address.BcdAddress[1],
-            address.BcdAddress[2],
-            (byte)(count & 0xFF),
-            (byte)((count >> 8) & 0xFF),
-        ];
-
+        byte functionCode = address.IsBit ? FunctionReadBits : FunctionReadWords;
+        byte[] body = new byte[BodyPrefixLength + ReadBodyCommandLength];
+        FillBodyHeader(body, station, ReadBodyCommandLength, functionCode, address, count);
         return WrapFrame(body);
     }
 
@@ -54,12 +56,20 @@ public static class VigorRequestBuilder
             throw new ArgumentException("쓸 워드 데이터가 비어 있습니다.", nameof(data));
         }
 
-        ushort wordCount = address.Is32BitWord ? (ushort)(data.Length / 4) : (ushort)(data.Length / 2);
-        ushort bodyLen = (ushort)(7 + data.Length);
+        int bytesPerDeviceUnit = address.Is32BitWord ? BytesPer32BitCounter : BytesPer16BitWord;
+        if (data.Length % bytesPerDeviceUnit != 0)
+        {
+            throw new ArgumentException(
+                $"쓸 워드 데이터 길이({data.Length}바이트)가 디바이스 단위 크기({bytesPerDeviceUnit}바이트)의 배수가 아닙니다.",
+                nameof(data));
+        }
 
-        byte[] body = new byte[3 + bodyLen];
-        FillBodyHeader(body, station, bodyLen, functionCode: 0x28, address, wordCount);
-        Buffer.BlockCopy(data, 0, body, 10, data.Length);
+        ushort wordCount = (ushort)(data.Length / bytesPerDeviceUnit);
+        ushort bodyLength = (ushort)(CommandHeaderLength + data.Length);
+
+        byte[] body = new byte[BodyPrefixLength + bodyLength];
+        FillBodyHeader(body, station, bodyLength, FunctionWriteWords, address, wordCount);
+        Buffer.BlockCopy(data, 0, body, WritePayloadOffset, data.Length);
 
         return WrapFrame(body);
     }
@@ -77,16 +87,16 @@ public static class VigorRequestBuilder
             throw new ArgumentException("쓸 비트 데이터가 비어 있습니다.", nameof(values));
         }
 
-        int byteCount = (values.Length + 7) / 8;
-        ushort bodyLen = (ushort)(7 + byteCount);
-        byte[] body = new byte[3 + bodyLen];
-        FillBodyHeader(body, station, bodyLen, functionCode: 0x29, address, (ushort)values.Length);
+        int byteCount = (values.Length + (BitsPerByte - 1)) / BitsPerByte;
+        ushort bodyLength = (ushort)(CommandHeaderLength + byteCount);
+        byte[] body = new byte[BodyPrefixLength + bodyLength];
+        FillBodyHeader(body, station, bodyLength, FunctionWriteBits, address, (ushort)values.Length);
 
         for (int i = 0; i < values.Length; i++)
         {
             if (values[i])
             {
-                body[10 + (i / 8)] |= (byte)(1 << (i % 8));
+                body[WritePayloadOffset + (i / BitsPerByte)] |= (byte)(1 << (i % BitsPerByte));
             }
         }
 
@@ -96,54 +106,53 @@ public static class VigorRequestBuilder
     private static void FillBodyHeader(
         byte[] body,
         byte station,
-        ushort bodyLen,
+        ushort bodyLength,
         byte functionCode,
         VigorAddress address,
         ushort count)
     {
         body[0] = station;
-        BinaryBuffer.WriteUInt16LE(body, 1, bodyLen);
+        BinaryBuffer.WriteUInt16LittleEndian(body, 1, bodyLength);
         body[3] = functionCode;
         body[4] = address.DeviceCode;
         body[5] = address.BcdAddress[0];
         body[6] = address.BcdAddress[1];
         body[7] = address.BcdAddress[2];
-        BinaryBuffer.WriteUInt16LE(body, 8, count);
+        BinaryBuffer.WriteUInt16LittleEndian(body, 8, count);
     }
 
     private static byte[] WrapFrame(byte[] body)
     {
-        byte sum = 0;
+        byte checksum = 0;
         int dleCount = 0;
         for (int i = 0; i < body.Length; i++)
         {
-            byte b = body[i];
-            sum = (byte)(sum + b);
-            if (b == Dle)
+            byte currentByte = body[i];
+            checksum = (byte)(checksum + currentByte);
+            if (currentByte == Dle)
             {
                 dleCount++;
             }
         }
 
-        // DLE(1) + STX(1) + EscapedBody(body.Length + dleCount) + DLE(1) + ETX(1) + ChecksumHex(2)
-        byte[] frame = new byte[6 + body.Length + dleCount];
-        int offset = 0;
-        frame[offset++] = Dle;
-        frame[offset++] = Stx;
+        byte[] frame = new byte[FrameEnvelopeOverhead + body.Length + dleCount];
+        int writeOffset = 0;
+        frame[writeOffset++] = Dle;
+        frame[writeOffset++] = Stx;
 
         for (int i = 0; i < body.Length; i++)
         {
-            byte b = body[i];
-            frame[offset++] = b;
-            if (b == Dle)
+            byte currentByte = body[i];
+            frame[writeOffset++] = currentByte;
+            if (currentByte == Dle)
             {
-                frame[offset++] = Dle;
+                frame[writeOffset++] = Dle;
             }
         }
 
-        frame[offset++] = Dle;
-        frame[offset++] = Etx;
-        BinaryBuffer.WriteAsciiHexByte(frame, offset, sum);
+        frame[writeOffset++] = Dle;
+        frame[writeOffset++] = Etx;
+        BinaryBuffer.WriteAsciiHexByte(frame, writeOffset, checksum);
 
         return frame;
     }

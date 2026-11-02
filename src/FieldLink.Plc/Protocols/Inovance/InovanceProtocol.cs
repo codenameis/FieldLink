@@ -14,15 +14,26 @@ namespace FieldLink.Plc.Protocols.Inovance;
 /// <summary>Inovance AM, H3U, H5U 시리즈 PLC와 통신하는 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class InovanceProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int BytesPerWord = 2;
+    private const int BytesPer32BitCounter = 4;
+    private const int H3uCounter32Start = 200;
+    private const int H3uCounter32EndExclusive = 256;
+
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly InovanceOptions _options;
     private readonly InovanceTransportEncoding _encoding;
     private readonly IFrameDecoder _frameDecoder;
+    private readonly object _txIdLock = new();
+
     private ushort _transactionId;
+    private long _lastConnectionId = -1;
 
     /// <summary>전송, 옵션, 인코딩 방식으로 <see cref="InovanceProtocol"/>을 초기화합니다.</summary>
+    /// <param name="transport">바이트 송수신 전송 구현체입니다.</param>
+    /// <param name="options">Inovance 프로토콜 옵션입니다.</param>
+    /// <param name="encoding">Modbus 전송 프레임 인코딩 방식입니다.</param>
     public InovanceProtocol(
         ITransport transport,
         InovanceOptions? options = null,
@@ -61,32 +72,48 @@ public sealed class InovanceProtocol : IPlcProtocol
 
         bool isBitAccess = request.DataType == PlcDataType.Boolean;
         var address = InovanceAddress.Parse(request.Address, _options.Series, isBitAccess);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+        ValidateWordRequest(address, request.DataType, request.ByteCount, nameof(request));
 
-        int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, elementSize / 2);
-        int maxElements = address.IsBit
-            ? _options.MaxReadBits
-            : RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
+        int requestedByteCount = request.ByteCount;
+        int bytesPerDeviceUnit = address.Is32BitWord ? BytesPer32BitCounter : BytesPerWord;
+        PlcReadRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordReadRequest(request, bytesPerDeviceUnit);
+        int elementSize = effectiveRequest.DataType.GetElementSize();
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(address.Is32BitWord ? 2 : 1, elementSize / BytesPerWord);
+        int devicesPerElement = address.IsBit
+            ? 1
+            : (address.Is32BitWord ? Math.Max(1, elementSize / BytesPer32BitCounter) : wordsPerElement);
+        ValidateH3uCounterRange(address, effectiveRequest.Count * devicesPerElement, nameof(request));
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
-        byte[] combinedBuffer = new byte[request.ByteCount];
+        int maxElements = address.BitIndexInWord.HasValue
+            ? 1
+            : (address.IsBit
+                ? _options.MaxReadBits
+                : RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement));
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElements);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
+
+        await _transport.RunExclusiveAsync(async session =>
         {
+            ResetTransactionIdIfNewConnection(session.ConnectionId);
+
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                InovanceAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
+                InovanceAddress chunkAddress = address.Offset(chunk.ElementOffset * devicesPerElement);
                 ushort quantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
 
-                byte[] chunkData = await ReadChunkAsync(session, chunkAddress.Area, chunkAddress.PduAddress, quantity, address.IsBit).ConfigureAwait(false);
-                int destOffset = chunk.ElementOffset * (address.IsBit ? 1 : elementSize);
-                Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
+                byte[] chunkData = await ReadChunkAsync(session, chunkAddress, quantity).ConfigureAwait(false);
+                int destinationOffset = chunk.ElementOffset * elementSize;
+                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
 
-        return combinedBuffer;
+        return ProtocolExecutionGuard.TrimReadResult(combinedBuffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -99,68 +126,209 @@ public sealed class InovanceProtocol : IPlcProtocol
 
         bool isBitAccess = request.DataType == PlcDataType.Boolean;
         var address = InovanceAddress.Parse(request.Address, _options.Series, isBitAccess);
-
-        int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, elementSize / 2);
-        int maxElements = address.IsBit
-            ? _options.MaxWriteBits
-            : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
-
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        if (address.Area is ModbusArea.DiscreteInput or ModbusArea.InputRegister)
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            throw new ArgumentException($"쓰기 불가능한 영역입니다: {request.Address}", nameof(request));
+        }
+
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+        ValidateWordRequest(address, request.DataType, request.ByteCount, nameof(request));
+
+        if (address.BitIndexInWord.HasValue && request.Count > 1)
+        {
+            throw new ArgumentException("AM 시리즈 MX 워드 내 비트 쓰기는 단일 비트(Count == 1)만 지원합니다.", nameof(request));
+        }
+
+        int totalOriginalCount = request.Count;
+        int originalElementsPerUnit = 1;
+        int bytesPerDeviceUnit = address.Is32BitWord ? BytesPer32BitCounter : BytesPerWord;
+        PlcWriteRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit, bytesPerDeviceUnit);
+
+        int elementSize = effectiveRequest.DataType.GetElementSize();
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(address.Is32BitWord ? 2 : 1, elementSize / BytesPerWord);
+        int devicesPerElement = address.IsBit
+            ? 1
+            : (address.Is32BitWord ? Math.Max(1, elementSize / BytesPer32BitCounter) : wordsPerElement);
+        ValidateH3uCounterRange(address, effectiveRequest.Count * devicesPerElement, nameof(request));
+
+        int maxElements = address.BitIndexInWord.HasValue
+            ? 1
+            : (address.IsBit
+                ? _options.MaxWriteBits
+                : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement));
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElements);
+        int completedElements = 0;
+
+        try
+        {
+            await _transport.RunExclusiveAsync(async session =>
             {
-                InovanceAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
-                ushort quantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
-                byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+                ResetTransactionIdIfNewConnection(session.ConnectionId);
 
-                await WriteChunkAsync(session, chunkAddress.PduAddress, quantity, address.IsBit, chunkData).ConfigureAwait(false);
-            }
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    InovanceAddress chunkAddress = address.Offset(chunk.ElementOffset * devicesPerElement);
+                    byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+                    await WriteChunkAsync(session, chunkAddress, chunkData).ConfigureAwait(false);
+                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                        completedElements,
+                        chunk.ElementCount,
+                        originalElementsPerUnit,
+                        totalOriginalCount);
+                }
+
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
+
+    private static void ValidateWordRequest(
+        InovanceAddress address,
+        PlcDataType dataType,
+        int byteCount,
+        string paramName)
+    {
+        if (!address.Is32BitWord)
+        {
+            return;
+        }
+
+        if (dataType is PlcDataType.Int16 or PlcDataType.UInt16 ||
+            (dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPer32BitCounter != 0))
+        {
+            throw new ArgumentException(
+                "32비트 디바이스(AM MD 또는 H3U C200~C255)는 32비트 이상 자료형 또는 4바이트 배수로만 접근할 수 있습니다.",
+                paramName);
+        }
+    }
+
+    private static void ValidateH3uCounterRange(InovanceAddress address, int totalDevices, string paramName)
+    {
+        if (address.Series != InovanceSeries.H3u || address.IsBit || address.DeviceType != "C")
+        {
+            return;
+        }
+
+        if (address.Number < H3uCounter32Start && address.Number + totalDevices > H3uCounter32Start)
+        {
+            throw new ArgumentException(
+                "H3U 16비트 카운터(C0~C199)와 32비트 카운터(C200~C255) 경계를 가로지르는 요청은 지원하지 않습니다.",
+                paramName);
+        }
+
+        if (address.Number >= H3uCounter32Start && address.Number + totalDevices > H3uCounter32EndExclusive)
+        {
+            throw new ArgumentException(
+                "H3U 32비트 카운터(C200~C255) 범위를 초과했습니다.",
+                paramName);
+        }
     }
 
     private async Task<byte[]> ReadChunkAsync(
         ITransportSession session,
-        ModbusArea area,
-        ushort pduAddress,
-        ushort quantity,
-        bool isBit)
+        InovanceAddress chunkAddress,
+        ushort quantity)
     {
-        ushort transactionId = unchecked(++_transactionId);
-        byte[] pdu = ModbusRequestBuilder.BuildRead(area, pduAddress, quantity);
-        byte[] requestAdu = WrapAdu(pdu, transactionId);
+        ushort transactionId = NextTransactionId();
+        byte[] requestPdu = ModbusRequestBuilder.BuildRead(chunkAddress.Area, chunkAddress.PduAddress, quantity);
+        byte[] requestAdu = WrapAdu(requestPdu, transactionId);
 
         byte[] responseAdu = await session.ExchangeAsync(requestAdu, _frameDecoder).ConfigureAwait(false);
         byte[] responsePdu = UnwrapAdu(responseAdu, transactionId);
 
-        var functionCode = (ModbusFunctionCode)pdu[0];
-        return isBit
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
+        if (chunkAddress.IsBit && chunkAddress.BitIndexInWord.HasValue)
+        {
+            byte[] wordBytes = ModbusResponseParser.ParseReadRegisters(responsePdu, functionCode, 1);
+            ushort wordValue = BinaryBuffer.ReadUInt16BigEndian(wordBytes, 0);
+            bool bitState = ((wordValue >> chunkAddress.BitIndexInWord.Value) & 0x01) != 0;
+            return new byte[] { bitState ? (byte)1 : (byte)0 };
+        }
+
+        return chunkAddress.IsBit
             ? ModbusResponseParser.ParseReadBits(responsePdu, functionCode, quantity)
             : ModbusResponseParser.ParseReadRegisters(responsePdu, functionCode, quantity);
     }
 
     private async Task WriteChunkAsync(
         ITransportSession session,
-        ushort pduAddress,
-        ushort quantity,
-        bool isBit,
+        InovanceAddress chunkAddress,
         byte[] chunkData)
     {
-        ushort transactionId = unchecked(++_transactionId);
-        byte[] pdu = isBit
-            ? ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, quantity, chunkData)
-            : ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, quantity, chunkData);
+        if (chunkAddress.IsBit && chunkAddress.BitIndexInWord.HasValue)
+        {
+            await WriteWordBitReadModifyWriteAsync(
+                session,
+                chunkAddress.PduAddress,
+                chunkAddress.BitIndexInWord.Value,
+                chunkData[0] != 0).ConfigureAwait(false);
+            return;
+        }
 
-        byte[] requestAdu = WrapAdu(pdu, transactionId);
+        ushort transactionId = NextTransactionId();
+        ushort quantity = (ushort)(chunkAddress.IsBit ? chunkData.Length : chunkData.Length / BytesPerWord);
+        byte[] requestPdu = BuildWritePdu(chunkAddress.PduAddress, quantity, chunkAddress.IsBit, chunkData);
+
+        byte[] requestAdu = WrapAdu(requestPdu, transactionId);
         byte[] responseAdu = await session.ExchangeAsync(requestAdu, _frameDecoder).ConfigureAwait(false);
         byte[] responsePdu = UnwrapAdu(responseAdu, transactionId);
 
-        var functionCode = (ModbusFunctionCode)pdu[0];
-        ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, pduAddress, quantity);
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
+        ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, chunkAddress.PduAddress, quantity);
+    }
+
+    private async Task WriteWordBitReadModifyWriteAsync(
+        ITransportSession session,
+        ushort pduAddress,
+        byte bitIndexInWord,
+        bool bitState)
+    {
+        ushort readTxId = NextTransactionId();
+        byte[] readRequestPdu = ModbusRequestBuilder.BuildRead(ModbusArea.HoldingRegister, pduAddress, 1);
+        byte[] readRequestAdu = WrapAdu(readRequestPdu, readTxId);
+        byte[] readResponseAdu = await session.ExchangeAsync(readRequestAdu, _frameDecoder).ConfigureAwait(false);
+        byte[] readResponsePdu = UnwrapAdu(readResponseAdu, readTxId);
+
+        byte[] wordBytes = ModbusResponseParser.ParseReadRegisters(
+            readResponsePdu,
+            ModbusFunctionCode.ReadHoldingRegisters,
+            1);
+        ushort currentWord = BinaryBuffer.ReadUInt16BigEndian(wordBytes, 0);
+        ushort bitMask = (ushort)(1 << bitIndexInWord);
+        ushort updatedWord = bitState ? (ushort)(currentWord | bitMask) : (ushort)(currentWord & ~bitMask);
+
+        ushort writeTxId = NextTransactionId();
+        byte[] writeRequestPdu = ModbusRequestBuilder.BuildWriteSingleRegister(pduAddress, updatedWord);
+        byte[] writeRequestAdu = WrapAdu(writeRequestPdu, writeTxId);
+        byte[] writeResponseAdu = await session.ExchangeAsync(writeRequestAdu, _frameDecoder).ConfigureAwait(false);
+        byte[] writeResponsePdu = UnwrapAdu(writeResponseAdu, writeTxId);
+
+        ModbusResponseParser.ParseWriteSingleResponse(writeResponsePdu, writeRequestPdu);
+    }
+
+    private static byte[] BuildWritePdu(ushort pduAddress, ushort quantity, bool isBit, byte[] chunkData)
+    {
+        if (!isBit)
+        {
+            return ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, quantity, chunkData);
+        }
+
+        bool[] bits = new bool[quantity];
+        for (int i = 0; i < quantity; i++)
+        {
+            bits[i] = chunkData[i] != 0;
+        }
+
+        byte[] packedCoilBytes = BitPacking.Pack(bits);
+        return ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, quantity, packedCoilBytes);
     }
 
     private byte[] WrapAdu(byte[] pdu, ushort transactionId) => _encoding switch
@@ -170,10 +338,31 @@ public sealed class InovanceProtocol : IPlcProtocol
         _ => throw new InvalidOperationException(),
     };
 
-    private byte[] UnwrapAdu(byte[] adu, ushort transactionId) => _encoding switch
+    private byte[] UnwrapAdu(byte[] responseAdu, ushort transactionId) => _encoding switch
     {
-        InovanceTransportEncoding.Rtu => ModbusResponseParser.UnwrapRtuAdu(adu, _options.Station),
-        InovanceTransportEncoding.Tcp => ModbusResponseParser.UnwrapTcpAdu(adu, transactionId, _options.Station),
+        InovanceTransportEncoding.Rtu => ModbusResponseParser.UnwrapRtuAdu(responseAdu, _options.Station),
+        InovanceTransportEncoding.Tcp => ModbusResponseParser.UnwrapTcpAdu(responseAdu, transactionId, _options.Station),
         _ => throw new InvalidOperationException(),
     };
+
+    private ushort NextTransactionId()
+    {
+        lock (_txIdLock)
+        {
+            _transactionId = (ushort)(_transactionId == ushort.MaxValue ? 1 : _transactionId + 1);
+            return _transactionId;
+        }
+    }
+
+    private void ResetTransactionIdIfNewConnection(long connectionId)
+    {
+        lock (_txIdLock)
+        {
+            if (_lastConnectionId != connectionId)
+            {
+                _lastConnectionId = connectionId;
+                _transactionId = 0;
+            }
+        }
+    }
 }

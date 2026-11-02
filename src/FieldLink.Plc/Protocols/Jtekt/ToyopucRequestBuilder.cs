@@ -6,8 +6,38 @@ namespace FieldLink.Plc.Protocols.Jtekt;
 /// <summary>TOYOPUC Computer Link 2PORT-EFR 요청 프레임을 생성하는 빌더입니다. (사양서 §1)</summary>
 public static class ToyopucRequestBuilder
 {
-    /// <summary>단일 비트 읽기(명령 0x20) 요청 프레임을 조립합니다.</summary>
-    /// <param name="address">대상 비트 주소입니다.</param>
+    private const int HeaderLength = 4;
+    private const int LengthFieldOffset = 2;
+    private const int CommandOffset = 4;
+    private const int BasicWireAddressOffset = 5;
+    private const int BasicWordCountOffset = 7;
+    private const int BasicWriteDataOffset = 7;
+    private const int BasicBitValueOffset = 7;
+    private const int ExtendedProgramNumberOffset = 5;
+    private const int ExtendedWireAddressOffset = 6;
+    private const int ExtendedWordCountOffset = 8;
+    private const int ExtendedWriteDataOffset = 8;
+
+    private const ushort ReadBitBodyLength = 3;
+    private const ushort WriteBitBodyLength = 4;
+    private const ushort BasicReadWordsBodyLength = 5;
+    private const ushort ExtendedReadWordsBodyLength = 6;
+    private const int BasicWriteWordsHeaderBodySize = 3;
+    private const int ExtendedWriteWordsHeaderBodySize = 4;
+
+    private const byte ReadBitCommand = 0x20;
+    private const byte WriteBitCommand = 0x21;
+    private const byte BasicReadWordsCommand = 0x1C;
+    private const byte BasicWriteWordsCommand = 0x1D;
+    private const byte ExtendedReadWordsCommand = 0x94;
+    private const byte ExtendedWriteWordsCommand = 0x95;
+
+    private const byte BitOnValue = 0x01;
+    private const byte BitOffValue = 0x00;
+    private const int BytesPerWord = 2;
+
+    /// <summary>단일 비트 읽기(명령 0x20) 요청 프레임을 조립합니다. (사양서 §1.7)</summary>
+    /// <param name="address">대상 기본 영역 비트 주소입니다.</param>
     /// <returns>생성된 요청 프레임 바이트 배열입니다.</returns>
     public static byte[] BuildReadBit(ToyopucAddress address)
     {
@@ -16,16 +46,16 @@ public static class ToyopucRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        byte[] frame = new byte[7];
-        frame[2] = 0x03; // Body length = 3
-        frame[4] = 0x20; // CMD
-        BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
-        return frame;
+        byte[] requestFrame = new byte[HeaderLength + ReadBitBodyLength];
+        BinaryBuffer.WriteUInt16LittleEndian(requestFrame, LengthFieldOffset, ReadBitBodyLength);
+        requestFrame[CommandOffset] = ReadBitCommand;
+        BinaryBuffer.WriteUInt16LittleEndian(requestFrame, BasicWireAddressOffset, address.WireAddress);
+        return requestFrame;
     }
 
-    /// <summary>단일 비트 쓰기(명령 0x21) 요청 프레임을 조립합니다.</summary>
-    /// <param name="address">대상 비트 주소입니다.</param>
-    /// <param name="bitValue">기록할 비트 값입니다.</param>
+    /// <summary>단일 비트 쓰기(명령 0x21) 요청 프레임을 조립합니다. (사양서 §1.7)</summary>
+    /// <param name="address">대상 기본 영역 비트 주소입니다.</param>
+    /// <param name="bitValue">기록할 비트 값(true: ON, false: OFF)입니다.</param>
     /// <returns>생성된 요청 프레임 바이트 배열입니다.</returns>
     public static byte[] BuildWriteBit(ToyopucAddress address, bool bitValue)
     {
@@ -34,15 +64,15 @@ public static class ToyopucRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        byte[] frame = new byte[8];
-        frame[2] = 0x04; // Body length = 4
-        frame[4] = 0x21; // CMD
-        BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
-        frame[7] = (byte)(bitValue ? 0x01 : 0x00);
-        return frame;
+        byte[] requestFrame = new byte[HeaderLength + WriteBitBodyLength];
+        BinaryBuffer.WriteUInt16LittleEndian(requestFrame, LengthFieldOffset, WriteBitBodyLength);
+        requestFrame[CommandOffset] = WriteBitCommand;
+        BinaryBuffer.WriteUInt16LittleEndian(requestFrame, BasicWireAddressOffset, address.WireAddress);
+        requestFrame[BasicBitValueOffset] = bitValue ? BitOnValue : BitOffValue;
+        return requestFrame;
     }
 
-    /// <summary>연속 워드 읽기(기본 0x1C / 확장 0x94) 요청 프레임을 조립합니다.</summary>
+    /// <summary>연속 워드 읽기(기본 0x1C / 확장 0x94) 요청 프레임을 조립합니다. (사양서 §1.7)</summary>
     /// <param name="address">대상 워드 주소입니다.</param>
     /// <param name="wordCount">읽을 워드 수입니다. 1 이상.</param>
     /// <returns>생성된 요청 프레임 바이트 배열입니다.</returns>
@@ -60,26 +90,24 @@ public static class ToyopucRequestBuilder
 
         if (address.Prg.HasValue)
         {
-            byte[] frame = new byte[10];
-            frame[2] = 0x06; // Body length = 6
-            frame[4] = 0x94; // Extended CMD
-            frame[5] = address.Prg.Value;
-            BinaryBuffer.WriteUInt16LE(frame, 6, address.WireAddress);
-            BinaryBuffer.WriteUInt16LE(frame, 8, wordCount);
-            return frame;
+            byte[] extendedFrame = new byte[HeaderLength + ExtendedReadWordsBodyLength];
+            BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, LengthFieldOffset, ExtendedReadWordsBodyLength);
+            extendedFrame[CommandOffset] = ExtendedReadWordsCommand;
+            extendedFrame[ExtendedProgramNumberOffset] = address.Prg.Value;
+            BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, ExtendedWireAddressOffset, address.WireAddress);
+            BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, ExtendedWordCountOffset, wordCount);
+            return extendedFrame;
         }
-        else
-        {
-            byte[] frame = new byte[9];
-            frame[2] = 0x05; // Body length = 5
-            frame[4] = 0x1C; // Basic CMD
-            BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
-            BinaryBuffer.WriteUInt16LE(frame, 7, wordCount);
-            return frame;
-        }
+
+        byte[] basicFrame = new byte[HeaderLength + BasicReadWordsBodyLength];
+        BinaryBuffer.WriteUInt16LittleEndian(basicFrame, LengthFieldOffset, BasicReadWordsBodyLength);
+        basicFrame[CommandOffset] = BasicReadWordsCommand;
+        BinaryBuffer.WriteUInt16LittleEndian(basicFrame, BasicWireAddressOffset, address.WireAddress);
+        BinaryBuffer.WriteUInt16LittleEndian(basicFrame, BasicWordCountOffset, wordCount);
+        return basicFrame;
     }
 
-    /// <summary>연속 워드 쓰기(기본 0x1D / 확장 0x95) 요청 프레임을 조립합니다.</summary>
+    /// <summary>연속 워드 쓰기(기본 0x1D / 확장 0x95) 요청 프레임을 조립합니다. (사양서 §1.7)</summary>
     /// <param name="address">대상 워드 주소입니다.</param>
     /// <param name="wordCount">쓸 워드 수입니다. 1 이상.</param>
     /// <param name="wordData">기록할 워드 데이터 바이트 배열(리틀 엔디언)입니다.</param>
@@ -101,31 +129,29 @@ public static class ToyopucRequestBuilder
             throw new ArgumentNullException(nameof(wordData));
         }
 
-        if (wordData.Length != wordCount * 2)
+        if (wordData.Length != wordCount * BytesPerWord)
         {
             throw new ArgumentException("데이터 길이가 워드 개수와 일치하지 않습니다.", nameof(wordData));
         }
 
         if (address.Prg.HasValue)
         {
-            ushort bodyLen = (ushort)(4 + wordData.Length);
-            byte[] frame = new byte[4 + bodyLen];
-            BinaryBuffer.WriteUInt16LE(frame, 2, bodyLen);
-            frame[4] = 0x95;
-            frame[5] = address.Prg.Value;
-            BinaryBuffer.WriteUInt16LE(frame, 6, address.WireAddress);
-            Buffer.BlockCopy(wordData, 0, frame, 8, wordData.Length);
-            return frame;
+            ushort extendedBodyLength = (ushort)(ExtendedWriteWordsHeaderBodySize + wordData.Length);
+            byte[] extendedFrame = new byte[HeaderLength + extendedBodyLength];
+            BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, LengthFieldOffset, extendedBodyLength);
+            extendedFrame[CommandOffset] = ExtendedWriteWordsCommand;
+            extendedFrame[ExtendedProgramNumberOffset] = address.Prg.Value;
+            BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, ExtendedWireAddressOffset, address.WireAddress);
+            Buffer.BlockCopy(wordData, 0, extendedFrame, ExtendedWriteDataOffset, wordData.Length);
+            return extendedFrame;
         }
-        else
-        {
-            ushort bodyLen = (ushort)(3 + wordData.Length);
-            byte[] frame = new byte[4 + bodyLen];
-            BinaryBuffer.WriteUInt16LE(frame, 2, bodyLen);
-            frame[4] = 0x1D;
-            BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
-            Buffer.BlockCopy(wordData, 0, frame, 7, wordData.Length);
-            return frame;
-        }
+
+        ushort basicBodyLength = (ushort)(BasicWriteWordsHeaderBodySize + wordData.Length);
+        byte[] basicFrame = new byte[HeaderLength + basicBodyLength];
+        BinaryBuffer.WriteUInt16LittleEndian(basicFrame, LengthFieldOffset, basicBodyLength);
+        basicFrame[CommandOffset] = BasicWriteWordsCommand;
+        BinaryBuffer.WriteUInt16LittleEndian(basicFrame, BasicWireAddressOffset, address.WireAddress);
+        Buffer.BlockCopy(wordData, 0, basicFrame, BasicWriteDataOffset, wordData.Length);
+        return basicFrame;
     }
 }

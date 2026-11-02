@@ -13,6 +13,7 @@ public sealed class SerialTransport : ITransport
     private readonly object _stateLock = new();
 
     private SerialPort? _serialPort;
+    private StreamTransportSession? _session;
     private long _connectionId;
     private TransportState _state = TransportState.Closed;
 
@@ -75,8 +76,13 @@ public sealed class SerialTransport : ITransport
 
             port.Open();
 
+            long connectionId = Interlocked.Increment(ref _connectionId);
             _serialPort = port;
-            Interlocked.Increment(ref _connectionId);
+            _session = new StreamTransportSession(
+                connectionId,
+                port.BaseStream,
+                CancellationToken.None,
+                onBeforeSend: DiscardSerialInBuffer);
             State = TransportState.Open;
             return Task.CompletedTask;
         }
@@ -129,12 +135,21 @@ public sealed class SerialTransport : ITransport
         try
         {
             EnsureConnected();
-            var session = new StreamTransportSession(
-                _connectionId,
-                _serialPort!.BaseStream,
-                cancellationToken);
+            StreamTransportSession session = _session!;
+            session.SetCancellationToken(cancellationToken);
+            session.ClearReceiveBuffer();
+            DiscardSerialInBuffer();
 
-            return await work(session).ConfigureAwait(false);
+            try
+            {
+                return await work(session).ConfigureAwait(false);
+            }
+            catch
+            {
+                session.ClearReceiveBuffer();
+                DiscardSerialInBuffer();
+                throw;
+            }
         }
         finally
         {
@@ -159,9 +174,27 @@ public sealed class SerialTransport : ITransport
         _exclusiveLock.Dispose();
     }
 
+    private void DiscardSerialInBuffer()
+    {
+        SerialPort? port = _serialPort;
+        if (port is not { IsOpen: true })
+        {
+            return;
+        }
+
+        try
+        {
+            port.DiscardInBuffer();
+        }
+        catch
+        {
+            // 포트 버퍼 비우기 중 발생한 부수적 예외는 무시
+        }
+    }
+
     private void EnsureConnected()
     {
-        if (State != TransportState.Open || _serialPort is null || !_serialPort.IsOpen)
+        if (State != TransportState.Open || _serialPort is null || !_serialPort.IsOpen || _session is null)
         {
             throw new InvalidOperationException("시리얼 포트 전송이 열려 있지 않습니다. OpenAsync를 먼저 호출하세요.");
         }
@@ -169,12 +202,16 @@ public sealed class SerialTransport : ITransport
 
     private void CleanupPort()
     {
+        _session?.ClearReceiveBuffer();
+        _session = null;
+
         try
         {
             if (_serialPort is { IsOpen: true })
             {
                 _serialPort.Close();
             }
+
             _serialPort?.Dispose();
         }
         catch

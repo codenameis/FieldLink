@@ -14,6 +14,7 @@ public class VigorAddressTests
     [InlineData("M10", 0x92, new byte[] { 0x10, 0x00, 0x00 }, true, false)]
     [InlineData("M9000", 0x94, new byte[] { 0x00, 0x00, 0x00 }, true, false)]
     [InlineData("SM10", 0x94, new byte[] { 0x10, 0x00, 0x00 }, true, false)]
+    [InlineData("S4095", 0x93, new byte[] { 0x95, 0x40, 0x00 }, true, false)]
     [InlineData("X012", 0x90, new byte[] { 0x12, 0x00, 0x00 }, true, false)]
     [InlineData("Y005", 0x91, new byte[] { 0x05, 0x00, 0x00 }, true, false)]
     [InlineData("C100", 0xAC, new byte[] { 0x00, 0x01, 0x00 }, false, false)]
@@ -27,12 +28,23 @@ public class VigorAddressTests
         bool expectedBit,
         bool expected32Bit)
     {
-        var result = VigorAddress.Parse(address, expectedBit);
+        var result = VigorAddress.Parse(address);
 
         Assert.Equal(expectedDevCode, result.DeviceCode);
         Assert.Equal(expectedBcd, result.BcdAddress);
         Assert.Equal(expectedBit, result.IsBit);
         Assert.Equal(expected32Bit, result.Is32BitWord);
+    }
+
+    [Fact]
+    public void Offset_StepRelayS4095_ZeroOffsetSucceedsAndOverflowThrowsArgumentOutOfRangeException()
+    {
+        var address = VigorAddress.Parse("S4095");
+        var sameAddress = address.Offset(0);
+
+        Assert.Equal(0x93, sameAddress.DeviceCode);
+        Assert.Equal(4095, sameAddress.Number);
+        Assert.Throws<ArgumentOutOfRangeException>(() => address.Offset(1));
     }
 
     [Theory]
@@ -52,6 +64,12 @@ public class VigorAddressTests
     [InlineData("ZZ100")]
     [InlineData("D-1")]
     [InlineData("D1000000")]
+    [InlineData("X08")]
+    [InlineData("Y78")]
+    [InlineData("X800")]
+    [InlineData("S4096")]
+    [InlineData("C300")]
+    [InlineData("T256")]
     public void Parse_InvalidAddress_ThrowsFormatExceptionOrArgument(string invalid)
     {
         if (string.IsNullOrWhiteSpace(invalid))

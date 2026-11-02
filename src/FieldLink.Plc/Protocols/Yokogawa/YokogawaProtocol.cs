@@ -12,8 +12,11 @@ namespace FieldLink.Plc.Protocols.Yokogawa;
 /// <summary>Yokogawa FA-M3 higher-level link service 바이너리 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class YokogawaProtocol : IPlcProtocol
 {
-    private const int MaxWordReadChunk = 64;
-    private const int MaxBitReadChunk = 256;
+    private const byte CommandReadBits = 0x01;
+    private const byte CommandWriteBits = 0x02;
+    private const byte CommandReadWords = 0x11;
+    private const byte CommandWriteWords = 0x12;
+    private const int BytesPerWord = 2;
 
     private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
 
@@ -33,9 +36,6 @@ public sealed class YokogawaProtocol : IPlcProtocol
     public PlcProtocolTraits Traits { get; }
 
     /// <inheritdoc />
-    public ITransport Transport => _transport;
-
-    /// <inheritdoc />
     public Task ConnectAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     /// <inheritdoc />
@@ -49,70 +49,18 @@ public sealed class YokogawaProtocol : IPlcProtocol
             throw new ArgumentNullException(nameof(request));
         }
 
-        bool isBit = request.DataType == PlcDataType.Boolean;
-        var address = YokogawaAddress.Parse(request.Address, isBit);
+        var address = YokogawaAddress.Parse(request.Address);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        if (isBit)
+        if (address.IsBit)
         {
             return await ReadBitsAsync(address, request.Count, cancellationToken).ConfigureAwait(false);
         }
 
-        return await ReadWordsAsync(address, request, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<byte[]> ReadBitsAsync(YokogawaAddress address, int totalBits, CancellationToken cancellationToken)
-    {
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, MaxBitReadChunk);
-        byte[] result = new byte[totalBits];
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            foreach (RequestChunker.Chunk chunk in chunks)
-            {
-                YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-
-                byte[] requestFrame = YokogawaRequestBuilder.BuildReadRequest(_options.CpuNumber, chunkAddress, count);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                byte[] bitBytes = YokogawaResponseParser.ParseReadResponse(responseFrame, expectedCommand: 0x01);
-
-                Array.Copy(bitBytes, 0, result, chunk.ElementOffset, count);
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
-
-        return result;
-    }
-
-    private async Task<byte[]> ReadWordsAsync(YokogawaAddress address, PlcReadRequest request, CancellationToken cancellationToken)
-    {
-        int bytesPerElement = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, bytesPerElement / 2);
-        int totalWords = request.Count * wordsPerElement;
-
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, MaxWordReadChunk);
-        byte[] combinedBuffer = new byte[request.ByteCount];
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            foreach (RequestChunker.Chunk chunk in chunks)
-            {
-                YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-
-                byte[] requestFrame = YokogawaRequestBuilder.BuildReadRequest(_options.CpuNumber, chunkAddress, count);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                byte[] chunkData = YokogawaResponseParser.ParseReadResponse(responseFrame, expectedCommand: 0x11);
-
-                int destOffset = chunk.ElementOffset * 2;
-                Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
-
-        return combinedBuffer;
+        int requestedByteCount = request.ByteCount;
+        PlcReadRequest effectiveRequest = ProtocolExecutionGuard.NormalizeWordReadRequest(request);
+        byte[] buffer = await ReadWordsAsync(address, effectiveRequest, cancellationToken).ConfigureAwait(false);
+        return ProtocolExecutionGuard.TrimReadResult(buffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -123,71 +71,164 @@ public sealed class YokogawaProtocol : IPlcProtocol
             throw new ArgumentNullException(nameof(request));
         }
 
-        bool isBit = request.DataType == PlcDataType.Boolean;
-        var address = YokogawaAddress.Parse(request.Address, isBit);
+        var address = YokogawaAddress.Parse(request.Address);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        if (isBit)
+        if (address.IsBit)
         {
             await WriteBitsAsync(address, request, cancellationToken).ConfigureAwait(false);
+            return;
         }
-        else
+
+        await WriteWordsAsync(address, request, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<byte[]> ReadBitsAsync(YokogawaAddress address, int totalBits, CancellationToken cancellationToken)
+    {
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, _options.MaxBitsPerRequest);
+        byte[] result = new byte[totalBits];
+
+        await _transport.RunExclusiveAsync(async session =>
         {
-            await WriteWordsAsync(address, request, cancellationToken).ConfigureAwait(false);
-        }
+            foreach (RequestChunker.Chunk chunk in chunks)
+            {
+                YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
+                ushort bitCount = (ushort)chunk.ElementCount;
+
+                byte[] requestFrame = YokogawaRequestBuilder.BuildReadRequest(_options.CpuNumber, chunkAddress, bitCount);
+                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                byte[] bitBytes = YokogawaResponseParser.ParseReadResponse(responseFrame, CommandReadBits);
+
+                if (bitBytes.Length != bitCount)
+                {
+                    throw new PlcException(
+                        PlcErrorKind.InvalidResponse,
+                        $"Yokogawa 비트 응답 데이터 길이가 일치하지 않습니다: 기대={bitCount}, 실제={bitBytes.Length}");
+                }
+
+                Array.Copy(bitBytes, 0, result, chunk.ElementOffset, bitCount);
+            }
+
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+
+        return result;
+    }
+
+    private async Task<byte[]> ReadWordsAsync(YokogawaAddress address, PlcReadRequest effectiveRequest, CancellationToken cancellationToken)
+    {
+        int bytesPerElement = effectiveRequest.DataType.GetElementSize();
+        int wordsPerElement = Math.Max(1, bytesPerElement / BytesPerWord);
+        int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxWordsPerRequest, wordsPerElement);
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
+
+        await _transport.RunExclusiveAsync(async session =>
+        {
+            foreach (RequestChunker.Chunk chunk in chunks)
+            {
+                YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
+                ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                int expectedByteCount = wordCount * BytesPerWord;
+
+                byte[] requestFrame = YokogawaRequestBuilder.BuildReadRequest(_options.CpuNumber, chunkAddress, wordCount);
+                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                byte[] chunkData = YokogawaResponseParser.ParseReadResponse(responseFrame, CommandReadWords);
+
+                if (chunkData.Length != expectedByteCount)
+                {
+                    throw new PlcException(
+                        PlcErrorKind.InvalidResponse,
+                        $"Yokogawa 워드 응답 데이터 길이가 일치하지 않습니다: 기대={expectedByteCount}, 실제={chunkData.Length}");
+                }
+
+                int bufferByteOffset = chunk.ElementOffset * bytesPerElement;
+                Array.Copy(chunkData, 0, combinedBuffer, bufferByteOffset, chunkData.Length);
+            }
+
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+
+        return combinedBuffer;
     }
 
     private async Task WriteBitsAsync(YokogawaAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
     {
         int totalBits = request.Count;
-        byte[] raw = request.GetData();
+        byte[] rawBytes = request.GetData();
         byte[] bitBytes = new byte[totalBits];
         for (int i = 0; i < totalBits; i++)
         {
-            bitBytes[i] = raw[i] != 0 ? (byte)1 : (byte)0;
+            bitBytes[i] = rawBytes[i] != 0 ? (byte)1 : (byte)0;
         }
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, MaxBitReadChunk);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, _options.MaxBitsPerRequest);
+        int completedElements = 0;
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        try
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            await _transport.RunExclusiveAsync(async session =>
             {
-                YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                byte[] subBits = new byte[count];
-                Array.Copy(bitBytes, chunk.ElementOffset, subBits, 0, count);
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
+                    ushort bitCount = (ushort)chunk.ElementCount;
+                    byte[] chunkBits = new byte[bitCount];
+                    Array.Copy(bitBytes, chunk.ElementOffset, chunkBits, 0, bitCount);
 
-                byte[] requestFrame = YokogawaRequestBuilder.BuildWriteBitRequest(_options.CpuNumber, chunkAddress, count, subBits);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                YokogawaResponseParser.VerifyWriteResponse(responseFrame, expectedCommand: 0x02);
-            }
+                    byte[] requestFrame = YokogawaRequestBuilder.BuildWriteBitRequest(_options.CpuNumber, chunkAddress, bitCount, chunkBits);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    YokogawaResponseParser.VerifyWriteResponse(responseFrame, CommandWriteBits);
+                    completedElements += chunk.ElementCount;
+                }
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
     }
 
     private async Task WriteWordsAsync(YokogawaAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
     {
-        int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
+        int totalOriginalCount = request.Count;
+        PlcWriteRequest effectiveRequest = ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out int originalElementsPerUnit);
+        int bytesPerElement = effectiveRequest.DataType.GetElementSize();
+        int wordsPerElement = Math.Max(1, bytesPerElement / BytesPerWord);
+        int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxWordsPerRequest, wordsPerElement);
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, MaxWordReadChunk);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
+        int completedElements = 0;
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        try
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            await _transport.RunExclusiveAsync(async session =>
             {
-                YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                byte[] chunkData = request.GetData(chunk.ElementOffset / wordsPerElement, chunk.ElementCount / wordsPerElement);
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
+                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                    byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
-                byte[] requestFrame = YokogawaRequestBuilder.BuildWriteWordRequest(_options.CpuNumber, chunkAddress, count, chunkData);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                YokogawaResponseParser.VerifyWriteResponse(responseFrame, expectedCommand: 0x12);
-            }
+                    byte[] requestFrame = YokogawaRequestBuilder.BuildWriteWordRequest(_options.CpuNumber, chunkAddress, wordCount, chunkData);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    YokogawaResponseParser.VerifyWriteResponse(responseFrame, CommandWriteWords);
+                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                        completedElements,
+                        chunk.ElementCount,
+                        originalElementsPerUnit,
+                        totalOriginalCount);
+                }
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
     }
 }

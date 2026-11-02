@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using FieldLink.Plc.Protocols.Modbus;
 
 namespace FieldLink.Plc.Protocols.Delta;
@@ -53,14 +54,14 @@ public sealed class DeltaAddress
     public bool IsWritable => Area is ModbusArea.Coil or ModbusArea.HoldingRegister;
 
     /// <summary>주소 문자열을 해석하여 <see cref="DeltaAddress"/> 인스턴스를 반환합니다.</summary>
-    public static DeltaAddress Parse(string address, DeltaSeries series = DeltaSeries.Dvp)
+    public static DeltaAddress Parse(string address, DeltaSeries series = DeltaSeries.Dvp, bool isBitAccess = false)
     {
         if (string.IsNullOrWhiteSpace(address))
         {
             throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
         }
 
-        if (!TryParse(address, series, out DeltaAddress? result, out string? errorMessage))
+        if (!TryParse(address, series, isBitAccess, out DeltaAddress? result, out string? errorMessage))
         {
             throw new FormatException(errorMessage);
         }
@@ -74,12 +75,23 @@ public sealed class DeltaAddress
         DeltaSeries series,
         [NotNullWhen(true)] out DeltaAddress? result)
     {
-        return TryParse(address, series, out result, out _);
+        return TryParse(address, series, isBitAccess: false, out result, out _);
+    }
+
+    /// <summary>비트/워드 접근 모드를 지정하여 주소 문자열 해석을 시도합니다.</summary>
+    public static bool TryParse(
+        string? address,
+        DeltaSeries series,
+        bool isBitAccess,
+        [NotNullWhen(true)] out DeltaAddress? result)
+    {
+        return TryParse(address, series, isBitAccess, out result, out _);
     }
 
     private static bool TryParse(
         string? address,
         DeltaSeries series,
+        bool isBitAccess,
         [NotNullWhen(true)] out DeltaAddress? result,
         out string? errorMessage)
     {
@@ -94,12 +106,13 @@ public sealed class DeltaAddress
 
         string trimmed = address!.Trim().ToUpperInvariant();
         return series == DeltaSeries.Dvp
-            ? TryParseDvp(trimmed, out result, out errorMessage)
-            : TryParseAs(trimmed, out result, out errorMessage);
+            ? TryParseDvp(trimmed, isBitAccess, out result, out errorMessage)
+            : TryParseAs(trimmed, isBitAccess, out result, out errorMessage);
     }
 
     private static bool TryParseDvp(
         string address,
+        bool isBitAccess,
         [NotNullWhen(true)] out DeltaAddress? result,
         out string? errorMessage)
     {
@@ -117,20 +130,22 @@ public sealed class DeltaAddress
         char prefix = address[0];
         string numberText = address.Substring(1);
 
-        if (!int.TryParse(numberText, out int number) || number < 0)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int number) || number < 0)
         {
             errorMessage = $"유효하지 않은 DVP 주소 번호입니다: {address}";
             return false;
         }
+
+        ModbusArea timerCounterArea = isBitAccess ? ModbusArea.Coil : ModbusArea.HoldingRegister;
 
         return prefix switch
         {
             'S' => BuildDvpAddress(address, "S", number, ModbusArea.Coil, (ushort)number, out result),
             'X' => TryParseDvpOctal(address, "X", numberText, 0x0400, ModbusArea.DiscreteInput, out result, out errorMessage),
             'Y' => TryParseDvpOctal(address, "Y", numberText, 0x0500, ModbusArea.Coil, out result, out errorMessage),
-            'T' => BuildDvpAddress(address, "T", number, ModbusArea.HoldingRegister, (ushort)(number + 0x0600), out result),
+            'T' => BuildDvpAddress(address, "T", number, timerCounterArea, (ushort)(number + 0x0600), out result),
             'M' => TryBuildDvpM(address, number, out result, out errorMessage),
-            'C' => TryBuildDvpC(address, number, out result, out errorMessage),
+            'C' => TryBuildDvpC(address, number, timerCounterArea, out result, out errorMessage),
             'D' => TryBuildDvpD(address, number, out result, out errorMessage),
             _ => FailDvpPrefix(address, out errorMessage),
         };
@@ -189,6 +204,7 @@ public sealed class DeltaAddress
     private static bool TryBuildDvpC(
         string original,
         int number,
+        ModbusArea area,
         [NotNullWhen(true)] out DeltaAddress? result,
         out string? errorMessage)
     {
@@ -202,7 +218,7 @@ public sealed class DeltaAddress
         }
 
         ushort pdu = (ushort)(number + 0x0E00);
-        result = new DeltaAddress(original, DeltaSeries.Dvp, "C", number, null, ModbusArea.HoldingRegister, pdu);
+        result = new DeltaAddress(original, DeltaSeries.Dvp, "C", number, null, area, pdu);
         return true;
     }
 
@@ -249,11 +265,14 @@ public sealed class DeltaAddress
 
     private static bool TryParseAs(
         string address,
+        bool isBitAccess,
         [NotNullWhen(true)] out DeltaAddress? result,
         out string? errorMessage)
     {
         result = null;
         errorMessage = null;
+
+        ModbusArea timerCounterArea = isBitAccess ? ModbusArea.Coil : ModbusArea.HoldingRegister;
 
         if (address.StartsWith("SM", StringComparison.Ordinal))
         {
@@ -267,7 +286,7 @@ public sealed class DeltaAddress
 
         if (address.StartsWith("HC", StringComparison.Ordinal))
         {
-            return TryParseAsSimple(address, "HC", 2, 0xFC00, ModbusArea.HoldingRegister, out result, out errorMessage);
+            return TryParseAsSimple(address, "HC", 2, 0xFC00, timerCounterArea, out result, out errorMessage);
         }
 
         char prefix = address[0];
@@ -280,8 +299,8 @@ public sealed class DeltaAddress
             'X' => TryParseAsIo(address, "X", remainder, 0x6000, 0x8000, isInput: true, out result, out errorMessage),
             'Y' => TryParseAsIo(address, "Y", remainder, 0xA000, 0xA000, isInput: false, out result, out errorMessage),
             'D' => TryParseAsSimple(address, "D", 1, 0, ModbusArea.HoldingRegister, out result, out errorMessage),
-            'T' => TryParseAsSimple(address, "T", 1, 0xE000, ModbusArea.HoldingRegister, out result, out errorMessage),
-            'C' => TryParseAsSimple(address, "C", 1, 0xF000, ModbusArea.HoldingRegister, out result, out errorMessage),
+            'T' => TryParseAsSimple(address, "T", 1, 0xE000, timerCounterArea, out result, out errorMessage),
+            'C' => TryParseAsSimple(address, "C", 1, 0xF000, timerCounterArea, out result, out errorMessage),
             'E' => TryParseAsSimple(address, "E", 1, 0xFE00, ModbusArea.HoldingRegister, out result, out errorMessage),
             _ => FailAsPrefix(address, out errorMessage),
         };
@@ -300,7 +319,7 @@ public sealed class DeltaAddress
         errorMessage = null;
 
         string numberText = original.Substring(prefixLen);
-        if (!int.TryParse(numberText, out int parsedNumber) || parsedNumber < 0)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber) || parsedNumber < 0)
         {
             errorMessage = $"유효하지 않은 AS {devicePrefix} 주소 번호입니다: {original}";
             return false;
@@ -330,8 +349,8 @@ public sealed class DeltaAddress
             string wordStr = remainder.Substring(0, dotIdx);
             string bitStr = remainder.Substring(dotIdx + 1);
 
-            if (!int.TryParse(wordStr, out int wordNum) || wordNum < 0 ||
-                !int.TryParse(bitStr, out int bitNum) || bitNum is < 0 or > 15)
+            if (!int.TryParse(wordStr, NumberStyles.None, CultureInfo.InvariantCulture, out int wordNum) || wordNum < 0 ||
+                !int.TryParse(bitStr, NumberStyles.None, CultureInfo.InvariantCulture, out int bitNum) || bitNum is < 0 or > 15)
             {
                 errorMessage = $"AS {devicePrefix} 비트 주소 형식이 올바르지 않습니다(0~15): {original}";
                 return false;
@@ -343,7 +362,7 @@ public sealed class DeltaAddress
             return true;
         }
 
-        if (!int.TryParse(remainder, out int parsedNumber) || parsedNumber < 0)
+        if (!int.TryParse(remainder, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber) || parsedNumber < 0)
         {
             errorMessage = $"유효하지 않은 AS {devicePrefix} 워드 주소 번호입니다: {original}";
             return false;

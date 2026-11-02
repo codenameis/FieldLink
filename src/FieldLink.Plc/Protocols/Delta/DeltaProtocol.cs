@@ -14,15 +14,27 @@ namespace FieldLink.Plc.Protocols.Delta;
 /// <summary>Delta DVP 및 AS 시리즈 PLC와 통신하는 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class DeltaProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int BytesPerWord = 2;
+    private const int DvpRelayBoundaryIndex = 1536;
+    private const ushort DvpHighRelayBasePduAddress = 0xB000;
+    private const int DvpRegisterBoundaryIndex = 4096;
+    private const ushort DvpHighRegisterBasePduAddress = 0x9000;
+
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly DeltaOptions _options;
     private readonly DeltaTransportEncoding _encoding;
     private readonly IFrameDecoder _frameDecoder;
+    private readonly object _txIdLock = new();
+
     private ushort _transactionId;
+    private long _lastConnectionId = -1;
 
     /// <summary>전송, 옵션, 인코딩 방식으로 <see cref="DeltaProtocol"/> 인스턴스를 초기화합니다.</summary>
+    /// <param name="transport">바이트 송수신 전송 구현체입니다.</param>
+    /// <param name="options">Delta 프로토콜 옵션입니다.</param>
+    /// <param name="encoding">Modbus 전송 프레임 인코딩 방식입니다.</param>
     public DeltaProtocol(
         ITransport transport,
         DeltaOptions? options = null,
@@ -60,40 +72,37 @@ public sealed class DeltaProtocol : IPlcProtocol
             throw new ArgumentNullException(nameof(request));
         }
 
-        var address = DeltaAddress.Parse(request.Address, _options.Series);
-        int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, elementSize / 2);
-        byte[] combinedBuffer = new byte[request.ByteCount];
+        bool isBitAccess = request.DataType == PlcDataType.Boolean;
+        var address = DeltaAddress.Parse(request.Address, _options.Series, isBitAccess);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        List<RangePlan> ranges = PlanRanges(address, request.Count);
+        int requestedByteCount = request.ByteCount;
+        PlcReadRequest effectiveRequest = address.IsBit ? request : ProtocolExecutionGuard.NormalizeWordReadRequest(request);
+        int elementSize = effectiveRequest.DataType.GetElementSize();
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, elementSize / BytesPerWord);
+        int maxElements = address.IsBit
+            ? _options.MaxReadBits
+            : RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        List<PlannedChunk> chunks = PlanChunks(address, effectiveRequest.Count, maxElements, wordsPerElement);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
+
+        await _transport.RunExclusiveAsync(async session =>
         {
-            int globalElementOffset = 0;
-            foreach (RangePlan range in ranges)
+            ResetTransactionIdIfNewConnection(session.ConnectionId);
+
+            foreach (PlannedChunk chunk in chunks)
             {
-                int maxElements = address.IsBit
-                    ? _options.MaxReadBits
-                    : RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
-
-                List<RequestChunker.Chunk> chunks = RequestChunker.Plan(range.Count, maxElements);
-                foreach (RequestChunker.Chunk chunk in chunks)
-                {
-                    ushort chunkPdu = (ushort)(range.BasePduAddress + (chunk.ElementOffset * wordsPerElement));
-                    ushort quantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
-
-                    byte[] chunkData = await ReadChunkAsync(session, address.Area, chunkPdu, quantity, address.IsBit).ConfigureAwait(false);
-                    int destOffset = (globalElementOffset + chunk.ElementOffset) * elementSize;
-                    Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
-                }
-
-                globalElementOffset += range.Count;
+                ushort quantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
+                byte[] chunkData = await ReadChunkAsync(session, address.Area, chunk.PduAddress, quantity).ConfigureAwait(false);
+                int destinationOffset = chunk.ElementOffset * elementSize;
+                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
 
-        return combinedBuffer;
+        return ProtocolExecutionGuard.TrimReadResult(combinedBuffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -104,57 +113,70 @@ public sealed class DeltaProtocol : IPlcProtocol
             throw new ArgumentNullException(nameof(request));
         }
 
-        var address = DeltaAddress.Parse(request.Address, _options.Series);
+        bool isBitAccess = request.DataType == PlcDataType.Boolean;
+        var address = DeltaAddress.Parse(request.Address, _options.Series, isBitAccess);
         if (!address.IsWritable)
         {
-            throw new InvalidOperationException($"쓰기 불가능한 영역입니다: {request.Address}");
+            throw new ArgumentException($"쓰기 불가능한 영역입니다: {request.Address}", nameof(request));
         }
 
-        int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, elementSize / 2);
-        List<RangePlan> ranges = PlanRanges(address, request.Count);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        int totalOriginalCount = request.Count;
+        int originalElementsPerUnit = 1;
+        PlcWriteRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit);
+
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, effectiveRequest.DataType.GetElementSize() / BytesPerWord);
+        int maxElements = address.IsBit
+            ? _options.MaxWriteBits
+            : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
+
+        List<PlannedChunk> chunks = PlanChunks(address, effectiveRequest.Count, maxElements, wordsPerElement);
+        int completedElements = 0;
+
+        try
         {
-            int globalElementOffset = 0;
-            foreach (RangePlan range in ranges)
+            await _transport.RunExclusiveAsync(async session =>
             {
-                int maxElements = address.IsBit
-                    ? _options.MaxWriteBits
-                    : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
+                ResetTransactionIdIfNewConnection(session.ConnectionId);
 
-                List<RequestChunker.Chunk> chunks = RequestChunker.Plan(range.Count, maxElements);
-                foreach (RequestChunker.Chunk chunk in chunks)
+                foreach (PlannedChunk chunk in chunks)
                 {
-                    ushort chunkPdu = (ushort)(range.BasePduAddress + (chunk.ElementOffset * wordsPerElement));
-                    ushort quantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
-                    byte[] chunkData = request.GetData(globalElementOffset + chunk.ElementOffset, chunk.ElementCount);
-
-                    await WriteChunkAsync(session, chunkPdu, quantity, address.IsBit, chunkData).ConfigureAwait(false);
+                    byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
+                    await WriteChunkAsync(session, chunk.PduAddress, address.IsBit, chunkData).ConfigureAwait(false);
+                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                        completedElements,
+                        chunk.ElementCount,
+                        originalElementsPerUnit,
+                        totalOriginalCount);
                 }
 
-                globalElementOffset += range.Count;
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
     }
 
     private async Task<byte[]> ReadChunkAsync(
         ITransportSession session,
         ModbusArea area,
         ushort pduAddress,
-        ushort quantity,
-        bool isBit)
+        ushort quantity)
     {
-        ushort transactionId = unchecked(++_transactionId);
-        byte[] pdu = ModbusRequestBuilder.BuildRead(area, pduAddress, quantity);
-        byte[] requestAdu = WrapAdu(pdu, transactionId);
+        ushort transactionId = NextTransactionId();
+        byte[] requestPdu = ModbusRequestBuilder.BuildRead(area, pduAddress, quantity);
+        byte[] requestAdu = WrapAdu(requestPdu, transactionId);
 
         byte[] responseAdu = await session.ExchangeAsync(requestAdu, _frameDecoder).ConfigureAwait(false);
         byte[] responsePdu = UnwrapAdu(responseAdu, transactionId);
 
-        var functionCode = (ModbusFunctionCode)pdu[0];
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
+        bool isBit = area is ModbusArea.Coil or ModbusArea.DiscreteInput;
         return isBit
             ? ModbusResponseParser.ParseReadBits(responsePdu, functionCode, quantity)
             : ModbusResponseParser.ParseReadRegisters(responsePdu, functionCode, quantity);
@@ -163,71 +185,137 @@ public sealed class DeltaProtocol : IPlcProtocol
     private async Task WriteChunkAsync(
         ITransportSession session,
         ushort pduAddress,
-        ushort quantity,
         bool isBit,
         byte[] chunkData)
     {
-        ushort transactionId = unchecked(++_transactionId);
-        byte[] pdu = isBit
-            ? ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, quantity, chunkData)
-            : ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, quantity, chunkData);
+        ushort transactionId = NextTransactionId();
+        ushort quantity = (ushort)(isBit ? chunkData.Length : chunkData.Length / BytesPerWord);
+        byte[] requestPdu = BuildWritePdu(pduAddress, quantity, isBit, chunkData);
 
-        byte[] requestAdu = WrapAdu(pdu, transactionId);
+        byte[] requestAdu = WrapAdu(requestPdu, transactionId);
         byte[] responseAdu = await session.ExchangeAsync(requestAdu, _frameDecoder).ConfigureAwait(false);
         byte[] responsePdu = UnwrapAdu(responseAdu, transactionId);
 
-        var functionCode = (ModbusFunctionCode)pdu[0];
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
         ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, pduAddress, quantity);
     }
 
-    private byte[] WrapAdu(byte[] pdu, ushort transactionId)
+    private static byte[] BuildWritePdu(ushort pduAddress, ushort quantity, bool isBit, byte[] chunkData)
     {
-        return _encoding switch
+        if (!isBit)
         {
-            DeltaTransportEncoding.Rtu => ModbusRequestBuilder.BuildRtuAdu(_options.Station, pdu),
-            DeltaTransportEncoding.Ascii => ModbusRequestBuilder.BuildAsciiAdu(_options.Station, pdu),
-            DeltaTransportEncoding.Tcp => ModbusRequestBuilder.BuildTcpAdu(transactionId, _options.Station, pdu),
-            _ => throw new InvalidOperationException(),
-        };
+            return ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, quantity, chunkData);
+        }
+
+        bool[] bits = new bool[quantity];
+        for (int i = 0; i < quantity; i++)
+        {
+            bits[i] = chunkData[i] != 0;
+        }
+
+        byte[] packedCoilBytes = BitPacking.Pack(bits);
+        return ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, quantity, packedCoilBytes);
     }
 
-    private byte[] UnwrapAdu(byte[] adu, ushort transactionId)
+    private byte[] WrapAdu(byte[] pdu, ushort transactionId) => _encoding switch
     {
-        return _encoding switch
+        DeltaTransportEncoding.Rtu => ModbusRequestBuilder.BuildRtuAdu(_options.Station, pdu),
+        DeltaTransportEncoding.Ascii => ModbusRequestBuilder.BuildAsciiAdu(_options.Station, pdu),
+        DeltaTransportEncoding.Tcp => ModbusRequestBuilder.BuildTcpAdu(transactionId, _options.Station, pdu),
+        _ => throw new InvalidOperationException(),
+    };
+
+    private byte[] UnwrapAdu(byte[] responseAdu, ushort transactionId) => _encoding switch
+    {
+        DeltaTransportEncoding.Rtu => ModbusResponseParser.UnwrapRtuAdu(responseAdu, _options.Station),
+        DeltaTransportEncoding.Ascii => ModbusResponseParser.UnwrapAsciiAdu(responseAdu, _options.Station),
+        DeltaTransportEncoding.Tcp => ModbusResponseParser.UnwrapTcpAdu(responseAdu, transactionId, _options.Station),
+        _ => throw new InvalidOperationException(),
+    };
+
+    private static List<PlannedChunk> PlanChunks(
+        DeltaAddress address,
+        int totalElements,
+        int maxElements,
+        int wordsPerElement)
+    {
+        List<RangePlan> ranges = PlanRanges(address, totalElements, wordsPerElement);
+        var plannedChunks = new List<PlannedChunk>();
+        int globalElementOffset = 0;
+
+        foreach (RangePlan range in ranges)
         {
-            DeltaTransportEncoding.Rtu => ModbusResponseParser.UnwrapRtuAdu(adu, _options.Station),
-            DeltaTransportEncoding.Ascii => ModbusResponseParser.UnwrapAsciiAdu(adu, _options.Station),
-            DeltaTransportEncoding.Tcp => ModbusResponseParser.UnwrapTcpAdu(adu, transactionId, _options.Station),
-            _ => throw new InvalidOperationException(),
-        };
+            List<RequestChunker.Chunk> subChunks = RequestChunker.Plan(range.ElementCount, maxElements);
+            foreach (RequestChunker.Chunk subChunk in subChunks)
+            {
+                ushort pduAddress = (ushort)(range.BasePduAddress + (subChunk.ElementOffset * wordsPerElement));
+                plannedChunks.Add(new PlannedChunk(pduAddress, globalElementOffset + subChunk.ElementOffset, subChunk.ElementCount));
+            }
+
+            globalElementOffset += range.ElementCount;
+        }
+
+        return plannedChunks;
     }
 
-    private static List<RangePlan> PlanRanges(DeltaAddress address, int totalCount)
+    private static List<RangePlan> PlanRanges(DeltaAddress address, int elementCount, int wordsPerElement)
     {
         var ranges = new List<RangePlan>(2);
 
         if (address.Series == DeltaSeries.Dvp)
         {
-            if (address.Device == "M" && address.Index < 1536 && address.Index + totalCount > 1536)
+            if (address.Device == "M" && address.Index < DvpRelayBoundaryIndex && address.Index + elementCount > DvpRelayBoundaryIndex)
             {
-                int firstCount = 1536 - address.Index;
-                ranges.Add(new RangePlan(address.PduAddress, firstCount));
-                ranges.Add(new RangePlan(0xB000, totalCount - firstCount));
+                int firstElementCount = DvpRelayBoundaryIndex - address.Index;
+                ranges.Add(new RangePlan(address.PduAddress, firstElementCount));
+                ranges.Add(new RangePlan(DvpHighRelayBasePduAddress, elementCount - firstElementCount));
                 return ranges;
             }
 
-            if (address.Device == "D" && address.Index < 4096 && address.Index + totalCount > 4096)
+            int totalWords = elementCount * wordsPerElement;
+            if (address.Device == "D" && address.Index < DvpRegisterBoundaryIndex && address.Index + totalWords > DvpRegisterBoundaryIndex)
             {
-                int firstCount = 4096 - address.Index;
-                ranges.Add(new RangePlan(address.PduAddress, firstCount));
-                ranges.Add(new RangePlan(0x9000, totalCount - firstCount));
-                return ranges;
+                if ((DvpRegisterBoundaryIndex - address.Index) % wordsPerElement != 0)
+                {
+                    throw new ArgumentException("다중 워드 원소가 불연속 주소 경계(D4096)에 걸쳐 있습니다.", nameof(address));
+                }
+
+                int firstElementCount = (DvpRegisterBoundaryIndex - address.Index) / wordsPerElement;
+                if (firstElementCount > 0 && firstElementCount < elementCount)
+                {
+                    ranges.Add(new RangePlan(address.PduAddress, firstElementCount));
+                    ranges.Add(new RangePlan(DvpHighRegisterBasePduAddress, elementCount - firstElementCount));
+                    return ranges;
+                }
             }
         }
 
-        ranges.Add(new RangePlan(address.PduAddress, totalCount));
+        ranges.Add(new RangePlan(address.PduAddress, elementCount));
         return ranges;
     }
 
-    private readonly record struct RangePlan(ushort BasePduAddress, int Count);
+    private ushort NextTransactionId()
+    {
+        lock (_txIdLock)
+        {
+            _transactionId = (ushort)(_transactionId == ushort.MaxValue ? 1 : _transactionId + 1);
+            return _transactionId;
+        }
+    }
+
+    private void ResetTransactionIdIfNewConnection(long connectionId)
+    {
+        lock (_txIdLock)
+        {
+            if (_lastConnectionId != connectionId)
+            {
+                _lastConnectionId = connectionId;
+                _transactionId = 0;
+            }
+        }
+    }
+
+    private readonly record struct RangePlan(ushort BasePduAddress, int ElementCount);
+
+    private readonly record struct PlannedChunk(ushort PduAddress, int ElementOffset, int ElementCount);
 }

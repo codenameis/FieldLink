@@ -12,6 +12,11 @@ namespace FieldLink.Plc.Protocols.Fatek;
 /// <summary>FATEK FBs/B1 계열 PLC와 통신하는 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class FatekProtocol : IPlcProtocol
 {
+    private const int BytesPerWord = 2;
+    private const int BytesPerDWord = 4;
+    private const string CommandWriteBits = "45";
+    private const string CommandWriteWords = "47";
+
     private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
 
     private readonly ITransport _transport;
@@ -45,37 +50,39 @@ public sealed class FatekProtocol : IPlcProtocol
         }
 
         var address = FatekAddress.Parse(request.Address);
-        int elementSize = request.DataType.GetElementSize();
-        int maxElements = address.IsBit ? _options.MaxReadBits : _options.MaxReadWords;
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, nameof(request));
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
-        byte[] combinedBuffer = new byte[request.ByteCount];
+        int requestedByteCount = request.ByteCount;
+        int bytesPerDeviceUnit = address.Is32Bit ? BytesPerDWord : BytesPerWord;
+        PlcReadRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordReadRequest(request, bytesPerDeviceUnit);
+        int bytesPerElement = effectiveRequest.DataType.GetElementSize();
+        int unitsPerElement = address.IsBit ? 1 : Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        int maxElementsPerChunk = address.IsBit
+            ? _options.MaxReadBits
+            : RequestChunker.CalculateElementLimit(_options.MaxReadWords, unitsPerElement);
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
+
+        await _transport.RunExclusiveAsync(async session =>
         {
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                FatekAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
+                FatekAddress chunkAddress = address.Offset(chunk.ElementOffset * unitsPerElement);
+                ushort pointCount = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * unitsPerElement);
 
-                byte[] requestFrame = address.IsBit
-                    ? FatekRequestBuilder.BuildReadBits(_options.Station, chunkAddress, count)
-                    : FatekRequestBuilder.BuildReadWords(_options.Station, chunkAddress, count);
-
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-
-                byte[] chunkData = address.IsBit
-                    ? FatekResponseParser.ParseReadBits(responseFrame, _options.Station, count)
-                    : FatekResponseParser.ParseReadWords(responseFrame, _options.Station, count);
-
-                int destOffset = chunk.ElementOffset * elementSize;
-                Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
+                byte[] chunkData = await ReadChunkAsync(session, chunkAddress, pointCount).ConfigureAwait(false);
+                int bufferByteOffset = chunk.ElementOffset * bytesPerElement;
+                Array.Copy(chunkData, 0, combinedBuffer, bufferByteOffset, chunkData.Length);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
 
-        return combinedBuffer;
+        return ProtocolExecutionGuard.TrimReadResult(combinedBuffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -87,28 +94,101 @@ public sealed class FatekProtocol : IPlcProtocol
         }
 
         var address = FatekAddress.Parse(request.Address);
-        int maxElements = address.IsBit ? _options.MaxWriteBits : _options.MaxWriteWords;
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, nameof(request));
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        int totalOriginalCount = request.Count;
+        int originalElementsPerUnit = 1;
+        int bytesPerDeviceUnit = address.Is32Bit ? BytesPerDWord : BytesPerWord;
+        PlcWriteRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit, bytesPerDeviceUnit);
+
+        int bytesPerElement = effectiveRequest.DataType.GetElementSize();
+        int unitsPerElement = address.IsBit ? 1 : Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        int maxElementsPerChunk = address.IsBit
+            ? _options.MaxWriteBits
+            : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, unitsPerElement);
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
+        int completedElements = 0;
+
+        try
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            await _transport.RunExclusiveAsync(async session =>
             {
-                FatekAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    FatekAddress chunkAddress = address.Offset(chunk.ElementOffset * unitsPerElement);
+                    ushort pointCount = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * unitsPerElement);
+                    byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
-                byte[] requestFrame = address.IsBit
-                    ? FatekRequestBuilder.BuildWriteBits(_options.Station, chunkAddress, count, chunkData)
-                    : FatekRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, count, chunkData);
+                    await WriteChunkAsync(session, chunkAddress, pointCount, chunkData).ConfigureAwait(false);
+                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                        completedElements,
+                        chunk.ElementCount,
+                        originalElementsPerUnit,
+                        totalOriginalCount);
+                }
 
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
+        {
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
 
-                string expectedCmd = address.IsBit ? "45" : "47";
-                FatekResponseParser.VerifyWriteResponse(responseFrame, _options.Station, expectedCmd);
-            }
+    private static void Validate32BitDeviceDataType(
+        FatekAddress address,
+        PlcDataType dataType,
+        int byteCount,
+        string paramName)
+    {
+        if (!address.Is32Bit)
+        {
+            return;
+        }
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+        if (dataType is PlcDataType.Int16 or PlcDataType.UInt16 ||
+            (dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPerDWord != 0))
+        {
+            throw new ArgumentException(
+                $"32비트 카운터 레지스터({address.Device})는 32비트 이상 자료형 또는 4바이트 배수로만 접근할 수 있습니다.",
+                paramName);
+        }
+    }
+
+    private async Task<byte[]> ReadChunkAsync(ITransportSession session, FatekAddress chunkAddress, ushort pointCount)
+    {
+        byte[] requestFrame = chunkAddress.IsBit
+            ? FatekRequestBuilder.BuildReadBits(_options.Station, chunkAddress, pointCount)
+            : FatekRequestBuilder.BuildReadWords(_options.Station, chunkAddress, pointCount);
+
+        byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+
+        if (chunkAddress.IsBit)
+        {
+            return FatekResponseParser.ParseReadBits(responseFrame, _options.Station, pointCount);
+        }
+
+        return chunkAddress.Is32Bit
+            ? FatekResponseParser.ParseReadDWords(responseFrame, _options.Station, pointCount)
+            : FatekResponseParser.ParseReadWords(responseFrame, _options.Station, pointCount);
+    }
+
+    private async Task WriteChunkAsync(ITransportSession session, FatekAddress chunkAddress, ushort pointCount, byte[] chunkData)
+    {
+        byte[] requestFrame = chunkAddress.IsBit
+            ? FatekRequestBuilder.BuildWriteBits(_options.Station, chunkAddress, pointCount, chunkData)
+            : (chunkAddress.Is32Bit
+                ? FatekRequestBuilder.BuildWriteDWords(_options.Station, chunkAddress, pointCount, chunkData)
+                : FatekRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, pointCount, chunkData));
+
+        byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+
+        string expectedCommand = chunkAddress.IsBit ? CommandWriteBits : CommandWriteWords;
+        FatekResponseParser.VerifyWriteResponse(responseFrame, _options.Station, expectedCommand);
     }
 }

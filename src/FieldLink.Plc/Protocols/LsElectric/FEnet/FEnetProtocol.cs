@@ -48,6 +48,8 @@ public sealed class FEnetProtocol : IPlcProtocol
         }
 
         var address = FEnetAddress.Parse(request.Address);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+
         int elementSize = request.DataType.GetElementSize();
         int maxElements = RequestChunker.CalculateElementLimit(_options.MaxReadBytes, elementSize);
 
@@ -84,6 +86,8 @@ public sealed class FEnetProtocol : IPlcProtocol
         }
 
         var address = FEnetAddress.Parse(request.Address);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+
         int elementSize = request.DataType.GetElementSize();
         int maxElements = RequestChunker.CalculateElementLimit(_options.MaxWriteBytes, elementSize);
 
@@ -108,16 +112,9 @@ public sealed class FEnetProtocol : IPlcProtocol
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (PlcDeviceException deviceException)
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
-            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
-        }
-        catch (PlcException exception)
-        {
-            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
-            {
-                CompletedCount = completedElements
-            };
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
     }
 

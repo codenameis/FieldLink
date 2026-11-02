@@ -39,13 +39,13 @@ public static class FEnetRequestBuilder
         BuildHeader(frame, invokeId, instructionLength, cpuInfo);
 
         int offset = 20;
-        BinaryBuffer.WriteUInt16LE(frame, offset, CommandRead);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
-        BinaryBuffer.WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
-        BinaryBuffer.WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset, CommandRead);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 2, DataTypeContinuous);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 4, 0x0000); // Reserved
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 6, 0x0001); // 1 block
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 8, (ushort)varBytes.Length);
         Buffer.BlockCopy(varBytes, 0, frame, offset + 10, varBytes.Length);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 10 + varBytes.Length, byteCount);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 10 + varBytes.Length, byteCount);
 
         return frame;
     }
@@ -74,13 +74,13 @@ public static class FEnetRequestBuilder
         BuildHeader(frame, invokeId, instructionLength, cpuInfo);
 
         int offset = 20;
-        BinaryBuffer.WriteUInt16LE(frame, offset, CommandWrite);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
-        BinaryBuffer.WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
-        BinaryBuffer.WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset, CommandWrite);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 2, DataTypeContinuous);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 4, 0x0000); // Reserved
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 6, 0x0001); // 1 block
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 8, (ushort)varBytes.Length);
         Buffer.BlockCopy(varBytes, 0, frame, offset + 10, varBytes.Length);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 10 + varBytes.Length, (ushort)data.Length);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + 10 + varBytes.Length, (ushort)data.Length);
         Buffer.BlockCopy(data, 0, frame, offset + 12 + varBytes.Length, data.Length);
 
         return frame;
@@ -92,8 +92,8 @@ public static class FEnetRequestBuilder
         // Offset 8~9: CompanyId Null Padding (0x0000), Offset 10~11: PLC Info (0x0000)
         buffer[12] = cpuInfo;
         buffer[13] = SourceClient;
-        BinaryBuffer.WriteUInt16LE(buffer, 14, invokeId);
-        BinaryBuffer.WriteUInt16LE(buffer, 16, instructionLength);
+        BinaryBuffer.WriteUInt16LittleEndian(buffer, 14, invokeId);
+        BinaryBuffer.WriteUInt16LittleEndian(buffer, 16, instructionLength);
         buffer[18] = 0x00; // FEnet Position
 
         byte bcc = 0;

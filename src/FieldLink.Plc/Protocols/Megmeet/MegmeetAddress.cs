@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using FieldLink.Plc.Protocols.Modbus;
 
 namespace FieldLink.Plc.Protocols.Megmeet;
@@ -7,6 +8,8 @@ namespace FieldLink.Plc.Protocols.Megmeet;
 /// <summary>Megmeet PLC 디바이스 주소를 Modbus PDU 주소로 변환한 값 객체입니다. (사양서 §1)</summary>
 public sealed class MegmeetAddress
 {
+    private const int Counter32BitStartNumber = 200;
+
     private MegmeetAddress(string originalAddress, string device, int number, ModbusArea area, ushort pduAddress, bool isBit)
     {
         OriginalAddress = originalAddress;
@@ -23,7 +26,7 @@ public sealed class MegmeetAddress
     /// <summary>디바이스 접두사입니다. (예: "M", "D", "X", "Y", "SM", "SD", "C")</summary>
     public string Device { get; }
 
-    /// <summary>디바이스 인덱스 번호입니다.</summary>
+    /// <summary>디바이스 인덱스 번호입니다. (X, Y는 8진수를 환산한 선형 인덱스입니다)</summary>
     public int Number { get; }
 
     /// <summary>매핑되는 Modbus 메모리 영역입니다.</summary>
@@ -34,6 +37,9 @@ public sealed class MegmeetAddress
 
     /// <summary>비트 영역 또는 비트 접근 여부입니다.</summary>
     public bool IsBit { get; }
+
+    /// <summary>32비트(2워드) 카운터 워드 영역(C200~C306) 여부입니다.</summary>
+    public bool Is32BitWord => !IsBit && Device == "C" && Number >= Counter32BitStartNumber;
 
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static MegmeetAddress Parse(string address, bool isBitAccess = false)
@@ -95,10 +101,21 @@ public sealed class MegmeetAddress
         return p1 is 'X' or 'Y' or 'M' or 'S' or 'T' or 'C' or 'D' or 'Z' or 'R';
     }
 
-    private static bool TryParseOctal(string original, string devicePrefix, string numberText, [NotNullWhen(true)] out MegmeetAddress? result, out string? errorMessage)
+    private static bool TryParseOctal(
+        string original,
+        string devicePrefix,
+        string numberText,
+        [NotNullWhen(true)] out MegmeetAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
+
+        if (numberText.Length == 0)
+        {
+            errorMessage = $"8진수 주소 파싱 실패: {original}";
+            return false;
+        }
 
         foreach (char c in numberText)
         {
@@ -134,13 +151,18 @@ public sealed class MegmeetAddress
         result = null;
         errorMessage = null;
 
-        if (!int.TryParse(numberText, out int parsedNumber) || parsedNumber < 0)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber) || parsedNumber < 0)
         {
             errorMessage = $"유효하지 않은 Megmeet 디바이스 번호: {original}";
             return false;
         }
 
-        bool isBit = isBitAccess || devicePrefix is "M" or "SM" or "S";
+        bool isBit = devicePrefix switch
+        {
+            "M" or "SM" or "S" => true,
+            "T" or "C" => isBitAccess,
+            _ => false,
+        };
         ModbusArea area = isBit ? ModbusArea.Coil : ModbusArea.HoldingRegister;
         ushort pdu = CalculatePdu(devicePrefix, parsedNumber, isBit);
 
@@ -150,6 +172,7 @@ public sealed class MegmeetAddress
 
     private static ushort CalculatePdu(string devicePrefix, int n, bool isBit) => devicePrefix switch
     {
+        "X" or "Y" => (ushort)n,
         "M" => (ushort)(n < 2048 ? n + 2000 : (n - 2048) + 12000),
         "SM" => (ushort)(n < 256 ? n + 4400 : (n - 256) + 30000),
         "S" => (ushort)(n < 1024 ? n + 6000 : (n - 1024) + 31000),

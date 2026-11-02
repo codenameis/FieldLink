@@ -6,17 +6,19 @@ namespace FieldLink.Plc.Protocols.Yokogawa;
 /// <summary>Yokogawa FA-M3 바이너리 링크 응답 파서입니다. (사양서 §2)</summary>
 public static class YokogawaResponseParser
 {
+    private const int HeaderLength = 4;
+    private const int SubheaderOffset = 0;
+    private const int EndCodeOffset = 1;
+    private const int SizeFieldOffset = 2;
+    private const byte ResponseFlagMask = 0x80;
+    private const byte EndCodeSuccess = 0x00;
+
     /// <summary>읽기 응답 프레임에서 데이터 바이트를 추출합니다.</summary>
     public static byte[] ParseReadResponse(byte[] frame, byte expectedCommand)
     {
-        int size = ValidateHeader(frame, expectedCommand);
-        if (frame.Length < 4 + size)
-        {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 데이터가 선언된 크기({size})보다 적습니다.");
-        }
-
-        byte[] data = new byte[size];
-        Buffer.BlockCopy(frame, 4, data, 0, size);
+        int payloadSize = ValidateHeader(frame, expectedCommand);
+        byte[] data = new byte[payloadSize];
+        Buffer.BlockCopy(frame, HeaderLength, data, 0, payloadSize);
         return data;
     }
 
@@ -28,24 +30,35 @@ public static class YokogawaResponseParser
 
     private static int ValidateHeader(byte[] frame, byte expectedCommand)
     {
-        if (frame is null || frame.Length < 4)
+        if (frame is null || frame.Length < HeaderLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 길이가 너무 짧습니다: {frame?.Length ?? 0}바이트");
         }
 
-        byte expectedSubheader = (byte)(expectedCommand | 0x80);
-        if (frame[0] != expectedSubheader)
+        byte expectedSubheader = (byte)(expectedCommand | ResponseFlagMask);
+        if (frame[SubheaderOffset] != expectedSubheader)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"서브헤더 응답 불일치: 기대=0x{expectedSubheader:X2}, 수신=0x{frame[0]:X2}");
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"서브헤더 응답 불일치: 기대=0x{expectedSubheader:X2}, 수신=0x{frame[SubheaderOffset]:X2}");
         }
 
-        byte endCode = frame[1];
-        if (endCode != 0x00)
+        // IM 34M06H24-08E §5.3.2 / 사양서 §2.2 4단계: 선언된 크기와 실제 본문 길이(frame.Length - 4)가 다르면 손상 프레임으로 처리한다.
+        int declaredSize = BinaryBuffer.ReadUInt16BigEndian(frame, SizeFieldOffset);
+        if (frame.Length != HeaderLength + declaredSize)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"응답 프레임 길이가 선언된 크기와 일치하지 않습니다: 선언={declaredSize}, 실제 본문={frame.Length - HeaderLength}");
+        }
+
+        byte endCode = frame[EndCodeOffset];
+        if (endCode != EndCodeSuccess)
         {
             throw new PlcDeviceException(endCode, FormatErrorMessage(endCode));
         }
 
-        return BinaryBuffer.ReadUInt16BE(frame, 2);
+        return declaredSize;
     }
 
     private static string FormatErrorMessage(byte endCode) => endCode switch

@@ -6,6 +6,30 @@ namespace FieldLink.Plc.Protocols.GE;
 /// <summary>GE Fanuc / Emerson SRTP 프로토콜의 주소 표현입니다. (사양서 §1.4)</summary>
 public sealed class GESrtpAddress
 {
+    private const byte DiscreteInputBitCode = 0x46;
+    private const byte DiscreteInputByteCode = 0x10;
+    private const byte DiscreteOutputBitCode = 0x48;
+    private const byte DiscreteOutputByteCode = 0x12;
+    private const byte TemporaryMemoryBitCode = 0x4A;
+    private const byte TemporaryMemoryByteCode = 0x14;
+    private const byte InternalMarkerBitCode = 0x4C;
+    private const byte InternalMarkerByteCode = 0x16;
+    private const byte SystemStatusABitCode = 0x4E;
+    private const byte SystemStatusAByteCode = 0x18;
+    private const byte SystemStatusBBitCode = 0x50;
+    private const byte SystemStatusBByteCode = 0x1A;
+    private const byte SystemStatusCBitCode = 0x52;
+    private const byte SystemStatusCByteCode = 0x1C;
+    private const byte SystemStatusBitCode = 0x54;
+    private const byte SystemStatusByteCode = 0x1E;
+    private const byte GeniusGlobalBitCode = 0x56;
+    private const byte GeniusGlobalByteCode = 0x38;
+    private const byte RegisterMemoryWordCode = 0x08;
+    private const byte AnalogInputWordCode = 0x0A;
+    private const byte AnalogOutputWordCode = 0x0C;
+
+    private static readonly string[] TwoCharacterPrefixes = ["SA", "SB", "SC", "AI", "AQ"];
+
     private GESrtpAddress(string original, byte memoryTypeCode, ushort wireAddress, bool isBit, bool isWord)
     {
         Original = original;
@@ -21,7 +45,7 @@ public sealed class GESrtpAddress
     /// <summary>GFK-0582 메모리 세그먼트 셀렉터 코드입니다.</summary>
     public byte MemoryTypeCode { get; }
 
-    /// <summary>와이어 전송 주소 (0-based)입니다.</summary>
+    /// <summary>와이어 전송 주소(0-based)입니다.</summary>
     public ushort WireAddress { get; }
 
     /// <summary>비트 영역 또는 비트 접근 여부입니다.</summary>
@@ -30,7 +54,12 @@ public sealed class GESrtpAddress
     /// <summary>16비트 워드 전용 영역(R, AI, AQ) 여부입니다.</summary>
     public bool IsWord { get; }
 
-    /// <summary>주소 문자열을 파싱합니다.</summary>
+    /// <summary>주소 문자열을 해석하여 <see cref="GESrtpAddress"/>를 생성합니다.</summary>
+    /// <param name="address">제조사 표기 주소 문자열입니다 (예: "M1", "%R100", "AI10").</param>
+    /// <param name="isBitAccess">이산 영역을 비트 단위(0x46~0x56)로 접근할지 여부입니다.</param>
+    /// <returns>해석된 주소 객체입니다.</returns>
+    /// <exception cref="ArgumentException"><paramref name="address"/>가 비어 있을 때.</exception>
+    /// <exception cref="FormatException">주소 형식이 올바르지 않을 때.</exception>
     public static GESrtpAddress Parse(string address, bool isBitAccess = false)
     {
         if (!TryParse(address, isBitAccess, out GESrtpAddress? result, out string? errorMessage))
@@ -41,7 +70,13 @@ public sealed class GESrtpAddress
         return result;
     }
 
-    /// <summary>주소 문자열 파싱을 시도합니다.</summary>
+    /// <summary>주소 문자열 해석을 시도합니다.</summary>
+    /// <param name="address">제조사 표기 주소 문자열입니다.</param>
+    /// <param name="isBitAccess">이산 영역을 비트 단위(0x46~0x56)로 접근할지 여부입니다.</param>
+    /// <param name="result">해석에 성공했을 때 생성된 주소 객체입니다.</param>
+    /// <param name="errorMessage">해석에 실패했을 때의 오류 설명입니다.</param>
+    /// <returns>해석 성공 여부입니다.</returns>
+    /// <exception cref="ArgumentException"><paramref name="address"/>가 비어 있을 때.</exception>
     public static bool TryParse(
         string? address,
         bool isBitAccess,
@@ -56,31 +91,40 @@ public sealed class GESrtpAddress
             throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
         }
 
-        string trimmed = address!.Trim().ToUpperInvariant();
-        if (trimmed.StartsWith("%", StringComparison.Ordinal))
+        string trimmedAddress = address!.Trim().ToUpperInvariant();
+        if (trimmedAddress.StartsWith("%", StringComparison.Ordinal))
         {
-            trimmed = trimmed.Substring(1);
+            trimmedAddress = trimmedAddress.Substring(1);
         }
 
-        if (!TryExtractPrefix(trimmed, isBitAccess, out byte typeCode, out bool isBit, out bool isWord, out string numberText))
+        if (!TryExtractPrefix(trimmedAddress, isBitAccess, out byte typeCode, out bool isBit, out bool isWord, out string numberText))
         {
             errorMessage = $"지원하지 않는 GE SRTP 주소 접두사입니다: {address}";
             return false;
         }
 
-        if (!ushort.TryParse(numberText, out ushort userNum) || userNum == 0)
+        if (!ushort.TryParse(numberText, out ushort userNumber) || userNumber == 0)
         {
             errorMessage = $"GE 주소 번호는 1 이상이어야 합니다: {address}";
             return false;
         }
 
-        ushort wireAddr = (ushort)(userNum - 1);
-        result = new GESrtpAddress(trimmed, typeCode, wireAddr, isBit, isWord);
+        ushort wireAddress = (ushort)(userNumber - 1);
+        result = new GESrtpAddress(trimmedAddress, typeCode, wireAddress, isBit, isWord);
         return true;
     }
 
+    /// <summary>지정한 단위 오프셋만큼 주소를 이동한 새 <see cref="GESrtpAddress"/>를 생성합니다.</summary>
+    /// <param name="unitOffset">이동할 단위 오프셋(워드, 바이트 또는 비트 수)입니다.</param>
+    /// <returns>오프셋이 반영된 새 주소 객체입니다.</returns>
+    public GESrtpAddress Offset(int unitOffset)
+    {
+        ushort nextWireAddress = (ushort)(WireAddress + unitOffset);
+        return new GESrtpAddress($"{Original}+{unitOffset}", MemoryTypeCode, nextWireAddress, IsBit, IsWord);
+    }
+
     private static bool TryExtractPrefix(
-        string trimmed,
+        string trimmedAddress,
         bool isBitAccess,
         out byte typeCode,
         out bool isBit,
@@ -92,21 +136,19 @@ public sealed class GESrtpAddress
         isWord = false;
         numberText = string.Empty;
 
-        // 2글자 접두사 먼저 검사
-        string[] prefixes2 = ["SA", "SB", "SC", "AI", "AQ"];
-        foreach (string p2 in prefixes2)
+        // GFK-0582 §1.4: 2글자 접두사(SA, SB, SC, AI, AQ)를 1글자보다 먼저 검사한다.
+        foreach (string twoCharPrefix in TwoCharacterPrefixes)
         {
-            if (trimmed.StartsWith(p2, StringComparison.Ordinal))
+            if (trimmedAddress.StartsWith(twoCharPrefix, StringComparison.Ordinal))
             {
-                numberText = trimmed.Substring(2);
-                return ResolveTypeCode(p2, isBitAccess, out typeCode, out isBit, out isWord);
+                numberText = trimmedAddress.Substring(2);
+                return ResolveTypeCode(twoCharPrefix, isBitAccess, out typeCode, out isBit, out isWord);
             }
         }
 
-        // 1글자 접두사
-        string p1 = trimmed.Substring(0, 1);
-        numberText = trimmed.Substring(1);
-        return ResolveTypeCode(p1, isBitAccess, out typeCode, out isBit, out isWord);
+        string singleCharPrefix = trimmedAddress.Substring(0, 1);
+        numberText = trimmedAddress.Substring(1);
+        return ResolveTypeCode(singleCharPrefix, isBitAccess, out typeCode, out isBit, out isWord);
     }
 
     private static bool ResolveTypeCode(
@@ -116,39 +158,33 @@ public sealed class GESrtpAddress
         out bool isBit,
         out bool isWord)
     {
-        isBit = false;
-        isWord = false;
-        typeCode = prefix switch
-        {
-            "I" => (byte)(isBitAccess ? 0x46 : 0x10),
-            "Q" => (byte)(isBitAccess ? 0x48 : 0x12),
-            "T" => (byte)(isBitAccess ? 0x4A : 0x14),
-            "M" => (byte)(isBitAccess ? 0x4C : 0x16),
-            "SA" => (byte)(isBitAccess ? 0x4E : 0x18),
-            "SB" => (byte)(isBitAccess ? 0x50 : 0x1A),
-            "SC" => (byte)(isBitAccess ? 0x52 : 0x1C),
-            "S" => (byte)(isBitAccess ? 0x54 : 0x1E),
-            "G" => (byte)(isBitAccess ? 0x56 : 0x38),
-            "R" => 0x08,
-            "AI" => 0x0A,
-            "AQ" => 0x0C,
-            _ => 0,
-        };
-
+        typeCode = SelectMemoryTypeCode(prefix, isBitAccess);
         if (typeCode == 0)
         {
+            isBit = false;
+            isWord = false;
             return false;
         }
 
-        isBit = isBitAccess && typeCode >= 0x46;
-        isWord = typeCode is 0x08 or 0x0A or 0x0C;
+        isBit = isBitAccess && typeCode >= DiscreteInputBitCode;
+        isWord = typeCode is RegisterMemoryWordCode or AnalogInputWordCode or AnalogOutputWordCode;
         return true;
     }
 
-    /// <summary>오프셋만큼 주소를 이동한 새 <see cref="GESrtpAddress"/>를 생성합니다.</summary>
-    public GESrtpAddress Offset(int count)
+    private static byte SelectMemoryTypeCode(string prefix, bool isBitAccess) => prefix switch
     {
-        ushort newWire = (ushort)(WireAddress + count);
-        return new GESrtpAddress($"{Original}+{count}", MemoryTypeCode, newWire, IsBit, IsWord);
-    }
+        "I" => isBitAccess ? DiscreteInputBitCode : DiscreteInputByteCode,
+        "Q" => isBitAccess ? DiscreteOutputBitCode : DiscreteOutputByteCode,
+        "T" => isBitAccess ? TemporaryMemoryBitCode : TemporaryMemoryByteCode,
+        "M" => isBitAccess ? InternalMarkerBitCode : InternalMarkerByteCode,
+        "SA" => isBitAccess ? SystemStatusABitCode : SystemStatusAByteCode,
+        "SB" => isBitAccess ? SystemStatusBBitCode : SystemStatusBByteCode,
+        "SC" => isBitAccess ? SystemStatusCBitCode : SystemStatusCByteCode,
+        "S" => isBitAccess ? SystemStatusBitCode : SystemStatusByteCode,
+        "G" => isBitAccess ? GeniusGlobalBitCode : GeniusGlobalByteCode,
+        "R" => RegisterMemoryWordCode,
+        "AI" => AnalogInputWordCode,
+        "AQ" => AnalogOutputWordCode,
+        _ => 0,
+    };
 }

@@ -26,11 +26,28 @@ public class MewtocolAddressTests
     [InlineData("LD5", "L", 5)]
     [InlineData("FL20", "F", 20)]
     [InlineData("D50", "D", 50)]
-    public void Parse_WordRegisters_MapsToExpectedDeviceAndNumber(string input, string expectedWire, int expectedNum)
+    public void Parse_WordRegisters_MapsToExpectedDeviceAndNumber(string input, string expectedWire, int expectedNumber)
     {
         var parsedAddress = MewtocolAddress.Parse(input);
         Assert.Equal(expectedWire, parsedAddress.WireString);
-        Assert.Equal(expectedNum, parsedAddress.Number);
+        Assert.Equal(expectedNumber, parsedAddress.Number);
         Assert.False(parsedAddress.IsBit);
+    }
+
+    [Fact]
+    public void Offset_ContactAddress_AdvancesAcrossWordBoundaryInHex16()
+    {
+        var baseAddress = MewtocolAddress.Parse("R10E");
+
+        MewtocolAddress offsetBy1 = baseAddress.Offset(1);
+        MewtocolAddress offsetBy2 = baseAddress.Offset(2);
+
+        Assert.Equal("R010F", offsetBy1.WireString);
+        Assert.Equal(10, offsetBy1.Number);
+        Assert.Equal(15, offsetBy1.BitOffset);
+
+        Assert.Equal("R0110", offsetBy2.WireString);
+        Assert.Equal(11, offsetBy2.Number);
+        Assert.Equal(0, offsetBy2.BitOffset);
     }
 }

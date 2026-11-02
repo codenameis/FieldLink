@@ -133,7 +133,7 @@ public static class MCAsciiResponseParser
         for (int wordIndex = 0; wordIndex < pointCount; wordIndex++)
         {
             ushort word = (ushort)BinaryBuffer.ReadAsciiHex(data, wordIndex * WordCharacterCount, WordCharacterCount);
-            BinaryBuffer.WriteUInt16LE(words, wordIndex * 2, word);
+            BinaryBuffer.WriteUInt16LittleEndian(words, wordIndex * 2, word);
         }
 
         return words;

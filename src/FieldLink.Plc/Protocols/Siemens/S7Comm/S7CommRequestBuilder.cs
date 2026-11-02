@@ -41,7 +41,7 @@ public static class S7CommRequestBuilder
         byte[] frame = new byte[22];
         frame[0] = TpktVersion;
         frame[1] = 0x00;
-        BinaryBuffer.WriteUInt16BE(frame, 2, 22);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 2, 22);
 
         frame[4] = 17; // COTP Length
         frame[5] = CotpConnectionRequest;
@@ -53,11 +53,11 @@ public static class S7CommRequestBuilder
 
         frame[11] = CallingTsapCode;
         frame[12] = 0x02;
-        BinaryBuffer.WriteUInt16BE(frame, 13, options.LocalTsap);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 13, options.LocalTsap);
 
         frame[15] = CalledTsapCode;
         frame[16] = 0x02;
-        BinaryBuffer.WriteUInt16BE(frame, 17, options.RemoteTsap);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 17, options.RemoteTsap);
 
         frame[19] = TpduSizeCode;
         frame[20] = 0x01;
@@ -80,9 +80,9 @@ public static class S7CommRequestBuilder
 
         frame[17] = FunctionSetupCommunication;
         frame[18] = 0x00;
-        BinaryBuffer.WriteUInt16BE(frame, 19, ConcurrentRequestCount);
-        BinaryBuffer.WriteUInt16BE(frame, 21, ConcurrentRequestCount);
-        BinaryBuffer.WriteUInt16BE(frame, 23, (ushort)options.RequestedPduLength);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 19, ConcurrentRequestCount);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 21, ConcurrentRequestCount);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 23, (ushort)options.RequestedPduLength);
 
         return frame;
     }
@@ -146,7 +146,7 @@ public static class S7CommRequestBuilder
 
         frame[31] = 0x00;
         frame[32] = address.IsBit ? DataTransportSizeBit : DataTransportSizeByte;
-        BinaryBuffer.WriteUInt16BE(frame, 33, address.IsBit ? (ushort)1 : (ushort)(data.Length * BitsPerByte));
+        BinaryBuffer.WriteUInt16BigEndian(frame, 33, address.IsBit ? (ushort)1 : (ushort)(data.Length * BitsPerByte));
 
         if (address.IsBit)
         {
@@ -164,7 +164,7 @@ public static class S7CommRequestBuilder
     {
         frame[0] = TpktVersion;
         frame[1] = 0x00;
-        BinaryBuffer.WriteUInt16BE(frame, 2, totalFrameLength);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 2, totalFrameLength);
         frame[4] = CotpDataHeaderLength;
         frame[5] = CotpDataTransfer;
         frame[6] = CotpLastFragment;
@@ -176,9 +176,9 @@ public static class S7CommRequestBuilder
         frame[8] = MessageTypeRequest;
         frame[9] = 0x00;
         frame[10] = 0x00;
-        BinaryBuffer.WriteUInt16BE(frame, 11, pduReference);
-        BinaryBuffer.WriteUInt16BE(frame, 13, paramLength);
-        BinaryBuffer.WriteUInt16BE(frame, 15, dataLength);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 11, pduReference);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 13, paramLength);
+        BinaryBuffer.WriteUInt16BigEndian(frame, 15, dataLength);
     }
 
     private static void WriteItemParameters(byte[] frame, int offset, byte function, S7CommAddress address, ushort count)
@@ -189,9 +189,9 @@ public static class S7CommRequestBuilder
         frame[offset + 3] = AddressLength;
         frame[offset + 4] = SyntaxIdS7Any;
         frame[offset + 5] = address.IsBit ? RequestTransportSizeBit : RequestTransportSizeByte;
-        BinaryBuffer.WriteUInt16BE(frame, offset + 6, count);
-        BinaryBuffer.WriteUInt16BE(frame, offset + 8, (ushort)address.DataBlockNumber);
+        BinaryBuffer.WriteUInt16BigEndian(frame, offset + 6, count);
+        BinaryBuffer.WriteUInt16BigEndian(frame, offset + 8, (ushort)address.DataBlockNumber);
         frame[offset + 10] = (byte)address.Area;
-        BinaryBuffer.WriteUInt24BE(frame, offset + 11, address.StartBitAddress);
+        BinaryBuffer.WriteUInt24BigEndian(frame, offset + 11, address.StartBitAddress);
     }
 }

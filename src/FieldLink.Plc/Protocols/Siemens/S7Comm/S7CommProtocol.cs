@@ -114,19 +114,13 @@ public sealed class S7CommProtocol : IPlcProtocol
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (PlcDeviceException exception)
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(
+            exception,
+            ToElementCount(address, request.DataType, completedUnits)))
         {
-            throw new PlcDeviceException(exception.DeviceErrorCode, exception.Message)
-            {
-                CompletedCount = ToElementCount(address, request.DataType, completedUnits)
-            };
-        }
-        catch (PlcException exception)
-        {
-            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
-            {
-                CompletedCount = ToElementCount(address, request.DataType, completedUnits)
-            };
+            throw ProtocolExecutionGuard.WrapWriteException(
+                exception,
+                ToElementCount(address, request.DataType, completedUnits));
         }
     }
 
@@ -148,7 +142,7 @@ public sealed class S7CommProtocol : IPlcProtocol
         return address.IsBit ? completedUnits : completedUnits / dataType.GetElementSize();
     }
 
-    private IReadOnlyList<RequestChunker.Chunk> PlanChunks(S7CommAddress address, int byteCount, int elementCount, WriteOrRead direction)
+    private List<RequestChunker.Chunk> PlanChunks(S7CommAddress address, int byteCount, int elementCount, WriteOrRead direction)
     {
         if (address.IsBit)
         {

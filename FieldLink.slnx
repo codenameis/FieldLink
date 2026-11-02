@@ -1,17 +1,11 @@
 <Solution>
   <Folder Name="/Solution Items/">
     <File Path=".editorconfig" />
-    <File Path="AGENTS.md" />
     <File Path="Directory.Build.props" />
     <File Path="Directory.Packages.props" />
     <File Path="LICENSE" />
-    <File Path="docs/architecture.md" />
-    <File Path="docs/clean-room/README.md" />
-    <File Path="docs/clean-room/spec-template.md" />
-    <File Path="docs/naming-map.md" />
-    <File Path="docs/review-checklist.md" />
-    <File Path="docs/vendor-protocol-map.md" />
-    <File Path="docs/specs/modbus.md" />
+    <File Path="README.md" />
+    <File Path="THIRD-PARTY-NOTICES.md" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/FieldLink.Transport/FieldLink.Transport.csproj" />

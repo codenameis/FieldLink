@@ -100,6 +100,43 @@ public sealed partial class PlcClient : IDisposable
         _transport.Dispose();
     }
 
+    private async Task<PlcResult<T>> ReadScalarAsync<T>(
+        string address,
+        PlcDataType dataType,
+        Func<byte[], int, ByteOrder, T> converter,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        EnsureOpen();
+
+        var request = new PlcReadRequest(address, dataType, 1);
+
+        return await ExecuteWithResultAsync(async token =>
+        {
+            byte[] bytes = await _protocol.ReadAsync(request, token).ConfigureAwait(false);
+            return converter(bytes, 0, _byteOrder);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<PlcResult<T[]>> ReadArrayAsync<T>(
+        string address,
+        PlcDataType dataType,
+        int count,
+        Func<byte[], int, int, ByteOrder, T[]> converter,
+        CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        EnsureOpen();
+
+        var request = new PlcReadRequest(address, dataType, count);
+
+        return await ExecuteWithResultAsync(async token =>
+        {
+            byte[] bytes = await _protocol.ReadAsync(request, token).ConfigureAwait(false);
+            return converter(bytes, 0, count, _byteOrder);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
     private async Task<PlcResult<T>> ReadCoreAsync<T>(
         string address,
         PlcDataType dataType,

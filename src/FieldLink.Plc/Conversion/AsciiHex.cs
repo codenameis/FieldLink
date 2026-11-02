@@ -84,14 +84,37 @@ public static class AsciiHex
         return GetString(buffer, 0, buffer.Length);
     }
 
-    private static int ParseHexNibble(char c)
+    internal static bool TryParseHexNibble(int characterCode, out int nibbleValue)
     {
-        return c switch
+        if (characterCode is >= '0' and <= '9')
         {
-            >= '0' and <= '9' => c - '0',
-            >= 'A' and <= 'F' => c - 'A' + 10,
-            >= 'a' and <= 'f' => c - 'a' + 10,
-            _ => throw new FormatException($"유효하지 않은 16진수 문자 '{c}'입니다.")
-        };
+            nibbleValue = characterCode - '0';
+            return true;
+        }
+
+        if (characterCode is >= 'A' and <= 'F')
+        {
+            nibbleValue = characterCode - 'A' + 10;
+            return true;
+        }
+
+        if (characterCode is >= 'a' and <= 'f')
+        {
+            nibbleValue = characterCode - 'a' + 10;
+            return true;
+        }
+
+        nibbleValue = 0;
+        return false;
+    }
+
+    private static int ParseHexNibble(char character)
+    {
+        if (!TryParseHexNibble(character, out int nibbleValue))
+        {
+            throw new FormatException($"유효하지 않은 16진수 문자 '{character}'입니다.");
+        }
+
+        return nibbleValue;
     }
 }
