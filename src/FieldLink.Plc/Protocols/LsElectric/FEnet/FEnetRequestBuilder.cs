@@ -86,7 +86,12 @@ public static class FEnetRequestBuilder
             throw new ArgumentException("변수명은 비어 있을 수 없습니다.", nameof(variableName));
         }
 
-        if (data is null || data.Length == 0)
+        if (data is null)
+        {
+            throw new ArgumentNullException(nameof(data));
+        }
+
+        if (data.Length == 0)
         {
             throw new ArgumentException("쓸 데이터가 비어 있습니다.", nameof(data));
         }

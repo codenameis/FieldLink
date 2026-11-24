@@ -96,10 +96,101 @@ public sealed class FEnetResponseParserTests
 
         frame[19] ^= 0xFF; // corrupt BCC
 
-        var ex = Assert.Throws<PlcException>(() =>
+        Assert.Throws<PlcException>(() =>
             FEnetResponseParser.ParseContinuousRead(frame, expectedInvokeId: 1));
 
-        Assert.Equal(PlcErrorKind.InvalidResponse, ex.Kind);
+        Assert.Throws<PlcException>(() =>
+            FEnetResponseParser.ParseContinuousRead(frame, expectedInvokeId: 1));
+    }
+
+    [Fact]
+    public void ParseContinuousRead_ThirtyByteErrorResponse_ThrowsPlcDeviceException()
+    {
+        byte[] frame = MakeThirtyByteErrorResponseFrame(
+            invokeId: 1,
+            command: 0x0055,
+            dataType: 0x0014,
+            errorState: 0xFFFF,
+            errorCode: (ushort)FEnetErrorCode.DataTypeMismatch);
+
+        var exception = Assert.Throws<PlcDeviceException>(() =>
+            FEnetResponseParser.ParseContinuousRead(frame, expectedInvokeId: 1));
+
+        Assert.Equal((int)FEnetErrorCode.DataTypeMismatch, exception.DeviceErrorCode);
+    }
+
+    [Fact]
+    public void ParseContinuousRead_InvalidHeaderOrBody_ThrowsExpectedExceptions()
+    {
+        Assert.Throws<ArgumentNullException>(() => FEnetResponseParser.ParseContinuousRead(null!, 1));
+        Assert.Throws<ArgumentNullException>(() => FEnetResponseParser.ParseContinuousWrite(null!, 1));
+
+        // Invalid Source != 0x11
+        byte[] wrongSource = MakeOfficialResponseFrame(1, 0x0055, 0, 0, new byte[] { 0x12, 0x34 });
+        wrongSource[13] = 0x33;
+        RecomputeBcc(wrongSource);
+        Assert.Equal(PlcErrorKind.InvalidResponse, Assert.Throws<PlcException>(() => FEnetResponseParser.ParseContinuousRead(wrongSource, 1)).Kind);
+
+        // Wrong DataType != 0x0014
+        byte[] wrongDataType = MakeOfficialResponseFrame(1, 0x0055, 0, 0, new byte[] { 0x12, 0x34 });
+        wrongDataType[22] = 0x00;
+        Assert.Equal(PlcErrorKind.InvalidResponse, Assert.Throws<PlcException>(() => FEnetResponseParser.ParseContinuousRead(wrongDataType, 1)).Kind);
+
+        // BlockCount != 1
+        byte[] wrongBlockCount = MakeOfficialResponseFrame(1, 0x0055, 0, 0, new byte[] { 0x12, 0x34 });
+        wrongBlockCount[28] = 0x02;
+        Assert.Equal(PlcErrorKind.InvalidResponse, Assert.Throws<PlcException>(() => FEnetResponseParser.ParseContinuousRead(wrongBlockCount, 1)).Kind);
+
+        // Trailing extra byte + updated declared length
+        byte[] trailing = new byte[35];
+        Array.Copy(MakeOfficialResponseFrame(1, 0x0055, 0, 0, new byte[] { 0x12, 0x34 }), trailing, 34);
+        trailing[16] = 15;
+        RecomputeBcc(trailing);
+        Assert.Equal(PlcErrorKind.InvalidResponse, Assert.Throws<PlcException>(() => FEnetResponseParser.ParseContinuousRead(trailing, 1)).Kind);
+
+        // Header Length field mismatch
+        byte[] lengthMismatch = MakeOfficialResponseFrame(1, 0x0055, 0, 0, new byte[] { 0x12, 0x34 });
+        lengthMismatch[16] = 10;
+        RecomputeBcc(lengthMismatch);
+        Assert.Equal(PlcErrorKind.InvalidResponse, Assert.Throws<PlcException>(() => FEnetResponseParser.ParseContinuousRead(lengthMismatch, 1)).Kind);
+    }
+
+    private static void RecomputeBcc(byte[] frame)
+    {
+        byte bcc = 0;
+        for (int index = 0; index < 19; index++)
+        {
+            bcc = (byte)(bcc + frame[index]);
+        }
+
+        frame[19] = bcc;
+    }
+
+    private static byte[] MakeThirtyByteErrorResponseFrame(
+        ushort invokeId,
+        ushort command,
+        ushort dataType,
+        ushort errorState,
+        ushort errorCode)
+    {
+        byte[] frame = new byte[30];
+        Encoding.ASCII.GetBytes("LSIS-XGT").CopyTo(frame, 0);
+        frame[12] = 0xA0;
+        frame[13] = 0x11;
+        frame[14] = (byte)invokeId;
+        frame[15] = (byte)(invokeId >> 8);
+        frame[16] = 10;
+        RecomputeBcc(frame);
+
+        frame[20] = (byte)command;
+        frame[21] = (byte)(command >> 8);
+        frame[22] = (byte)dataType;
+        frame[23] = (byte)(dataType >> 8);
+        frame[26] = (byte)errorState;
+        frame[27] = (byte)(errorState >> 8);
+        frame[28] = (byte)errorCode;
+        frame[29] = (byte)(errorCode >> 8);
+        return frame;
     }
 
     private static byte[] MakeOfficialResponseFrame(ushort invokeId, ushort command, ushort errorState, ushort errorCode, byte[] data)

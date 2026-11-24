@@ -1,5 +1,4 @@
 using System;
-using System.Text;
 using FieldLink.Plc.Checksums;
 using FieldLink.Plc.Conversion;
 
@@ -20,6 +19,10 @@ public static class ModbusResponseParser
     private const int AsciiMinimumAduLength = 9;
     private const int AsciiEnvelopeLength = 3;
     private const int AsciiTrailerLength = 2;
+    private const int AsciiCharactersPerByte = 2;
+    private const int AsciiMinimumRawBytes = 3;
+    private const int NibbleShift = 4;
+    private const int HexDigitOffset = 10;
     private const int LrcLength = 1;
     private const int AsciiFramingOverhead = 2;
     private const int ReadPduHeaderLength = 2;
@@ -131,15 +134,16 @@ public static class ModbusResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus ASCII 프레임의 시작 또는 종료 구분자가 올바르지 않습니다.");
         }
 
-        string hexString = Encoding.ASCII.GetString(adu, 1, adu.Length - AsciiEnvelopeLength);
-        byte[] rawBytes;
-        try
+        int hexLength = adu.Length - AsciiEnvelopeLength;
+        if (hexLength % AsciiCharactersPerByte != 0)
         {
-            rawBytes = AsciiHex.GetBytes(hexString);
+            throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus ASCII 프레임의 16진수 길이가 짝수가 아닙니다.");
         }
-        catch (FormatException exception)
+
+        byte[] rawBytes = DecodeStrictUppercaseAsciiHex(adu, offset: 1, hexLength);
+        if (rawBytes.Length < AsciiMinimumRawBytes)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus ASCII 프레임에 16진수가 아닌 문자가 포함되어 있습니다.", exception);
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"Modbus ASCII 프레임 본문이 너무 짧습니다. (바이트 길이: {rawBytes.Length})");
         }
 
         byte calculatedLrc = LongitudinalRedundancyCheck.Calculate(rawBytes, 0, rawBytes.Length - LrcLength);
@@ -216,7 +220,7 @@ public static class ModbusResponseParser
 
         if (requestPdu.Length != WriteSinglePduLength)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"단일 쓰기 요청 길이가 {WriteSinglePduLength}바이트가 아닙니다.");
+            throw new ArgumentException($"단일 쓰기 요청 길이가 {WriteSinglePduLength}바이트가 아닙니다.", nameof(requestPdu));
         }
 
         ValidatePduHeader(responsePdu, (ModbusFunctionCode)requestPdu[0]);
@@ -288,5 +292,36 @@ public static class ModbusResponseParser
                 PlcErrorKind.InvalidResponse,
                 $"기대한 기능 코드(0x{expectedFc:X2})와 다른 기능 코드(0x{responseFc:X2})가 수신되었습니다.");
         }
+    }
+
+    private static byte[] DecodeStrictUppercaseAsciiHex(byte[] adu, int offset, int hexLength)
+    {
+        byte[] rawBytes = new byte[hexLength / AsciiCharactersPerByte];
+        for (int byteIndex = 0; byteIndex < rawBytes.Length; byteIndex++)
+        {
+            int charOffset = offset + (byteIndex * AsciiCharactersPerByte);
+            int highNibble = ParseStrictUppercaseHexNibble(adu[charOffset]);
+            int lowNibble = ParseStrictUppercaseHexNibble(adu[charOffset + 1]);
+            rawBytes[byteIndex] = (byte)((highNibble << NibbleShift) | lowNibble);
+        }
+
+        return rawBytes;
+    }
+
+    private static int ParseStrictUppercaseHexNibble(byte asciiByte)
+    {
+        if (asciiByte is >= (byte)'0' and <= (byte)'9')
+        {
+            return asciiByte - '0';
+        }
+
+        if (asciiByte is >= (byte)'A' and <= (byte)'F')
+        {
+            return asciiByte - 'A' + HexDigitOffset;
+        }
+
+        throw new PlcException(
+            PlcErrorKind.InvalidResponse,
+            $"Modbus ASCII 프레임에 허용되지 않는 문자(0x{asciiByte:X2})가 포함되어 있습니다. 대문자 16진수(0-9, A-F)만 허용됩니다.");
     }
 }

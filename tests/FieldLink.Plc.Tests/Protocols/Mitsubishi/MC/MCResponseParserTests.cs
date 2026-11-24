@@ -207,6 +207,44 @@ public sealed class MCResponseParserTests
         Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(frame), out _));
     }
 
+    [Fact]
+    public void BinaryDecoder_InvalidSubheaderReservedOrShortLength_ThrowsTransportException()
+    {
+        var decoder3E = new MCBinaryFrameDecoder(MCFrameType.Frame3E);
+        Assert.Throws<TransportException>(() =>
+            decoder3E.TryGetFrameLength(new ArraySegment<byte>(FromHex("50 00 00 FF FF 03 00 02 00 00 00")), out _));
+        Assert.Throws<TransportException>(() =>
+            decoder3E.TryGetFrameLength(new ArraySegment<byte>(FromHex("D0 00 00 FF FF 03 00 01 00 00")), out _));
+
+        var decoder4E = new MCBinaryFrameDecoder(MCFrameType.Frame4E);
+        Assert.Throws<TransportException>(() =>
+            decoder4E.TryGetFrameLength(new ArraySegment<byte>(FromHex("D4 00 01 00 01 00 00 FF FF 03 00 02 00 00 00")), out _));
+    }
+
+    [Fact]
+    public void AsciiDecoder_InvalidSubheaderReservedOrShortLength_ThrowsTransportException()
+    {
+        var decoder3E = new MCAsciiFrameDecoder(MCFrameType.Frame3E);
+        Assert.Throws<TransportException>(() =>
+            decoder3E.TryGetFrameLength(new ArraySegment<byte>(Ascii("500000FF03FF0000040000")), out _));
+        Assert.Throws<TransportException>(() =>
+            decoder3E.TryGetFrameLength(new ArraySegment<byte>(Ascii("D00000FF03FF00000200")), out _));
+
+        var decoder4E = new MCAsciiFrameDecoder(MCFrameType.Frame4E);
+        Assert.Throws<TransportException>(() =>
+            decoder4E.TryGetFrameLength(new ArraySegment<byte>(Ascii("D4000001000100FF03FF0000040000")), out _));
+    }
+
+    [Fact]
+    public void Parser_4ENonZeroReserved_ThrowsInvalidResponse()
+    {
+        byte[] binaryFrame = FromHex("D4 00 34 12 01 00 00 FF FF 03 00 02 00 00 00");
+        Assert.Throws<PlcException>(() => MCBinaryResponseParser.ParseWrite(QL4E, 0x1234, binaryFrame));
+
+        byte[] asciiFrame = Ascii("D4001234000100FF03FF0000040000");
+        Assert.Throws<PlcException>(() => MCAsciiResponseParser.ParseWrite(Iqr4E, 0x1234, asciiFrame));
+    }
+
     private static byte[] FromHex(string spacedHex) => Convert.FromHexString(spacedHex.Replace(" ", string.Empty));
 
     private static byte[] Ascii(string text) => Encoding.ASCII.GetBytes(text);

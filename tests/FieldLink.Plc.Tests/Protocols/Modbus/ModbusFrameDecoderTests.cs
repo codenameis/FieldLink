@@ -1,6 +1,7 @@
 using System;
 using System.Text;
 using FieldLink.Plc.Conversion;
+using FieldLink.Transport;
 using Xunit;
 
 namespace FieldLink.Plc.Protocols.Modbus.Tests;
@@ -57,5 +58,26 @@ public sealed class ModbusFrameDecoderTests
 
         Assert.True(result);
         Assert.Equal(17, frameLength);
+    }
+
+    [Fact]
+    public void ModbusTcpFrameDecoder_InvalidProtocolId_ThrowsTransportException()
+    {
+        var decoder = new ModbusTcpFrameDecoder();
+        byte[] adu = AsciiHex.GetBytes("000100010009010306022B00000064");
+
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(adu), out _));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void ModbusTcpFrameDecoder_LengthFieldBelowMinimum_ThrowsTransportException(int lengthField)
+    {
+        var decoder = new ModbusTcpFrameDecoder();
+        byte[] adu = new byte[] { 0x00, 0x01, 0x00, 0x00, 0x00, (byte)lengthField, 0x01, 0x03, 0x00 };
+
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(adu), out _));
     }
 }

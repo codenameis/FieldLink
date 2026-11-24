@@ -8,24 +8,28 @@ namespace FieldLink.Plc;
 public sealed class PlcClientOptions
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan MaxTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
     private readonly TimeSpan _timeout = DefaultTimeout;
+    private readonly Encoding _stringEncoding = Encoding.ASCII;
 
     /// <summary>기본값으로 설정을 초기화합니다.</summary>
     public PlcClientOptions()
     {
-        StringEncoding = Encoding.ASCII;
     }
 
     /// <summary>요청 전체에 적용되는 기본 제한 시간입니다. 기본값은 3초입니다.</summary>
-    /// <exception cref="ArgumentOutOfRangeException">제한 시간이 0 이하이고 무한 제한 시간이 아닐 때.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">제한 시간이 0 이하이거나 허용 최대치를 초과하고 무한 제한 시간이 아닐 때.</exception>
     public TimeSpan Timeout
     {
         get => _timeout;
         init
         {
-            if (value <= TimeSpan.Zero && value != System.Threading.Timeout.InfiniteTimeSpan)
+            if (value != System.Threading.Timeout.InfiniteTimeSpan && (value <= TimeSpan.Zero || value > MaxTimeout))
             {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "요청 제한 시간은 0보다 커야 합니다.");
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    value,
+                    $"요청 제한 시간은 0보다 크고 {MaxTimeout.TotalMilliseconds}ms 이하여야 합니다.");
             }
 
             _timeout = value;
@@ -39,7 +43,12 @@ public sealed class PlcClientOptions
     public ByteOrder? ByteOrder { get; init; }
 
     /// <summary>문자열 인코딩입니다. 기본값은 ASCII입니다.</summary>
-    public Encoding StringEncoding { get; init; }
+    /// <exception cref="ArgumentNullException">값이 null일 때.</exception>
+    public Encoding StringEncoding
+    {
+        get => _stringEncoding;
+        init => _stringEncoding = value ?? throw new ArgumentNullException(nameof(value));
+    }
 
     /// <summary>
     /// 문자열 메모리 저장 형식입니다.

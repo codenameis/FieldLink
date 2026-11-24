@@ -9,7 +9,7 @@ namespace FieldLink.Plc.Protocols.Siemens.S7Comm;
 public sealed class S7CommAddress
 {
     private const int MaxDataBlockNumber = 65535;
-    private const int MaxByteOffset = 2097151;
+    internal const int MaxByteOffset = 2097151;
     private const int BitsPerByte = 8;
 
     private static readonly Regex DataBlockPattern = new(

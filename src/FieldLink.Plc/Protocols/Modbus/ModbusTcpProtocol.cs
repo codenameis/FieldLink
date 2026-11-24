@@ -16,7 +16,7 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
     private const int ByteShift = 8;
     private const byte StringPaddingByte = 0x00;
     private const ushort MaxTransactionId = 0xFFFF;
-    private const ushort InitialTransactionId = 0x0001;
+    private const ushort WrappedTransactionId = 0x0000;
 
     private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: StringPaddingByte, wordSize: BytesPerRegister);
 
@@ -273,7 +273,7 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
     {
         lock (_txIdLock)
         {
-            _transactionId = (ushort)(_transactionId == MaxTransactionId ? InitialTransactionId : _transactionId + 1);
+            _transactionId = (ushort)(_transactionId == MaxTransactionId ? WrappedTransactionId : _transactionId + 1);
             return _transactionId;
         }
     }
@@ -285,7 +285,7 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
             if (_lastConnectionId != connectionId)
             {
                 _lastConnectionId = connectionId;
-                _transactionId = 0;
+                _transactionId = WrappedTransactionId;
             }
         }
     }

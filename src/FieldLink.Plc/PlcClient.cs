@@ -58,8 +58,16 @@ public sealed partial class PlcClient : IDisposable
         return await ExecuteWithResultAsync(async token =>
         {
             await _transport.OpenAsync(token).ConfigureAwait(false);
-            await _protocol.ConnectAsync(token).ConfigureAwait(false);
-            _isOpen = true;
+            try
+            {
+                await _protocol.ConnectAsync(token).ConfigureAwait(false);
+                _isOpen = true;
+            }
+            catch
+            {
+                await CloseTransportAfterConnectFailureAsync().ConfigureAwait(false);
+                throw;
+            }
         }, cancellationToken).ConfigureAwait(false);
     }
 
@@ -72,7 +80,14 @@ public sealed partial class PlcClient : IDisposable
 
         if (!_isOpen)
         {
-            return PlcResult.Success();
+            if (_transport.State != TransportState.Open)
+            {
+                return PlcResult.Success();
+            }
+
+            return await ExecuteWithResultAsync(
+                _ => _transport.CloseAsync(CancellationToken.None),
+                cancellationToken).ConfigureAwait(false);
         }
 
         return await ExecuteWithResultAsync(async token =>
@@ -202,7 +217,12 @@ public sealed partial class PlcClient : IDisposable
         }
         catch (OperationCanceledException exception) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            return PlcResult.Failure<T>(new PlcError(PlcErrorKind.Timeout, "작업 제한 시간이 초과되었습니다.", exception: exception));
+            int completedCount = PlcException.GetCompletedCount(exception);
+            return PlcResult.Failure<T>(new PlcError(
+                PlcErrorKind.Timeout,
+                "작업 제한 시간이 초과되었습니다.",
+                completedCount: completedCount,
+                exception: exception));
         }
         catch (TransportException exception)
         {
@@ -238,6 +258,22 @@ public sealed partial class PlcClient : IDisposable
         };
 
         return new PlcError(kind, exception.Message, exception: exception);
+    }
+
+    private async Task CloseTransportAfterConnectFailureAsync()
+    {
+        try
+        {
+            await _transport.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TransportException)
+        {
+            // 초기 연결 협상 실패 원인을 가리지 않도록 정리 단계의 전송 오류는 무시합니다.
+        }
+        catch (ObjectDisposedException)
+        {
+            // 이미 폐기된 전송이면 추가 정리가 필요하지 않습니다.
+        }
     }
 
     private void EnsureOpen()

@@ -58,6 +58,7 @@ public sealed class MCAsciiProtocol : IPlcProtocol
         int requestedByteCount = request.ByteCount;
         PlcReadRequest effectiveRequest = address.IsBit ? request : ProtocolExecutionGuard.NormalizeWordReadRequest(request);
         int wordsPerElement = GetWordsPerElement(address, effectiveRequest.DataType);
+        ValidateAddressRange(address, effectiveRequest.Count, wordsPerElement);
         int elementSize = effectiveRequest.DataType.GetElementSize();
         List<RequestChunker.Chunk> chunks = PlanChunks(address, wordsPerElement, effectiveRequest.Count);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
@@ -99,6 +100,7 @@ public sealed class MCAsciiProtocol : IPlcProtocol
             : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit);
 
         int wordsPerElement = GetWordsPerElement(address, effectiveRequest.DataType);
+        ValidateAddressRange(address, effectiveRequest.Count, wordsPerElement);
         List<RequestChunker.Chunk> chunks = PlanChunks(address, wordsPerElement, effectiveRequest.Count);
         int completedElements = 0;
 
@@ -128,6 +130,19 @@ public sealed class MCAsciiProtocol : IPlcProtocol
         catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
             throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
+
+    private void ValidateAddressRange(MCAddress address, int elementCount, int wordsPerElement)
+    {
+        uint maxDeviceNumber = MCAsciiRequestBuilder.GetMaxDeviceNumber(_options.Series, address.Device);
+        long totalPoints = (long)elementCount * wordsPerElement;
+        if (address.DeviceNumber > maxDeviceNumber || (long)address.DeviceNumber + totalPoints - 1 > maxDeviceNumber)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(elementCount),
+                elementCount,
+                $"요청 범위가 MC ASCII 디바이스 주소 한도(0~{maxDeviceNumber})를 초과합니다.");
         }
     }
 

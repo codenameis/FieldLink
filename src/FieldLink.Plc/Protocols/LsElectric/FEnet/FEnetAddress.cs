@@ -60,6 +60,11 @@ public sealed class FEnetAddress
     /// <param name="additionalElements">증가시킬 원소 수입니다.</param>
     public FEnetAddress WithOffset(int additionalElements)
     {
+        if (additionalElements < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(additionalElements), additionalElements, "추가 원소 수는 0 이상이어야 합니다.");
+        }
+
         if (additionalElements == 0)
         {
             return this;
@@ -72,6 +77,11 @@ public sealed class FEnetAddress
 
     internal FEnetAddress WithByteOffset(long additionalBytes)
     {
+        if (additionalBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(additionalBytes), additionalBytes, "추가 바이트 수는 0 이상이어야 합니다.");
+        }
+
         if (additionalBytes == 0)
         {
             return this;
@@ -87,18 +97,30 @@ public sealed class FEnetAddress
         return new FEnetAddress(newName, Area, ByteSizeCode, newByteOffset);
     }
 
+    internal string FormatByteVariableName(int byteOffset)
+    {
+        if (byteOffset < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(byteOffset), byteOffset, "바이트 오프셋은 0 이상이어야 합니다.");
+        }
+
+        return $"%{Area}{ByteSizeCode}{byteOffset}";
+    }
+
     /// <summary>주소 문자열을 파싱합니다.</summary>
     /// <param name="address">IEC 또는 XGK 표기의 주소 문자열입니다.</param>
     /// <exception cref="ArgumentNullException"><paramref name="address"/>가 null일 때.</exception>
     /// <exception cref="FormatException">주소 형식이 올바르지 않을 때.</exception>
-    public static FEnetAddress Parse(string address)
+    public static FEnetAddress Parse(string address) => Parse(address, isBitAccess: false);
+
+    internal static FEnetAddress Parse(string address, bool isBitAccess)
     {
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (!TryParse(address, out FEnetAddress? result) || result is null)
+        if (!TryParse(address, isBitAccess, out FEnetAddress? result) || result is null)
         {
             throw new FormatException($"유효하지 않은 XGT FEnet 주소 형식입니다: '{address}'");
         }
@@ -107,7 +129,9 @@ public sealed class FEnetAddress
     }
 
     /// <summary>주소 문자열 파싱을 시도합니다.</summary>
-    public static bool TryParse(string? address, out FEnetAddress? result)
+    public static bool TryParse(string? address, out FEnetAddress? result) => TryParse(address, isBitAccess: false, out result);
+
+    internal static bool TryParse(string? address, bool isBitAccess, out FEnetAddress? result)
     {
         result = null;
         if (address is null || string.IsNullOrWhiteSpace(address))
@@ -121,7 +145,7 @@ public sealed class FEnetAddress
             return TryParseIec(trimmed, out result);
         }
 
-        return TryParseLegacy(trimmed, out result);
+        return TryParseLegacy(trimmed, isBitAccess, out result);
     }
 
     private static bool TryParseIec(string input, out FEnetAddress? result)
@@ -140,7 +164,7 @@ public sealed class FEnetAddress
         }
 
         char size = input[2];
-        if (!IsValidSize(size))
+        if (!IsValidSizeForArea(area, size))
         {
             return false;
         }
@@ -155,7 +179,7 @@ public sealed class FEnetAddress
         return true;
     }
 
-    private static bool TryParseLegacy(string input, out FEnetAddress? result)
+    private static bool TryParseLegacy(string input, bool isBitAccess, out FEnetAddress? result)
     {
         result = null;
         if (input.Length < MinimumLegacyLength)
@@ -175,8 +199,8 @@ public sealed class FEnetAddress
             return false;
         }
 
-        // 레거시 XGK 기본은 워드(W) 단위 매핑
-        char size = WordSizeCode;
+        // 사양서 §2-2: 레거시 표기에서 비트 요청은 Bit(X) 지원 영역에 한해 X 단위로, 그 외에는 Word(W) 단위로 매핑한다.
+        char size = isBitAccess && SupportsBitSize(area) ? BitSizeCode : WordSizeCode;
         string normalizedName = $"%{area}{size}{offset}";
         result = new FEnetAddress(normalizedName, area, size, offset);
         return true;
@@ -187,8 +211,19 @@ public sealed class FEnetAddress
         return area is 'P' or 'M' or 'K' or 'F' or 'T' or 'C' or 'U' or 'Z' or 'S' or 'D' or 'R' or 'N';
     }
 
-    private static bool IsValidSize(char size)
+    private static bool SupportsBitSize(char area)
     {
+        // 사양서 §2-1: D(데이터 레지스터)와 R(파일 레지스터)은 비트 크기(X)를 지원하지 않는다.
+        return area is not ('D' or 'R');
+    }
+
+    private static bool IsValidSizeForArea(char area, char size)
+    {
+        if (size == BitSizeCode && !SupportsBitSize(area))
+        {
+            return false;
+        }
+
         return size is BitSizeCode or ByteSizeCode or WordSizeCode or DWordSizeCode or LWordSizeCode;
     }
 

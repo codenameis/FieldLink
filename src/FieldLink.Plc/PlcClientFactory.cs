@@ -113,9 +113,9 @@ public static class PlcClientFactory
         FEnetOptions? fenetOptions = null,
         PlcClientOptions? clientOptions = null)
     {
-        var transportOptions = new TcpTransportOptions(host, port);
+        FEnetOptions options = fenetOptions ?? new FEnetOptions(cpuInfo) { Port = port };
+        var transportOptions = new TcpTransportOptions(host, options.Port);
         var transport = new TcpTransport(transportOptions);
-        var options = fenetOptions ?? new FEnetOptions(cpuInfo) { Port = port };
         var protocol = new FEnetProtocol(transport, options);
         return new PlcClient(transport, protocol, clientOptions);
     }

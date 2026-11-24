@@ -46,7 +46,7 @@ public static class Crc16Modbus
         for (int i = 0; i < count; i++)
         {
             byte index = (byte)(crc ^ buffer[offset + i]);
-            crc = (ushort)((crc >> 8) ^ LookupTable[index]);
+            crc = (ushort)((crc >> BitsPerByte) ^ LookupTable[index]);
         }
 
         return crc;

@@ -41,6 +41,10 @@ public sealed class FEnetAddressTests
     [InlineData("%DW")]
     [InlineData("%DW-5")]
     [InlineData("D-10")]
+    [InlineData("%DX0")]
+    [InlineData("%RX0")]
+    [InlineData("%dx10")]
+    [InlineData("%rx5")]
     public void Parse_InvalidAddress_ThrowsFormatExceptionOrArgumentNull(string? input)
     {
         if (input is null)
@@ -71,5 +75,19 @@ public sealed class FEnetAddressTests
         Assert.Equal("디바이스(변수) 영역이 잘못되었습니다.", FEnetErrorCode.DeviceAreaError.GetDescription());
         Assert.Equal("헤더 체크섬(BCC) 검증 실패입니다.", FEnetErrorCode.ChecksumError.GetDescription());
         Assert.Equal("정상", FEnetErrorCode.None.GetDescription());
+    }
+
+    [Fact]
+    public void WithOffset_NegativeAdditionalElements_ThrowsArgumentOutOfRangeException()
+    {
+        var baseAddress = FEnetAddress.Parse("%DW100");
+        Assert.Throws<ArgumentOutOfRangeException>(() => baseAddress.WithOffset(-1));
+    }
+
+    [Fact]
+    public void Options_MaxChunkBytesExceeding1400_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FEnetOptions { MaxReadBytes = 1401 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FEnetOptions { MaxWriteBytes = 1401 });
     }
 }

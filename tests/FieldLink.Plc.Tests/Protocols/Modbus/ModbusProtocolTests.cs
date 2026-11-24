@@ -152,6 +152,35 @@ public sealed class ModbusProtocolTests
         Assert.NotNull(asciiClient);
     }
 
+    [Fact]
+    public async Task ModbusTcp_TransactionId_WrapsFromMaxToZeroThenOne()
+    {
+        var mockSession = new MockTransportSession();
+        var transport = new MockTransport(mockSession);
+        var protocol = new ModbusTcpProtocol(transport);
+        var request = new PlcReadRequest("40001", PlcDataType.Int16, 1);
+
+        var observedTransactionIds = new ushort[3];
+        for (int iteration = 0; iteration < 65537; iteration++)
+        {
+            mockSession.EnqueueReceive((_, sendBytes) =>
+            {
+                ushort txId = (ushort)((sendBytes[0] << 8) | sendBytes[1]);
+                return MakeTcpReadResponse(txId, 1);
+            });
+
+            await protocol.ReadAsync(request, CancellationToken.None);
+
+            if (iteration >= 65534)
+            {
+                byte[] lastSent = mockSession.SentBuffers[iteration];
+                observedTransactionIds[iteration - 65534] = (ushort)((lastSent[0] << 8) | lastSent[1]);
+            }
+        }
+
+        Assert.Equal(new ushort[] { 0xFFFF, 0x0000, 0x0001 }, observedTransactionIds);
+    }
+
     private static byte[] MakeTcpReadResponse(ushort transactionId, int registerCount)
     {
         byte byteCount = (byte)(registerCount * 2);

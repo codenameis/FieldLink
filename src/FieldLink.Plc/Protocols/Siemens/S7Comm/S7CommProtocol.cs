@@ -17,10 +17,12 @@ public sealed class S7CommProtocol : IPlcProtocol
     private const int WriteOverheadBytes = 28;
     private const int MaxBytesPerRequest = 8191;
     private const int SingleBitChunkCount = 1;
+    private const int BitsPerByte = 8;
     private const int WordSizeBytes = 2;
+    private const byte StringPaddingByte = 0x00;
     private const ushort InitialPduReference = 1;
 
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: WordSizeBytes);
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: StringPaddingByte, wordSize: WordSizeBytes);
 
     private readonly ITransport _transport;
     private readonly S7CommOptions _options;
@@ -67,17 +69,22 @@ public sealed class S7CommProtocol : IPlcProtocol
 
         var address = S7CommAddress.Parse(request.Address);
         ValidateDataType(address, request.DataType);
+        ValidateAddressRange(address, request.ByteCount, request.Count);
+
+        int elementSize = address.IsBit ? 1 : request.DataType.GetElementSize();
         byte[] combinedBuffer = new byte[request.ByteCount];
 
         await _transport.RunExclusiveAsync(async session =>
         {
             await EnsureSessionAsync(session).ConfigureAwait(false);
 
-            foreach (RequestChunker.Chunk chunk in PlanChunks(address, request.ByteCount, request.Count, WriteOrRead.Read))
+            foreach (RequestChunker.Chunk chunk in PlanChunks(address, request.DataType, request.Count, WriteOrRead.Read))
             {
-                S7CommAddress chunkAddress = address.WithOffset(chunk.ElementOffset);
-                byte[] values = await ReadChunkAsync(session, chunkAddress, (ushort)chunk.ElementCount).ConfigureAwait(false);
-                Array.Copy(values, 0, combinedBuffer, chunk.ElementOffset, values.Length);
+                int byteOffset = checked(chunk.ElementOffset * elementSize);
+                int byteCount = checked(chunk.ElementCount * elementSize);
+                S7CommAddress chunkAddress = address.WithOffset(byteOffset);
+                byte[] values = await ReadChunkAsync(session, chunkAddress, (ushort)byteCount).ConfigureAwait(false);
+                Array.Copy(values, 0, combinedBuffer, byteOffset, values.Length);
             }
 
             return true;
@@ -96,8 +103,10 @@ public sealed class S7CommProtocol : IPlcProtocol
 
         var address = S7CommAddress.Parse(request.Address);
         ValidateDataType(address, request.DataType);
-        byte[] allData = request.GetData();
-        int completedUnits = 0;
+        ValidateAddressRange(address, request.ByteCount, request.Count);
+
+        int elementSize = address.IsBit ? 1 : request.DataType.GetElementSize();
+        int completedElements = 0;
 
         try
         {
@@ -105,25 +114,36 @@ public sealed class S7CommProtocol : IPlcProtocol
             {
                 await EnsureSessionAsync(session).ConfigureAwait(false);
 
-                foreach (RequestChunker.Chunk chunk in PlanChunks(address, request.ByteCount, request.Count, WriteOrRead.Write))
+                foreach (RequestChunker.Chunk chunk in PlanChunks(address, request.DataType, request.Count, WriteOrRead.Write))
                 {
-                    byte[] slice = new byte[chunk.ElementCount];
-                    Array.Copy(allData, chunk.ElementOffset, slice, 0, slice.Length);
+                    int byteOffset = checked(chunk.ElementOffset * elementSize);
+                    byte[] slice = request.GetData(chunk.ElementOffset, chunk.ElementCount);
 
-                    await WriteChunkAsync(session, address.WithOffset(chunk.ElementOffset), slice).ConfigureAwait(false);
-                    completedUnits += chunk.ElementCount;
+                    await WriteChunkAsync(session, address.WithOffset(byteOffset), slice).ConfigureAwait(false);
+                    completedElements += chunk.ElementCount;
                 }
 
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(
-            exception,
-            ToElementCount(address, request.DataType, completedUnits)))
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
-            throw ProtocolExecutionGuard.WrapWriteException(
-                exception,
-                ToElementCount(address, request.DataType, completedUnits));
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
+
+    private static void ValidateAddressRange(S7CommAddress address, int byteCount, int elementCount)
+    {
+        long lastByteOffset = address.IsBit
+            ? (address.StartBitAddress + (long)elementCount - 1) / BitsPerByte
+            : address.ByteOffset + (long)byteCount - 1;
+
+        if (lastByteOffset > S7CommAddress.MaxByteOffset)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(elementCount),
+                elementCount,
+                $"요청 범위가 S7 바이트 오프셋 한도(0~{S7CommAddress.MaxByteOffset})를 초과합니다.");
         }
     }
 
@@ -140,12 +160,11 @@ public sealed class S7CommProtocol : IPlcProtocol
         }
     }
 
-    private static int ToElementCount(S7CommAddress address, PlcDataType dataType, int completedUnits)
-    {
-        return address.IsBit ? completedUnits : completedUnits / dataType.GetElementSize();
-    }
-
-    private List<RequestChunker.Chunk> PlanChunks(S7CommAddress address, int byteCount, int elementCount, WriteOrRead direction)
+    private List<RequestChunker.Chunk> PlanChunks(
+        S7CommAddress address,
+        PlcDataType dataType,
+        int elementCount,
+        WriteOrRead direction)
     {
         if (address.IsBit)
         {
@@ -160,8 +179,10 @@ public sealed class S7CommProtocol : IPlcProtocol
             negotiatedPduLength = _negotiatedPduLength;
         }
 
+        int elementSize = dataType.GetElementSize();
         int maxBytes = Math.Min(negotiatedPduLength - overhead, MaxBytesPerRequest);
-        return RequestChunker.Plan(byteCount, maxBytes);
+        int maxElements = RequestChunker.CalculateElementLimit(maxBytes, elementSize);
+        return RequestChunker.Plan(elementCount, maxElements);
     }
 
     private async Task<byte[]> ReadChunkAsync(ITransportSession session, S7CommAddress address, ushort count)

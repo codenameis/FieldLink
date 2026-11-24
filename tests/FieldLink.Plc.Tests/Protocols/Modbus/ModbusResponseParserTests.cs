@@ -1,3 +1,5 @@
+using System;
+using System.Text;
 using FieldLink.Plc.Conversion;
 using Xunit;
 
@@ -109,5 +111,32 @@ public sealed class ModbusResponseParserTests
             () => ModbusResponseParser.UnwrapTcpAdu(adu, expectedTransactionId: 1, expectedUnitId: 1));
 
         Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
+    }
+
+    [Theory]
+    [InlineData(":         \r\n")]
+    [InlineData(":       00\r\n")]
+    [InlineData(":0103006B00038e\r\n")]
+    [InlineData(":01 03 00 6B 00 03 8E\r\n")]
+    [InlineData(":0103006B00038\r\n")]
+    [InlineData(":0103\r\n")]
+    public void UnwrapAsciiAdu_MalformedOrLowercaseOrSpaced_ThrowsInvalidResponse(string malformedAdu)
+    {
+        byte[] adu = Encoding.ASCII.GetBytes(malformedAdu);
+
+        PlcException exception = Assert.Throws<PlcException>(
+            () => ModbusResponseParser.UnwrapAsciiAdu(adu, expectedUnitId: 1));
+
+        Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
+    }
+
+    [Fact]
+    public void ParseWriteSingleResponse_InvalidRequestPduLength_ThrowsArgumentException()
+    {
+        byte[] responsePdu = AsciiHex.GetBytes("0600010003");
+        byte[] invalidRequestPdu = AsciiHex.GetBytes("060001");
+
+        Assert.Throws<ArgumentException>(
+            () => ModbusResponseParser.ParseWriteSingleResponse(responsePdu, invalidRequestPdu));
     }
 }

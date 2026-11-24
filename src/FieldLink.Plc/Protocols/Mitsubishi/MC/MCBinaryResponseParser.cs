@@ -9,6 +9,8 @@ public static class MCBinaryResponseParser
     private const int Header3ELength = 9;
     private const int Header4ELength = 13;
     private const int SerialNumberOffset = 2;
+    private const int ReservedOffset4E = 4;
+    private const ushort ReservedWordZero = 0x0000;
     private const int LengthFieldSize = 2;
     private const int EndCodeByteCount = 2;
     private const int BytesPerWord = 2;
@@ -30,6 +32,17 @@ public static class MCBinaryResponseParser
         if (frame.Length < Header4ELength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"4E 응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
+        }
+
+        ushort subheader = BinaryBuffer.ReadUInt16LittleEndian(frame, 0);
+        if (subheader != Response4ESubheader)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"4E 응답 서브헤더가 올바르지 않습니다. (수신: 0x{subheader:X4}, 기대: 0x{Response4ESubheader:X4})");
+        }
+
+        if (BinaryBuffer.ReadUInt16LittleEndian(frame, ReservedOffset4E) != ReservedWordZero)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, "4E 응답의 예약 필드가 0x0000이 아닙니다.");
         }
 
         return BinaryBuffer.ReadUInt16LittleEndian(frame, SerialNumberOffset);
@@ -117,6 +130,11 @@ public static class MCBinaryResponseParser
     private static void ValidateLength(byte[] frame, int headerLength)
     {
         int lengthField = BinaryBuffer.ReadUInt16LittleEndian(frame, headerLength - LengthFieldSize);
+        if (lengthField < EndCodeByteCount)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 길이 필드({lengthField})는 최소 {EndCodeByteCount}바이트 이상이어야 합니다.");
+        }
+
         if (frame.Length != headerLength + lengthField)
         {
             throw new PlcException(

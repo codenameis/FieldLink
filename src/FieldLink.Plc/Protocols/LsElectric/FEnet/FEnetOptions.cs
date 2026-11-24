@@ -5,14 +5,16 @@ namespace FieldLink.Plc.Protocols.LsElectric.FEnet;
 /// <summary>LS ELECTRIC XGT FEnet 프로토콜의 통신 옵션입니다. (사양서 §1, §4)</summary>
 public sealed class FEnetOptions
 {
+    internal const int ProtocolMaxChunkBytes = 1400; // 사양서 §4: 1회 최대 읽기/쓰기 바이트 수
+
     private const byte DefaultCpuInfo = 0xA0; // XGK/XGB 기본 CPU 타입
     private const int DefaultPort = 2004;      // FEnet 서버 기본 TCP 포트
     private const int MinPort = 1;
     private const int MaxPort = ushort.MaxValue;
     private const int MinChunkBytes = 1;
-    private const int MaxChunkBytes = ushort.MaxValue;
-    private const int DefaultMaxReadBytes = 1400;  // 1회 최대 읽기 바이트
-    private const int DefaultMaxWriteBytes = 1400; // 1회 최대 쓰기 바이트
+    private const int MaxChunkBytes = ProtocolMaxChunkBytes;
+    private const int DefaultMaxReadBytes = ProtocolMaxChunkBytes;  // 1회 최대 읽기 바이트
+    private const int DefaultMaxWriteBytes = ProtocolMaxChunkBytes; // 1회 최대 쓰기 바이트
 
     private readonly int _port = DefaultPort;
     private readonly int _maxReadBytes = DefaultMaxReadBytes;

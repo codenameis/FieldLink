@@ -45,4 +45,15 @@ public sealed class PaddedStringFormatTests
 
         Assert.Throws<ArgumentException>(() => format.Encode("ToolongString", Encoding.ASCII, characterCapacity: 4));
     }
+
+    [Fact]
+    public void Decode_SpacePadding_PreservesMidStringSpacesAndTrimsTrailing()
+    {
+        var format = new PaddedStringFormat(paddingByte: 0x20, wordSize: 2);
+        byte[] storage = Encoding.ASCII.GetBytes("HELLO WORLD     ");
+
+        string decoded = format.Decode(storage, Encoding.ASCII);
+
+        Assert.Equal("HELLO WORLD", decoded);
+    }
 }

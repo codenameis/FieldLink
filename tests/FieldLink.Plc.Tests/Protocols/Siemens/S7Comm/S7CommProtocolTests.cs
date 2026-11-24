@@ -170,6 +170,50 @@ public sealed class S7CommProtocolTests
         Assert.Equal(ByteOrder.BigEndian, client.ByteOrder);
     }
 
+    [Fact]
+    public async Task Write_DoubleWithPdu480_DoesNotSplitMidElementAndReportsWholeCompletedCount()
+    {
+        // PDU 480 - WriteOverhead 28 = 452 bytes -> aligned to 8-byte Double = 56 doubles (448 bytes) per chunk
+        ScriptedTransport transport = CreateHandshakenTransport(pduLength: 480);
+        transport.EnqueueResponse(Wrap("32 03 00 00 00 02 00 02 00 01 00 00 05 01 FF"));
+        transport.EnqueueResponse(Wrap("32 03 00 00 00 03 00 02 00 01 00 00 05 01 05"));
+        var protocol = new S7CommProtocol(transport);
+        var request = new PlcWriteRequest("DB1.DBD0", PlcDataType.Double, new byte[58 * 8]);
+
+        var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(request, CancellationToken.None));
+
+        Assert.Equal(56, exception.CompletedCount);
+        byte[] firstWrite = transport.SentFrames[2];
+        int firstWriteByteCount = (firstWrite[23] << 8) | firstWrite[24];
+        Assert.Equal(448, firstWriteByteCount);
+    }
+
+    [Fact]
+    public async Task Write_Int32WhenNegotiatedPduTooSmallForSingleElement_ThrowsArgumentOutOfRangeException()
+    {
+        // PDU 30 - WriteOverhead 28 = 2 bytes < 4 bytes (Int32)
+        ScriptedTransport transport = CreateHandshakenTransport(pduLength: 30);
+        var protocol = new S7CommProtocol(transport);
+        var request = new PlcWriteRequest("DB1.DBD0", PlcDataType.Int32, new byte[4]);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => protocol.WriteAsync(request, CancellationToken.None));
+        Assert.Equal(2, transport.SentFrames.Count); // handshake only, no write sent
+    }
+
+    [Fact]
+    public async Task PreFlightAddressRangeOverflow_ThrowsBeforeSendingAnyFrame()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new S7CommProtocol(transport);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("DB1.DBW2097151", PlcDataType.Int16, 1), CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("M2097151.7", PlcDataType.Boolean, new byte[] { 1, 0 }), CancellationToken.None));
+
+        Assert.Empty(transport.SentFrames);
+    }
+
     private static ScriptedTransport CreateHandshakenTransport(int pduLength)
     {
         var transport = new ScriptedTransport();

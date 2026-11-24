@@ -1,5 +1,7 @@
 using System;
+using System.Text;
 using FieldLink.Plc.Protocols.LsElectric.FEnet;
+using FieldLink.Transport;
 using Xunit;
 
 namespace FieldLink.Plc.Tests.Protocols.LsElectric.FEnet;
@@ -23,6 +25,7 @@ public sealed class FEnetFrameDecoderTests
     {
         var decoder = new FEnetFrameDecoder();
         byte[] buffer = new byte[38];
+        Encoding.ASCII.GetBytes("LSIS-XGT").CopyTo(buffer, 0);
         // Length field at offset 16~17 in little endian: 18 (0x0012)
         buffer[16] = 0x12;
         buffer[17] = 0x00;
@@ -31,5 +34,29 @@ public sealed class FEnetFrameDecoderTests
 
         Assert.True(result);
         Assert.Equal(38, frameLength); // 20 + 18 = 38
+    }
+
+    [Fact]
+    public void TryGetFrameLength_InvalidCompanyId_ThrowsTransportException()
+    {
+        var decoder = new FEnetFrameDecoder();
+        byte[] buffer = new byte[30];
+        Encoding.ASCII.GetBytes("BAD-HDR!").CopyTo(buffer, 0);
+        buffer[16] = 10;
+
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(buffer), out _));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    public void TryGetFrameLength_LengthBelowMinimum_ThrowsTransportException(int lengthField)
+    {
+        var decoder = new FEnetFrameDecoder();
+        byte[] buffer = new byte[28];
+        Encoding.ASCII.GetBytes("LSIS-XGT").CopyTo(buffer, 0);
+        buffer[16] = (byte)lengthField;
+
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(buffer), out _));
     }
 }

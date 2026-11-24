@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using FieldLink.Plc.Abstractions;
 using FieldLink.Plc.Conversion;
+using FieldLink.Plc.Protocols.Modbus;
 using FieldLink.Transport;
+using FieldLink.Transport.Framing;
 using Xunit;
 
 namespace FieldLink.Plc.Tests;
@@ -128,6 +131,88 @@ public sealed class PlcClientTests
         Assert.Equal(PlcErrorKind.ConnectionLost, result.Error.Kind);
     }
 
+    [Fact]
+    public async Task OpenAsync_WhenProtocolConnectFails_ClosesTransportAndAllowsRetry()
+    {
+        var transport = new FakeTransport();
+        int attempts = 0;
+        var protocol = new FakeProtocol
+        {
+            ConnectHandler = _ =>
+            {
+                attempts++;
+                if (attempts == 1)
+                {
+                    throw new PlcException(PlcErrorKind.ConnectionFailed, "Handshake failed");
+                }
+
+                return Task.CompletedTask;
+            }
+        };
+
+        using var client = new PlcClient(transport, protocol);
+
+        PlcResult firstResult = await client.OpenAsync();
+        Assert.False(firstResult.IsSuccess);
+        Assert.Equal(PlcErrorKind.ConnectionFailed, firstResult.Error!.Kind);
+        Assert.False(client.IsOpen);
+        Assert.True(transport.IsCloseCalled);
+        Assert.Equal(TransportState.Closed, transport.State);
+
+        PlcResult secondResult = await client.OpenAsync();
+        Assert.True(secondResult.IsSuccess);
+        Assert.True(client.IsOpen);
+        Assert.Equal(TransportState.Open, transport.State);
+    }
+
+    [Fact]
+    public async Task CloseAsync_WhenTransportRemainsOpenButClientNotOpen_ClosesTransport()
+    {
+        var transport = new FakeTransport { State = TransportState.Open };
+        var protocol = new FakeProtocol();
+        using var client = new PlcClient(transport, protocol);
+
+        PlcResult result = await client.CloseAsync();
+
+        Assert.True(result.IsSuccess);
+        Assert.True(transport.IsCloseCalled);
+        Assert.Equal(TransportState.Closed, transport.State);
+    }
+
+    [Fact]
+    public async Task WriteInt16Async_TimeoutOnSecondChunk_PreservesCompletedCount()
+    {
+        var session = new DelayingWriteSession();
+        var transport = new SessionBackedTransport(session);
+        var protocol = new ModbusTcpProtocol(transport, new ModbusTcpOptions { MaxWriteRegisters = 2 });
+        var clientOptions = new PlcClientOptions { Timeout = TimeSpan.FromMilliseconds(40) };
+        using var client = new PlcClient(transport, protocol, clientOptions);
+        await client.OpenAsync();
+
+        PlcResult result = await client.WriteInt16Async("40001", new short[] { 10, 20, 30, 40 });
+
+        Assert.False(result.IsSuccess);
+        Assert.NotNull(result.Error);
+        Assert.Equal(PlcErrorKind.Timeout, result.Error.Kind);
+        Assert.Equal(2, result.Error.CompletedCount);
+    }
+
+    [Fact]
+    public void PlcClientOptions_InvalidTimeoutOrNullEncoding_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PlcClientOptions { Timeout = TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
+        Assert.Throws<ArgumentNullException>(() =>
+            new PlcClientOptions { StringEncoding = null! });
+    }
+
+    [Fact]
+    public void PlcException_NegativeCompletedCount_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PlcException(PlcErrorKind.InvalidResponse, "err") { CompletedCount = -1 });
+    }
+
     private sealed class FakeTransport : ITransport
     {
         public TransportState State { get; set; } = TransportState.Closed;
@@ -168,6 +253,8 @@ public sealed class PlcClientTests
 
         public bool IsDisconnectCalled { get; private set; }
 
+        public Func<CancellationToken, Task>? ConnectHandler { get; set; }
+
         public Func<PlcReadRequest, Task<byte[]>>? ReadHandler { get; set; }
 
         public Func<PlcWriteRequest, Task>? WriteHandler { get; set; }
@@ -175,7 +262,9 @@ public sealed class PlcClientTests
         public Task ConnectAsync(CancellationToken cancellationToken)
         {
             IsConnectCalled = true;
-            return Task.CompletedTask;
+            return ConnectHandler is not null
+                ? ConnectHandler(cancellationToken)
+                : Task.CompletedTask;
         }
 
         public Task DisconnectAsync(CancellationToken cancellationToken)
@@ -196,6 +285,67 @@ public sealed class PlcClientTests
             return WriteHandler is not null
                 ? WriteHandler(request)
                 : Task.CompletedTask;
+        }
+    }
+
+    private sealed class SessionBackedTransport : ITransport
+    {
+        private readonly DelayingWriteSession _session;
+
+        public SessionBackedTransport(DelayingWriteSession session) => _session = session;
+
+        public TransportState State { get; private set; } = TransportState.Closed;
+
+        public Task OpenAsync(CancellationToken cancellationToken = default)
+        {
+            State = TransportState.Open;
+            return Task.CompletedTask;
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            State = TransportState.Closed;
+            return Task.CompletedTask;
+        }
+
+        public Task<TResult> RunExclusiveAsync<TResult>(
+            Func<ITransportSession, Task<TResult>> work,
+            CancellationToken cancellationToken = default)
+        {
+            _session.CancellationToken = cancellationToken;
+            return work(_session);
+        }
+
+        public void Dispose() => State = TransportState.Disposed;
+    }
+
+    private sealed class DelayingWriteSession : ITransportSession
+    {
+        private readonly Queue<byte[]> _sentFrames = new();
+
+        public long ConnectionId => 1;
+
+        public CancellationToken CancellationToken { get; set; }
+
+        public Task SendAsync(byte[] frame)
+        {
+            _sentFrames.Enqueue(frame);
+            return Task.CompletedTask;
+        }
+
+        public async Task<byte[]> ReceiveAsync(IFrameDecoder decoder)
+        {
+            byte[] sent = _sentFrames.Dequeue();
+            if (_sentFrames.Count == 0 && sent[1] == 0x02)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), CancellationToken);
+            }
+
+            return new byte[]
+            {
+                sent[0], sent[1], 0x00, 0x00, 0x00, 0x06,
+                sent[6], sent[7], sent[8], sent[9], sent[10], sent[11]
+            };
         }
     }
 }

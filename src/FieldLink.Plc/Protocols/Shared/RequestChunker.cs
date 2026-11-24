@@ -34,7 +34,20 @@ public static class RequestChunker
             throw new ArgumentOutOfRangeException(nameof(rawWordLimit), rawWordLimit, "한도는 1 이상이어야 합니다.");
         }
 
-        if (wordsPerElement <= 1)
+        if (wordsPerElement <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(wordsPerElement), wordsPerElement, "원소당 워드 수는 1 이상이어야 합니다.");
+        }
+
+        if (rawWordLimit < wordsPerElement)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(rawWordLimit),
+                rawWordLimit,
+                $"요청 한도({rawWordLimit})가 원소 크기({wordsPerElement})보다 작아 단일 원소를 전송할 수 없습니다.");
+        }
+
+        if (wordsPerElement == 1)
         {
             return rawWordLimit;
         }

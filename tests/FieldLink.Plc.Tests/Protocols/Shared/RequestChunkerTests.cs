@@ -54,4 +54,17 @@ public sealed class RequestChunkerTests
         Assert.Throws<ArgumentOutOfRangeException>(() => RequestChunker.Plan(totalCount: 0, maxElementsPerChunk: 10));
         Assert.Throws<ArgumentOutOfRangeException>(() => RequestChunker.Plan(totalCount: 10, maxElementsPerChunk: 0));
     }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(10, 0)]
+    [InlineData(10, -1)]
+    [InlineData(2, 4)]
+    public void CalculateElementLimit_InvalidOrSmallerThanElement_ThrowsArgumentOutOfRangeException(
+        int rawWordLimit,
+        int wordsPerElement)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            RequestChunker.CalculateElementLimit(rawWordLimit, wordsPerElement));
+    }
 }

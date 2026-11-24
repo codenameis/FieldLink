@@ -6,12 +6,19 @@ namespace FieldLink.Plc.Protocols.Siemens.S7Comm;
 public static class S7CommResponseParser
 {
     private const int TpktHeaderLength = 4;
+    private const int TpktVersionOffset = 0;
+    private const int TpktReservedOffset = 1;
+    private const int TpktLengthOffset = 2;
     private const int CotpDataHeaderLength = 3;
+    private const int CotpPduTypeRelativeOffset = 1;
+    private const int CotpTpduNumberRelativeOffset = 2;
+    private const int CotpLengthOverhead = 1;
     private const int S7PduOffset = TpktHeaderLength + CotpDataHeaderLength;
     private const int S7ResponseHeaderLength = 12;
     private const int MinimumConnectionConfirmLength = 11;
     private const int MinimumNegotiatedPduLength = 29;
     private const byte TpktVersion = 0x03;
+    private const byte TpktReserved = 0x00;
     private const byte CotpConnectionConfirm = 0xD0;
     private const byte CotpDataTransfer = 0xF0;
     private const byte ProtocolId = 0x32;
@@ -24,21 +31,32 @@ public static class S7CommResponseParser
     private const byte DataTransportSizeByte = 0x04;
     private const int BitsPerByte = 8;
     private const int DataItemHeaderLength = 4;
+    private const int SetupFunctionOffset = 0;
     private const int SetupParameterLength = 8;
     private const int SetupPduLengthHighOffset = 6;
     private const int SetupPduLengthLowOffset = 7;
     private const int WriteDataSectionLength = 1;
     private const byte CotpDataLengthField = 0x02;
     private const byte CotpTpduNumberMask = 0x7F;
+    private const int MessageTypeOffset = 1;
+    private const int PduReferenceOffset = 4;
     private const int ParameterLengthOffset = 6;
     private const int DataLengthOffset = 8;
     private const int ErrorClassOffset = 10;
     private const int ErrorCodeOffset = 11;
     private const int ByteShift = 8;
+    private const int ItemFunctionOffset = 0;
+    private const int ItemCountOffset = 1;
     private const int ItemParameterLength = 2;
     private const int SingleItemCount = 1;
     private const int SingleBitByteLength = 1;
     private const int SingleBitLength = 1;
+    private const int ReturnCodeOffset = 0;
+    private const int DataTransportSizeOffset = 1;
+    private const int DataBitLengthHighOffset = 2;
+    private const int DataBitLengthLowOffset = 3;
+    private const byte BitOnByte = 1;
+    private const byte BitOffByte = 0;
 
     /// <summary>COTP 연결 확인 프레임을 검증합니다. (사양서 §3-3)</summary>
     /// <exception cref="PlcException">연결 확인이 아니거나 프레임이 손상되었을 때.</exception>
@@ -46,16 +64,16 @@ public static class S7CommResponseParser
     {
         ValidateTpkt(frame, MinimumConnectionConfirmLength);
 
-        if (frame[TpktHeaderLength] != frame.Length - TpktHeaderLength - 1)
+        if (frame[TpktHeaderLength] != frame.Length - TpktHeaderLength - CotpLengthOverhead)
         {
             throw new PlcException(PlcErrorKind.ConnectionFailed, "COTP 길이 필드가 프레임 크기와 맞지 않습니다.");
         }
 
-        if (frame[TpktHeaderLength + 1] != CotpConnectionConfirm)
+        if (frame[TpktHeaderLength + CotpPduTypeRelativeOffset] != CotpConnectionConfirm)
         {
             throw new PlcException(
                 PlcErrorKind.ConnectionFailed,
-                $"COTP 연결 확인(0xD0)이 아닙니다. (수신: 0x{frame[TpktHeaderLength + 1]:X2}) 랙·슬롯 설정을 확인하세요.");
+                $"COTP 연결 확인(0xD0)이 아닙니다. (수신: 0x{frame[TpktHeaderLength + CotpPduTypeRelativeOffset]:X2}) 랙·슬롯 설정을 확인하세요.");
         }
     }
 
@@ -66,7 +84,7 @@ public static class S7CommResponseParser
     {
         ParseS7Pdu(frame, expectedPduReference, out byte[] parameters, out byte[] dataSection);
 
-        if (parameters.Length != SetupParameterLength || parameters[0] != FunctionSetupCommunication || dataSection.Length != 0)
+        if (parameters.Length != SetupParameterLength || parameters[SetupFunctionOffset] != FunctionSetupCommunication || dataSection.Length != 0)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "Setup Communication 응답 형식이 올바르지 않습니다.");
         }
@@ -81,20 +99,14 @@ public static class S7CommResponseParser
     }
 
     /// <summary>응답 프레임의 PDU 참조를 읽습니다. 늦게 도착한 응답을 걸러낼 때 씁니다.</summary>
-    /// <exception cref="PlcException">프레임이 너무 짧을 때.</exception>
+    /// <exception cref="PlcException">TPKT·COTP·S7 헤더가 손상되었거나 너무 짧을 때.</exception>
     public static ushort ReadPduReference(byte[] frame)
     {
-        if (frame is null)
-        {
-            throw new ArgumentNullException(nameof(frame));
-        }
+        ValidateTpkt(frame, S7PduOffset + S7ResponseHeaderLength);
+        ValidateCotpDataTransfer(frame);
+        ValidateS7ResponsePrefix(frame);
 
-        if (frame.Length < S7PduOffset + S7ResponseHeaderLength)
-        {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
-        }
-
-        return (ushort)((frame[S7PduOffset + 4] << 8) | frame[S7PduOffset + 5]);
+        return ReadPduReferenceUnchecked(frame);
     }
 
     /// <summary>읽기 응답에서 값을 꺼냅니다. (사양서 §3-7)</summary>
@@ -120,7 +132,7 @@ public static class S7CommResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, "읽기 응답에 데이터 구역이 없습니다.");
         }
 
-        S7CommReturnCodeExtensions.EnsureSuccess(dataSection[0]);
+        S7CommReturnCodeExtensions.EnsureSuccess(dataSection[ReturnCodeOffset]);
         return address.IsBit ? ExtractBit(dataSection) : ExtractBytes(dataSection, count);
     }
 
@@ -137,7 +149,7 @@ public static class S7CommResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"쓰기 응답 데이터 구역은 반환 코드 {WriteDataSectionLength}바이트여야 합니다.");
         }
 
-        S7CommReturnCodeExtensions.EnsureSuccess(dataSection[0]);
+        S7CommReturnCodeExtensions.EnsureSuccess(dataSection[ReturnCodeOffset]);
     }
 
     private static void ValidateTpkt(byte[] frame, int minimumLength)
@@ -152,30 +164,55 @@ public static class S7CommResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
         }
 
-        if (frame[0] != TpktVersion)
+        if (frame[TpktVersionOffset] != TpktVersion)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"TPKT 버전이 3이 아닙니다. (수신: {frame[0]})");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"TPKT 버전이 3이 아닙니다. (수신: {frame[TpktVersionOffset]})");
         }
 
-        int declaredLength = (frame[2] << 8) | frame[3];
+        if (frame[TpktReservedOffset] != TpktReserved)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"TPKT 예약 바이트가 0이 아닙니다. (수신: 0x{frame[TpktReservedOffset]:X2})");
+        }
+
+        int declaredLength = (frame[TpktLengthOffset] << ByteShift) | frame[TpktLengthOffset + 1];
         if (declaredLength != frame.Length)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"TPKT 길이({declaredLength})가 실제 프레임 크기({frame.Length})와 맞지 않습니다.");
         }
     }
 
-    private static void ParseS7Pdu(byte[] frame, ushort expectedPduReference, out byte[] parameters, out byte[] dataSection)
+    private static void ValidateCotpDataTransfer(byte[] frame)
     {
-        ValidateTpkt(frame, S7PduOffset + S7ResponseHeaderLength);
-
         bool isDataTransfer = frame[TpktHeaderLength] == CotpDataLengthField
-            && frame[TpktHeaderLength + 1] == CotpDataTransfer
-            && (frame[TpktHeaderLength + 2] & CotpTpduNumberMask) == 0;
+            && frame[TpktHeaderLength + CotpPduTypeRelativeOffset] == CotpDataTransfer
+            && (frame[TpktHeaderLength + CotpTpduNumberRelativeOffset] & CotpTpduNumberMask) == 0;
         if (!isDataTransfer)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "COTP 데이터 전송 머리(02 F0 번호 0)가 아닙니다.");
         }
+    }
 
+    private static void ValidateS7ResponsePrefix(byte[] frame)
+    {
+        if (frame[S7PduOffset] != ProtocolId)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"S7 프로토콜 ID가 0x32가 아닙니다. (수신: 0x{frame[S7PduOffset]:X2})");
+        }
+
+        byte messageType = frame[S7PduOffset + MessageTypeOffset];
+        if (messageType != MessageTypeAck && messageType != MessageTypeAckData)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 메시지 종류가 아닙니다. (수신: 0x{messageType:X2})");
+        }
+    }
+
+    private static ushort ReadPduReferenceUnchecked(byte[] frame) =>
+        (ushort)((frame[S7PduOffset + PduReferenceOffset] << ByteShift) | frame[S7PduOffset + PduReferenceOffset + 1]);
+
+    private static void ParseS7Pdu(byte[] frame, ushort expectedPduReference, out byte[] parameters, out byte[] dataSection)
+    {
+        ValidateTpkt(frame, S7PduOffset + S7ResponseHeaderLength);
+        ValidateCotpDataTransfer(frame);
         ValidateS7Header(frame, expectedPduReference);
 
         int parameterLength = (frame[S7PduOffset + ParameterLengthOffset] << ByteShift) | frame[S7PduOffset + ParameterLengthOffset + 1];
@@ -193,15 +230,11 @@ public static class S7CommResponseParser
 
     private static void ValidateS7Header(byte[] frame, ushort expectedPduReference)
     {
-        if (frame[S7PduOffset] != ProtocolId)
-        {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"S7 프로토콜 ID가 0x32가 아닙니다. (수신: 0x{frame[S7PduOffset]:X2})");
-        }
+        ValidateS7ResponsePrefix(frame);
 
-        byte messageType = frame[S7PduOffset + 1];
-        if (messageType != MessageTypeAck && messageType != MessageTypeAckData)
+        if (ReadPduReferenceUnchecked(frame) != expectedPduReference)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 메시지 종류가 아닙니다. (수신: 0x{messageType:X2})");
+            throw new PlcException(PlcErrorKind.InvalidResponse, "응답 PDU 참조가 요청과 다릅니다.");
         }
 
         // 사양서 §3-5: 오류 클래스·코드가 둘 다 0이 아니면 실패. 의미표는 미확인이므로 값을 그대로 노출한다.
@@ -213,16 +246,13 @@ public static class S7CommResponseParser
                 (errorClass << ByteShift) | errorCode,
                 $"S7 헤더 오류입니다. (클래스 0x{errorClass:X2}, 코드 0x{errorCode:X2}) 의미표는 확인되지 않았습니다.");
         }
-
-        if (ReadPduReference(frame) != expectedPduReference)
-        {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "응답 PDU 참조가 요청과 다릅니다.");
-        }
     }
 
     private static void ValidateItemParameters(byte[] parameters, byte expectedFunction)
     {
-        if (parameters.Length != ItemParameterLength || parameters[0] != expectedFunction || parameters[1] != SingleItemCount)
+        if (parameters.Length != ItemParameterLength
+            || parameters[ItemFunctionOffset] != expectedFunction
+            || parameters[ItemCountOffset] != SingleItemCount)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 파라미터가 기능 0x{expectedFunction:X2}의 항목 {SingleItemCount}개 응답이 아닙니다.");
         }
@@ -237,8 +267,8 @@ public static class S7CommResponseParser
                 $"읽은 데이터 크기가 맞지 않습니다. (기대: {DataItemHeaderLength + count}바이트, 수신: {dataSection.Length}바이트)");
         }
 
-        int declaredBitLength = (dataSection[2] << ByteShift) | dataSection[3];
-        if (dataSection[1] != DataTransportSizeByte || declaredBitLength != count * BitsPerByte)
+        int declaredBitLength = (dataSection[DataBitLengthHighOffset] << ByteShift) | dataSection[DataBitLengthLowOffset];
+        if (dataSection[DataTransportSizeOffset] != DataTransportSizeByte || declaredBitLength != count * BitsPerByte)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "읽기 응답의 전송 크기 또는 길이가 요청과 맞지 않습니다.");
         }
@@ -251,13 +281,13 @@ public static class S7CommResponseParser
     private static byte[] ExtractBit(byte[] dataSection)
     {
         bool isValid = dataSection.Length == DataItemHeaderLength + SingleBitByteLength
-            && dataSection[1] == DataTransportSizeBit
-            && ((dataSection[2] << ByteShift) | dataSection[3]) == SingleBitLength;
+            && dataSection[DataTransportSizeOffset] == DataTransportSizeBit
+            && ((dataSection[DataBitLengthHighOffset] << ByteShift) | dataSection[DataBitLengthLowOffset]) == SingleBitLength;
         if (!isValid)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "비트 읽기 응답 형식이 올바르지 않습니다. (전송 크기 0x03, 길이 1, 값 1바이트)");
         }
 
-        return new[] { dataSection[DataItemHeaderLength] != 0 ? (byte)1 : (byte)0 };
+        return new[] { dataSection[DataItemHeaderLength] != 0 ? BitOnByte : BitOffByte };
     }
 }

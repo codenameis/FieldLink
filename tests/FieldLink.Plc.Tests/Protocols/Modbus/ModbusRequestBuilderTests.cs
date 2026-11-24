@@ -1,3 +1,4 @@
+using System;
 using System.Text;
 using FieldLink.Plc.Conversion;
 using Xunit;
@@ -117,5 +118,17 @@ public sealed class ModbusRequestBuilderTests
 
         string asciiString = Encoding.ASCII.GetString(adu);
         Assert.Equal(":0103006B00038E\r\n", asciiString);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(254)]
+    public void BuildAdu_InvalidPduLength_ThrowsArgumentOutOfRangeException(int pduLength)
+    {
+        byte[] pdu = new byte[pduLength];
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => ModbusRequestBuilder.BuildTcpAdu(1, 1, pdu));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ModbusRequestBuilder.BuildRtuAdu(1, pdu));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ModbusRequestBuilder.BuildAsciiAdu(1, pdu));
     }
 }

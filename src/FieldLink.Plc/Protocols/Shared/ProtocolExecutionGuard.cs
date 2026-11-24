@@ -36,8 +36,9 @@ internal static class ProtocolExecutionGuard
     /// 디바이스 단위(기본 16비트 워드, 32비트 카운터는 4바이트) 읽기 요청으로 정규화합니다.
     /// </summary>
     /// <param name="request">원본 읽기 요청입니다.</param>
-    /// <param name="bytesPerDeviceUnit">디바이스 주소 1단위당 바이트 수입니다. (기본 2바이트)</param>
+    /// <param name="bytesPerDeviceUnit">디바이스 주소 1단위당 바이트 수입니다. 2 또는 4만 허용합니다.</param>
     /// <returns>정규화된 읽기 요청입니다.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="bytesPerDeviceUnit"/>이 2 또는 4가 아닐 때.</exception>
     public static PlcReadRequest NormalizeWordReadRequest(
         PlcReadRequest request,
         int bytesPerDeviceUnit = DefaultBytesPerWord)
@@ -47,12 +48,14 @@ internal static class ProtocolExecutionGuard
             throw new ArgumentNullException(nameof(request));
         }
 
+        ValidateBytesPerDeviceUnit(bytesPerDeviceUnit);
+
         if (request.DataType is not (PlcDataType.Byte or PlcDataType.String))
         {
             return request;
         }
 
-        int unitCount = (request.ByteCount + bytesPerDeviceUnit - 1) / bytesPerDeviceUnit;
+        int unitCount = ((request.ByteCount - 1) / bytesPerDeviceUnit) + 1;
         PlcDataType unitDataType = bytesPerDeviceUnit == BytesPer32BitUnit
             ? PlcDataType.UInt32
             : PlcDataType.UInt16;
@@ -90,8 +93,9 @@ internal static class ProtocolExecutionGuard
     /// </summary>
     /// <param name="request">원본 쓰기 요청입니다.</param>
     /// <param name="originalElementsPerUnit">정규화된 1단위당 원본 원소(바이트) 수입니다.</param>
-    /// <param name="bytesPerDeviceUnit">디바이스 주소 1단위당 바이트 수입니다. (기본 2바이트)</param>
+    /// <param name="bytesPerDeviceUnit">디바이스 주소 1단위당 바이트 수입니다. 2 또는 4만 허용합니다.</param>
     /// <returns>정규화된 쓰기 요청입니다.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="bytesPerDeviceUnit"/>이 2 또는 4가 아닐 때.</exception>
     /// <exception cref="ArgumentException">바이트 길이가 <paramref name="bytesPerDeviceUnit"/>의 배수가 아닐 때.</exception>
     public static PlcWriteRequest NormalizeWordWriteRequest(
         PlcWriteRequest request,
@@ -102,6 +106,8 @@ internal static class ProtocolExecutionGuard
         {
             throw new ArgumentNullException(nameof(request));
         }
+
+        ValidateBytesPerDeviceUnit(bytesPerDeviceUnit);
 
         if (request.DataType is not (PlcDataType.Byte or PlcDataType.String))
         {
@@ -125,6 +131,17 @@ internal static class ProtocolExecutionGuard
         return new PlcWriteRequest(request.Address, unitDataType, rawBytes);
     }
 
+    private static void ValidateBytesPerDeviceUnit(int bytesPerDeviceUnit)
+    {
+        if (bytesPerDeviceUnit is not (DefaultBytesPerWord or BytesPer32BitUnit))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(bytesPerDeviceUnit),
+                bytesPerDeviceUnit,
+                $"디바이스 단위 바이트 수는 {DefaultBytesPerWord} 또는 {BytesPer32BitUnit}이어야 합니다.");
+        }
+    }
+
     /// <summary>
     /// 정규화된 쓰기 청크 완료 시 원본 요청 기준의 완료 원소 수를 갱신합니다.
     /// </summary>
@@ -143,7 +160,7 @@ internal static class ProtocolExecutionGuard
     /// </summary>
     public static bool ShouldWrapWriteException(Exception exception, int completedElements)
     {
-        return completedElements > 0 && exception is PlcException or TransportException;
+        return completedElements > 0 && exception is PlcException or TransportException or OperationCanceledException;
     }
 
     /// <summary>
@@ -159,6 +176,16 @@ internal static class ProtocolExecutionGuard
         if (completedElements <= 0)
         {
             return exception;
+        }
+
+        if (exception is OperationCanceledException canceledException)
+        {
+            if (!canceledException.Data.IsReadOnly && PlcException.GetCompletedCount(canceledException) == 0)
+            {
+                canceledException.Data[PlcException.CompletedCountDataKey] = completedElements;
+            }
+
+            return canceledException;
         }
 
         if (exception is PlcDeviceException deviceException)

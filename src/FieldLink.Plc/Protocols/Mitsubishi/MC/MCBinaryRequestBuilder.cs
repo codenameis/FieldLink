@@ -69,9 +69,15 @@ public static class MCBinaryRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(pointCount), pointCount, "점수는 1 이상이어야 합니다.");
         }
 
-        if (address.DeviceNumber > options.Series.GetMaxDeviceNumber())
+        uint maxDeviceNumber = options.Series.GetMaxDeviceNumber();
+        if (address.DeviceNumber > maxDeviceNumber)
         {
             throw new ArgumentOutOfRangeException(nameof(address), address.DeviceNumber, "시리즈가 표현할 수 있는 디바이스 번호를 넘었습니다.");
+        }
+
+        if ((long)address.DeviceNumber + pointCount - 1 > maxDeviceNumber)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pointCount), pointCount, "요청 끝 주소가 시리즈의 디바이스 번호 한도를 초과합니다.");
         }
     }
 
@@ -88,6 +94,13 @@ public static class MCBinaryRequestBuilder
         int devNumBytes = options.Series.GetDeviceNumberByteCount();
         int devCodeBytes = options.Series.GetDeviceCodeByteCount();
         int bodyLength = FixedCommandHeaderBytes + devNumBytes + devCodeBytes + PointCountByteSize + payload.Length;
+        if (bodyLength > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(payload),
+                bodyLength,
+                $"MC 바이너리 요청 본문 길이({bodyLength})가 16비트 최대 길이({ushort.MaxValue})를 초과합니다.");
+        }
 
         byte[] frame = new byte[headerLength + bodyLength];
         int offset = 0;

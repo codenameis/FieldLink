@@ -99,10 +99,22 @@ public sealed class PaddedStringFormat : IPlcStringFormat
             throw new ArgumentNullException(nameof(encoding));
         }
 
-        int effectiveLength = 0;
-        while (effectiveLength < storage.Length && storage[effectiveLength] != _paddingByte)
+        int effectiveLength;
+        if (_paddingByte == NullPaddingByte)
         {
-            effectiveLength++;
+            effectiveLength = 0;
+            while (effectiveLength < storage.Length && storage[effectiveLength] != NullPaddingByte)
+            {
+                effectiveLength++;
+            }
+        }
+        else
+        {
+            effectiveLength = storage.Length;
+            while (effectiveLength > 0 && storage[effectiveLength - 1] == _paddingByte)
+            {
+                effectiveLength--;
+            }
         }
 
         return encoding.GetString(storage, 0, effectiveLength);

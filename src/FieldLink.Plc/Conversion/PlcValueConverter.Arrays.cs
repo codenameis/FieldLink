@@ -8,6 +8,7 @@ public static partial class PlcValueConverter
     public static short[] ToInt16Array(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int16ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         short[] result = new short[count];
         for (int i = 0; i < count; i++)
         {
@@ -21,6 +22,7 @@ public static partial class PlcValueConverter
     public static ushort[] ToUInt16Array(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int16ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         ushort[] result = new ushort[count];
         for (int i = 0; i < count; i++)
         {
@@ -34,6 +36,7 @@ public static partial class PlcValueConverter
     public static int[] ToInt32Array(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int32ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         int[] result = new int[count];
         for (int i = 0; i < count; i++)
         {
@@ -47,6 +50,7 @@ public static partial class PlcValueConverter
     public static uint[] ToUInt32Array(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int32ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         uint[] result = new uint[count];
         for (int i = 0; i < count; i++)
         {
@@ -60,6 +64,7 @@ public static partial class PlcValueConverter
     public static long[] ToInt64Array(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int64ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         long[] result = new long[count];
         for (int i = 0; i < count; i++)
         {
@@ -73,6 +78,7 @@ public static partial class PlcValueConverter
     public static ulong[] ToUInt64Array(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int64ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         ulong[] result = new ulong[count];
         for (int i = 0; i < count; i++)
         {
@@ -86,6 +92,7 @@ public static partial class PlcValueConverter
     public static float[] ToSingleArray(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int32ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         float[] result = new float[count];
         for (int i = 0; i < count; i++)
         {
@@ -99,6 +106,7 @@ public static partial class PlcValueConverter
     public static double[] ToDoubleArray(byte[] buffer, int offset, int count, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateArraySlice(buffer, offset, count, Int64ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         double[] result = new double[count];
         for (int i = 0; i < count; i++)
         {
@@ -125,6 +133,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(short[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int16ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int16ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -139,6 +148,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(ushort[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int16ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int16ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -153,6 +163,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(int[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int32ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int32ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -167,6 +178,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(uint[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int32ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int32ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -181,6 +193,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(long[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int64ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int64ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -195,6 +208,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(ulong[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int64ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int64ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -209,6 +223,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(float[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int32ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int32ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -224,6 +239,7 @@ public static partial class PlcValueConverter
     public static byte[] GetBytes(double[] values, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateSourceArray(values, Int64ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
 
         byte[] result = new byte[values.Length * Int64ByteSize];
         for (int i = 0; i < values.Length; i++)
@@ -277,7 +293,7 @@ public static partial class PlcValueConverter
         byte[] result = new byte[values.Length];
         for (int i = 0; i < values.Length; i++)
         {
-            result[i] = (byte)(values[i] ? 1 : 0);
+            result[i] = values[i] ? BooleanTrueByte : BooleanFalseByte;
         }
 
         return result;

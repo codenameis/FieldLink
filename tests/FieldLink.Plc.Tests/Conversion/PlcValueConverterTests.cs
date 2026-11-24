@@ -1,3 +1,4 @@
+using System;
 using Xunit;
 
 namespace FieldLink.Plc.Conversion.Tests;
@@ -103,5 +104,32 @@ public sealed class PlcValueConverterTests
         Assert.False(PlcValueConverter.ToBoolean(buffer, 0, bitIndex: 1));
         Assert.True(PlcValueConverter.ToBoolean(buffer, 0, bitIndex: 2));
         Assert.False(PlcValueConverter.ToBoolean(buffer, 0, bitIndex: 3));
+    }
+
+    [Fact]
+    public void Converters_UndefinedByteOrder_ThrowsArgumentOutOfRangeException()
+    {
+        const ByteOrder InvalidOrder = (ByteOrder)999;
+        byte[] empty = Array.Empty<byte>();
+        byte[] twoBytes = new byte[] { 0x01, 0x02 };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToUInt16(twoBytes, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToInt16Array(empty, 0, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToUInt16Array(empty, 0, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToInt32Array(empty, 0, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToUInt32Array(empty, 0, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToInt64Array(empty, 0, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToUInt64Array(empty, 0, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToSingleArray(empty, 0, 0, InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.ToDoubleArray(empty, 0, 0, InvalidOrder));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<short>(), InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<ushort>(), InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<int>(), InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<uint>(), InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<long>(), InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<ulong>(), InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<float>(), InvalidOrder));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcValueConverter.GetBytes(Array.Empty<double>(), InvalidOrder));
     }
 }

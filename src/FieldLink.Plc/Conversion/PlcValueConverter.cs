@@ -10,6 +10,17 @@ public static partial class PlcValueConverter
     private const int Int16ByteSize = 2;
     private const int Int32ByteSize = 4;
     private const int Int64ByteSize = 8;
+    private const int SecondWordByteOffset = 2;
+    private const int ThirdWordByteOffset = 4;
+    private const int FourthWordByteOffset = 6;
+    private const int ByteShift = 8;
+    private const int WordShift = 16;
+    private const int DoubleWordShift = 32;
+    private const int TripleWordShift = 48;
+    private const ushort ByteMask = 0xFF;
+    private const uint WordMask = 0xFFFF;
+    private const byte BooleanTrueByte = 1;
+    private const byte BooleanFalseByte = 0;
     private const int MaxBitIndex = 7;
 
     /// <summary>버퍼에서 16비트 부호 있는 정수를 읽습니다.</summary>
@@ -21,13 +32,14 @@ public static partial class PlcValueConverter
     /// <summary>버퍼에서 16비트 부호 없는 정수를 읽습니다.</summary>
     public static ushort ToUInt16(byte[] buffer, int offset = 0, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        ValidateBuffer(buffer, offset, 2);
+        ValidateBuffer(buffer, offset, Int16ByteSize);
+        EnsureDefinedByteOrder(byteOrder);
         byte firstByte = buffer[offset];
         byte secondByte = buffer[offset + 1];
 
         return IsLittleEndianWithinWord(byteOrder)
-            ? (ushort)(firstByte | (secondByte << 8))
-            : (ushort)((firstByte << 8) | secondByte);
+            ? (ushort)(firstByte | (secondByte << ByteShift))
+            : (ushort)((firstByte << ByteShift) | secondByte);
     }
 
     /// <summary>버퍼에서 32비트 부호 있는 정수를 읽습니다.</summary>
@@ -39,15 +51,15 @@ public static partial class PlcValueConverter
     /// <summary>버퍼에서 32비트 부호 없는 정수를 읽습니다.</summary>
     public static uint ToUInt32(byte[] buffer, int offset = 0, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        ValidateBuffer(buffer, offset, 4);
+        ValidateBuffer(buffer, offset, Int32ByteSize);
         EnsureDefinedByteOrder(byteOrder);
 
         ushort firstWord = ToUInt16(buffer, offset, byteOrder);
-        ushort secondWord = ToUInt16(buffer, offset + 2, byteOrder);
+        ushort secondWord = ToUInt16(buffer, offset + SecondWordByteOffset, byteOrder);
 
         return IsLowWordFirst(byteOrder)
-            ? ((uint)secondWord << 16) | firstWord
-            : ((uint)firstWord << 16) | secondWord;
+            ? ((uint)secondWord << WordShift) | firstWord
+            : ((uint)firstWord << WordShift) | secondWord;
     }
 
     /// <summary>버퍼에서 64비트 부호 있는 정수를 읽습니다.</summary>
@@ -59,17 +71,17 @@ public static partial class PlcValueConverter
     /// <summary>버퍼에서 64비트 부호 없는 정수를 읽습니다.</summary>
     public static ulong ToUInt64(byte[] buffer, int offset = 0, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        ValidateBuffer(buffer, offset, 8);
+        ValidateBuffer(buffer, offset, Int64ByteSize);
         EnsureDefinedByteOrder(byteOrder);
 
         ushort word0 = ToUInt16(buffer, offset, byteOrder);
-        ushort word1 = ToUInt16(buffer, offset + 2, byteOrder);
-        ushort word2 = ToUInt16(buffer, offset + 4, byteOrder);
-        ushort word3 = ToUInt16(buffer, offset + 6, byteOrder);
+        ushort word1 = ToUInt16(buffer, offset + SecondWordByteOffset, byteOrder);
+        ushort word2 = ToUInt16(buffer, offset + ThirdWordByteOffset, byteOrder);
+        ushort word3 = ToUInt16(buffer, offset + FourthWordByteOffset, byteOrder);
 
         return IsLowWordFirst(byteOrder)
-            ? ((ulong)word3 << 48) | ((ulong)word2 << 32) | ((ulong)word1 << 16) | word0
-            : ((ulong)word0 << 48) | ((ulong)word1 << 32) | ((ulong)word2 << 16) | word3;
+            ? ((ulong)word3 << TripleWordShift) | ((ulong)word2 << DoubleWordShift) | ((ulong)word1 << WordShift) | word0
+            : ((ulong)word0 << TripleWordShift) | ((ulong)word1 << DoubleWordShift) | ((ulong)word2 << WordShift) | word3;
     }
 
     /// <summary>버퍼에서 단정밀도 부동소수점(float)을 읽습니다.</summary>
@@ -103,7 +115,7 @@ public static partial class PlcValueConverter
     /// <summary>16비트 부호 있는 정수를 바이트 배열로 변환합니다.</summary>
     public static byte[] GetBytes(short value, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        byte[] bytes = new byte[2];
+        byte[] bytes = new byte[Int16ByteSize];
         WriteInt16(bytes, 0, value, byteOrder);
         return bytes;
     }
@@ -111,7 +123,7 @@ public static partial class PlcValueConverter
     /// <summary>16비트 부호 없는 정수를 바이트 배열로 변환합니다.</summary>
     public static byte[] GetBytes(ushort value, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        byte[] bytes = new byte[2];
+        byte[] bytes = new byte[Int16ByteSize];
         WriteUInt16(bytes, 0, value, byteOrder);
         return bytes;
     }
@@ -119,7 +131,7 @@ public static partial class PlcValueConverter
     /// <summary>32비트 부호 있는 정수를 바이트 배열로 변환합니다.</summary>
     public static byte[] GetBytes(int value, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        byte[] bytes = new byte[4];
+        byte[] bytes = new byte[Int32ByteSize];
         WriteInt32(bytes, 0, value, byteOrder);
         return bytes;
     }
@@ -127,7 +139,7 @@ public static partial class PlcValueConverter
     /// <summary>32비트 부호 없는 정수를 바이트 배열로 변환합니다.</summary>
     public static byte[] GetBytes(uint value, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        byte[] bytes = new byte[4];
+        byte[] bytes = new byte[Int32ByteSize];
         WriteUInt32(bytes, 0, value, byteOrder);
         return bytes;
     }
@@ -135,7 +147,7 @@ public static partial class PlcValueConverter
     /// <summary>64비트 부호 있는 정수를 바이트 배열로 변환합니다.</summary>
     public static byte[] GetBytes(long value, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        byte[] bytes = new byte[8];
+        byte[] bytes = new byte[Int64ByteSize];
         WriteInt64(bytes, 0, value, byteOrder);
         return bytes;
     }
@@ -143,7 +155,7 @@ public static partial class PlcValueConverter
     /// <summary>64비트 부호 없는 정수를 바이트 배열로 변환합니다.</summary>
     public static byte[] GetBytes(ulong value, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
-        byte[] bytes = new byte[8];
+        byte[] bytes = new byte[Int64ByteSize];
         WriteUInt64(bytes, 0, value, byteOrder);
         return bytes;
     }
@@ -165,7 +177,7 @@ public static partial class PlcValueConverter
     /// <summary>불리언 값을 1바이트 배열(0x01 또는 0x00)로 변환합니다.</summary>
     public static byte[] GetBytes(bool value)
     {
-        return new byte[] { (byte)(value ? 1 : 0) };
+        return new byte[] { value ? BooleanTrueByte : BooleanFalseByte };
     }
 
     internal static void WriteInt16(byte[] destination, int offset, short value, ByteOrder byteOrder)
@@ -176,8 +188,8 @@ public static partial class PlcValueConverter
     internal static void WriteUInt16(byte[] destination, int offset, ushort value, ByteOrder byteOrder)
     {
         EnsureDefinedByteOrder(byteOrder);
-        byte highByte = (byte)((value >> 8) & 0xFF);
-        byte lowByte = (byte)(value & 0xFF);
+        byte highByte = (byte)((value >> ByteShift) & ByteMask);
+        byte lowByte = (byte)(value & ByteMask);
 
         if (IsLittleEndianWithinWord(byteOrder))
         {
@@ -199,18 +211,18 @@ public static partial class PlcValueConverter
     internal static void WriteUInt32(byte[] destination, int offset, uint value, ByteOrder byteOrder)
     {
         EnsureDefinedByteOrder(byteOrder);
-        ushort highWord = (ushort)(value >> 16);
-        ushort lowWord = (ushort)(value & 0xFFFF);
+        ushort highWord = (ushort)(value >> WordShift);
+        ushort lowWord = (ushort)(value & WordMask);
 
         if (IsLowWordFirst(byteOrder))
         {
             WriteUInt16(destination, offset, lowWord, byteOrder);
-            WriteUInt16(destination, offset + 2, highWord, byteOrder);
+            WriteUInt16(destination, offset + SecondWordByteOffset, highWord, byteOrder);
         }
         else
         {
             WriteUInt16(destination, offset, highWord, byteOrder);
-            WriteUInt16(destination, offset + 2, lowWord, byteOrder);
+            WriteUInt16(destination, offset + SecondWordByteOffset, lowWord, byteOrder);
         }
     }
 
@@ -222,24 +234,24 @@ public static partial class PlcValueConverter
     internal static void WriteUInt64(byte[] destination, int offset, ulong value, ByteOrder byteOrder)
     {
         EnsureDefinedByteOrder(byteOrder);
-        ushort highestWord = (ushort)(value >> 48);
-        ushort upperMiddleWord = (ushort)(value >> 32);
-        ushort lowerMiddleWord = (ushort)(value >> 16);
+        ushort highestWord = (ushort)(value >> TripleWordShift);
+        ushort upperMiddleWord = (ushort)(value >> DoubleWordShift);
+        ushort lowerMiddleWord = (ushort)(value >> WordShift);
         ushort lowestWord = (ushort)value;
 
         if (IsLowWordFirst(byteOrder))
         {
             WriteUInt16(destination, offset, lowestWord, byteOrder);
-            WriteUInt16(destination, offset + 2, lowerMiddleWord, byteOrder);
-            WriteUInt16(destination, offset + 4, upperMiddleWord, byteOrder);
-            WriteUInt16(destination, offset + 6, highestWord, byteOrder);
+            WriteUInt16(destination, offset + SecondWordByteOffset, lowerMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + ThirdWordByteOffset, upperMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + FourthWordByteOffset, highestWord, byteOrder);
         }
         else
         {
             WriteUInt16(destination, offset, highestWord, byteOrder);
-            WriteUInt16(destination, offset + 2, upperMiddleWord, byteOrder);
-            WriteUInt16(destination, offset + 4, lowerMiddleWord, byteOrder);
-            WriteUInt16(destination, offset + 6, lowestWord, byteOrder);
+            WriteUInt16(destination, offset + SecondWordByteOffset, upperMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + ThirdWordByteOffset, lowerMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + FourthWordByteOffset, lowestWord, byteOrder);
         }
     }
 

@@ -7,6 +7,8 @@ namespace FieldLink.Plc.Protocols.Mitsubishi.MC;
 /// <summary>MC 프로토콜 주소 문자열(예: "D100", "X1F", "ZR1000")을 해석한 불변 값 객체입니다. (사양서 §2)</summary>
 public sealed class MCAddress
 {
+    private const int HexadecimalBase = 16;
+
     private MCAddress(string originalAddress, MCDevice device, uint deviceNumber)
     {
         OriginalAddress = originalAddress;
@@ -100,7 +102,7 @@ public sealed class MCAddress
             return false;
         }
 
-        NumberStyles style = numberBase == 16 ? NumberStyles.AllowHexSpecifier : NumberStyles.None;
+        NumberStyles style = numberBase == HexadecimalBase ? NumberStyles.AllowHexSpecifier : NumberStyles.None;
         return uint.TryParse(numberText, style, CultureInfo.InvariantCulture, out number);
     }
 }

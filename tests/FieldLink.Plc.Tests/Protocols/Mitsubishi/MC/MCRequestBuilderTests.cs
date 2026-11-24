@@ -128,6 +128,31 @@ public sealed class MCRequestBuilderTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new MCOptions(maxWordPoints: 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new MCOptions(maxBitPoints: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new MCOptions(frameType: (MCFrameType)99));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new MCOptions(series: (MCSeries)99));
+    }
+
+    [Fact]
+    public void Ascii_DecimalDeviceBeyondFixedWidth_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MCAsciiRequestBuilder.BuildReadRequest(QL3E, 0, MCAddress.Parse("D1000000"), 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MCAsciiRequestBuilder.BuildReadRequest(QL3E, 0, MCAddress.Parse("D999999"), 2));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MCAsciiRequestBuilder.BuildReadRequest(Iqr3E, 0, MCAddress.Parse("D100000000"), 1));
+
+        // 16진 디바이스는 QL 6자리(0xFFFFFF), iQ-R 8자리(0xFFFFFFFF)까지 허용된다.
+        MCAsciiRequestBuilder.BuildReadRequest(QL3E, 0, MCAddress.Parse("XFFFFFF"), 1);
+    }
+
+    [Fact]
+    public void BuildWriteRequest_BodyLengthOverflow_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MCBinaryRequestBuilder.BuildWriteRequest(QL3E, 0, MCAddress.Parse("D0"), 32765, new byte[32765 * 2]));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            MCAsciiRequestBuilder.BuildWriteRequest(QL3E, 0, MCAddress.Parse("D0"), 16380, new byte[16380 * 2]));
     }
 
     private static byte[] FromHex(string spacedHex) => Convert.FromHexString(spacedHex.Replace(" ", string.Empty));

@@ -162,6 +162,28 @@ public sealed class MCProtocolTests
         Assert.Equal(ByteOrder.LittleEndian, asciiClient.ByteOrder);
     }
 
+    [Fact]
+    public async Task PreFlightAddressRangeOverflow_ThrowsBeforeSendingAnyFrame()
+    {
+        var binaryTransport = new ScriptedTransport();
+        var binaryProtocol = new MCBinaryProtocol(binaryTransport, new MCOptions(MCFrameType.Frame3E, MCSeries.QL));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            binaryProtocol.ReadAsync(new PlcReadRequest("D16777215", PlcDataType.Int16, 2), CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            binaryProtocol.WriteAsync(new PlcWriteRequest("D16777215", PlcDataType.Int16, new byte[4]), CancellationToken.None));
+        Assert.Empty(binaryTransport.SentFrames);
+
+        var asciiTransport = new ScriptedTransport();
+        var asciiProtocol = new MCAsciiProtocol(asciiTransport, new MCOptions(MCFrameType.Frame3E, MCSeries.QL));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            asciiProtocol.ReadAsync(new PlcReadRequest("D999999", PlcDataType.Int16, 2), CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            asciiProtocol.WriteAsync(new PlcWriteRequest("D999999", PlcDataType.Int16, new byte[4]), CancellationToken.None));
+        Assert.Empty(asciiTransport.SentFrames);
+    }
+
     private static byte[] BinaryResponse3E(byte[] data)
     {
         var frame = new byte[11 + data.Length];

@@ -15,7 +15,10 @@ public static class MCAsciiRequestBuilder
     private const int HexDigitsPerByte = 2;
     private const int HexDigitsPerWord = 4;
     private const int ByteShift = 8;
+    private const int DecimalNumberBase = 10;
     private const int HexNumberBase = 16;
+    private const uint MaxQLDecimalDeviceNumber = 999_999;
+    private const uint MaxIqrDecimalDeviceNumber = 99_999_999;
 
     /// <summary>디바이스 일괄 읽기 요청 프레임을 만듭니다.</summary>
     /// <param name="options">프레임 종류·시리즈·액세스 경로 설정입니다.</param>
@@ -59,6 +62,16 @@ public static class MCAsciiRequestBuilder
         return Encoding.ASCII.GetBytes(WrapWithHeader(options, serialNumber, body));
     }
 
+    internal static uint GetMaxDeviceNumber(MCSeries series, MCDevice device)
+    {
+        if (device.NumberBase == DecimalNumberBase)
+        {
+            return series == MCSeries.Iqr ? MaxIqrDecimalDeviceNumber : MaxQLDecimalDeviceNumber;
+        }
+
+        return series.GetMaxDeviceNumber();
+    }
+
     private static void ValidateRequest(MCOptions options, MCAddress address, ushort pointCount)
     {
         if (options is null)
@@ -76,9 +89,15 @@ public static class MCAsciiRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(pointCount), pointCount, "점수는 1 이상이어야 합니다.");
         }
 
-        if (address.DeviceNumber > options.Series.GetMaxDeviceNumber())
+        uint maxDeviceNumber = GetMaxDeviceNumber(options.Series, address.Device);
+        if (address.DeviceNumber > maxDeviceNumber)
         {
-            throw new ArgumentOutOfRangeException(nameof(address), address.DeviceNumber, "시리즈가 표현할 수 있는 디바이스 번호를 넘었습니다.");
+            throw new ArgumentOutOfRangeException(nameof(address), address.DeviceNumber, "시리즈가 ASCII 고정 자리수로 표현할 수 있는 디바이스 번호를 넘었습니다.");
+        }
+
+        if ((long)address.DeviceNumber + pointCount - 1 > maxDeviceNumber)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pointCount), pointCount, "요청 끝 주소가 시리즈의 ASCII 디바이스 번호 한도를 초과합니다.");
         }
     }
 
@@ -98,6 +117,14 @@ public static class MCAsciiRequestBuilder
 
     private static string WrapWithHeader(MCOptions options, ushort serialNumber, string body)
     {
+        if (body.Length > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(body),
+                body.Length,
+                $"MC ASCII 요청 본문 길이({body.Length})가 16비트 최대 길이({ushort.MaxValue})를 초과합니다.");
+        }
+
         var frame = new StringBuilder();
         bool is4E = options.FrameType == MCFrameType.Frame4E;
 

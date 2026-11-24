@@ -294,4 +294,46 @@ public sealed class ProtocolExecutionGuardTests
 
         Assert.Equal(1, exception.CompletedCount);
     }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(8)]
+    public void NormalizeWordRequests_InvalidBytesPerDeviceUnit_ThrowsArgumentOutOfRangeException(int bytesPerDeviceUnit)
+    {
+        var readRequest = new PlcReadRequest("D100", PlcDataType.Byte, 4);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            ProtocolExecutionGuard.NormalizeWordReadRequest(readRequest, bytesPerDeviceUnit));
+
+        var writeRequest = new PlcWriteRequest("D100", PlcDataType.Byte, new byte[4]);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            ProtocolExecutionGuard.NormalizeWordWriteRequest(writeRequest, out _, bytesPerDeviceUnit));
+    }
+
+    [Fact]
+    public void NormalizeWordReadRequest_MaxAlignedByteCount_DoesNotOverflow()
+    {
+        var maxWordAlignedRequest = new PlcReadRequest("D0", PlcDataType.Byte, int.MaxValue - 1);
+        PlcReadRequest normalizedWord = ProtocolExecutionGuard.NormalizeWordReadRequest(maxWordAlignedRequest);
+
+        Assert.Equal(PlcDataType.UInt16, normalizedWord.DataType);
+        Assert.Equal(int.MaxValue / 2, normalizedWord.Count);
+
+        var maxDWordAlignedRequest = new PlcReadRequest("D0", PlcDataType.Byte, int.MaxValue - 3);
+        PlcReadRequest normalizedDWord = ProtocolExecutionGuard.NormalizeWordReadRequest(maxDWordAlignedRequest, 4);
+
+        Assert.Equal(PlcDataType.UInt32, normalizedDWord.DataType);
+        Assert.Equal(int.MaxValue / 4, normalizedDWord.Count);
+    }
+
+    [Fact]
+    public void NormalizeWordReadRequest_MaxByteCount_DoesNotWrapNegative()
+    {
+        var maxRequest = new PlcReadRequest("D0", PlcDataType.Byte, int.MaxValue);
+
+        ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => ProtocolExecutionGuard.NormalizeWordReadRequest(maxRequest));
+
+        Assert.Equal((int.MaxValue / 2) + 1, exception.ActualValue);
+    }
 }

@@ -31,6 +31,16 @@ public sealed class MCOptions
         int maxWordPoints = DefaultMaxWordPoints,
         int maxBitPoints = DefaultMaxBitPoints)
     {
+        if (!Enum.IsDefined(typeof(MCFrameType), frameType))
+        {
+            throw new ArgumentOutOfRangeException(nameof(frameType), frameType, "지원하지 않는 MC 프레임 종류입니다.");
+        }
+
+        if (!Enum.IsDefined(typeof(MCSeries), series))
+        {
+            throw new ArgumentOutOfRangeException(nameof(series), series, "지원하지 않는 MC 시리즈입니다.");
+        }
+
         if (maxWordPoints is < MinPointCount or > ushort.MaxValue)
         {
             throw new ArgumentOutOfRangeException(nameof(maxWordPoints), maxWordPoints, $"워드 한도는 {MinPointCount} 이상 {ushort.MaxValue} 이하여야 합니다.");

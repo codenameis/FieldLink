@@ -12,6 +12,8 @@ public static class ModbusRequestBuilder
     private const ushort CoilOffValue = 0x0000;
     private const ushort ModbusTcpProtocolId = 0x0000;
     private const int MinCount = 1;
+    private const int MinPduLength = 1;
+    private const int MaxPduLength = 253; // 사양서 §3-0: PDU 최대 253바이트
     private const int MaxReadCoilsCount = 2000;
     private const int MaxReadRegistersCount = 125;
     private const int MaxWriteCoilsCount = 1968;
@@ -148,10 +150,7 @@ public static class ModbusRequestBuilder
     /// <summary>PDU에 7바이트 MBAP 헤더를 붙여 Modbus TCP ADU 프레임을 만듭니다.</summary>
     public static byte[] BuildTcpAdu(ushort transactionId, byte unitId, byte[] pdu)
     {
-        if (pdu is null)
-        {
-            throw new ArgumentNullException(nameof(pdu));
-        }
+        ValidatePdu(pdu);
 
         int lengthField = MbapUnitIdLength + pdu.Length; // 유닛 ID 1바이트 + PDU 길이
         byte[] adu = new byte[MbapHeaderLength + pdu.Length];
@@ -171,10 +170,7 @@ public static class ModbusRequestBuilder
     /// <summary>국번과 PDU 뒤에 2바이트 CRC-16을 덧붙여 Modbus RTU ADU 프레임을 만듭니다.</summary>
     public static byte[] BuildRtuAdu(byte unitId, byte[] pdu)
     {
-        if (pdu is null)
-        {
-            throw new ArgumentNullException(nameof(pdu));
-        }
+        ValidatePdu(pdu);
 
         int totalLength = RtuFramingOverheadLength + pdu.Length;
         byte[] adu = new byte[totalLength];
@@ -191,10 +187,7 @@ public static class ModbusRequestBuilder
     /// <summary>국번과 PDU, 1바이트 LRC를 16진 ASCII 문자로 인코딩하고 콜론과 CRLF를 붙여 Modbus ASCII ADU를 만듭니다.</summary>
     public static byte[] BuildAsciiAdu(byte unitId, byte[] pdu)
     {
-        if (pdu is null)
-        {
-            throw new ArgumentNullException(nameof(pdu));
-        }
+        ValidatePdu(pdu);
 
         byte[] raw = new byte[MbapUnitIdLength + pdu.Length];
         raw[0] = unitId;
@@ -212,6 +205,22 @@ public static class ModbusRequestBuilder
         adu[adu.Length - 1] = AsciiLineFeed;
 
         return adu;
+    }
+
+    private static void ValidatePdu(byte[] pdu)
+    {
+        if (pdu is null)
+        {
+            throw new ArgumentNullException(nameof(pdu));
+        }
+
+        if (pdu.Length is < MinPduLength or > MaxPduLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pdu),
+                pdu.Length,
+                $"Modbus PDU 길이는 {MinPduLength}에서 {MaxPduLength}바이트 사이여야 합니다.");
+        }
     }
 
     private static void ValidateReadCount(ModbusFunctionCode functionCode, ushort count)

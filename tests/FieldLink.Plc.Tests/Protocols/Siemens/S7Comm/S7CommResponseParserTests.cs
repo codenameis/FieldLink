@@ -199,6 +199,36 @@ public sealed class S7CommResponseParserTests
         var decoder = new S7CommFrameDecoder();
 
         Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(FromHex("03 00 00 02")), out _));
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(FromHex("03 00 00 06 02 F0")), out _));
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(FromHex("02 00 00 07 02 F0 80")), out _));
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(FromHex("03 01 00 07 02 F0 80")), out _));
+    }
+
+    [Fact]
+    public void ReadPduReference_InvalidHeaders_ThrowsInvalidResponse()
+    {
+        byte[] nonZeroReserved = Wrap("32 03 00 00 00 03 00 02 00 01 00 00 05 01 FF");
+        nonZeroReserved[1] = 0x01;
+        AssertInvalidResponse(() => S7CommResponseParser.ReadPduReference(nonZeroReserved));
+
+        byte[] wrongCotp = Wrap("32 03 00 00 00 03 00 02 00 01 00 00 05 01 FF");
+        wrongCotp[5] = 0xE0;
+        AssertInvalidResponse(() => S7CommResponseParser.ReadPduReference(wrongCotp));
+
+        byte[] wrongProtocol = Wrap("33 03 00 00 00 03 00 02 00 01 00 00 05 01 FF");
+        AssertInvalidResponse(() => S7CommResponseParser.ReadPduReference(wrongProtocol));
+    }
+
+    [Fact]
+    public void ParseWriteResponse_NonZeroTpktReservedOrWrongPduRefWithHeaderError_ThrowsInvalidResponse()
+    {
+        byte[] nonZeroReserved = Wrap("32 03 00 00 00 03 00 02 00 01 00 00 05 01 FF");
+        nonZeroReserved[1] = 0x01;
+        AssertInvalidResponse(() => S7CommResponseParser.ParseWriteResponse(nonZeroReserved, 3));
+
+        // Stale response with wrong PDU reference (0x0009 instead of 0x0003) AND header error (0x8104) must fail with InvalidResponse first
+        byte[] staleHeaderError = Wrap("32 02 00 00 00 09 00 00 00 00 81 04");
+        AssertInvalidResponse(() => S7CommResponseParser.ParseWriteResponse(staleHeaderError, 3));
     }
 
     private static void AssertInvalidResponse(Action action)

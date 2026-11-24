@@ -9,12 +9,15 @@ public static class MCAsciiResponseParser
     private const int Header3ELength = 18;
     private const int Header4ELength = 26;
     private const int SerialNumberOffset = 4;
+    private const int SerialNumberCharacterCount = 4;
+    private const int ReservedOffset4E = 8;
     private const int LengthFieldCharacterCount = 4;
     private const int EndCodeCharacterCount = 4;
     private const int WordCharacterCount = 4;
     private const int BytesPerWord = 2;
     private const string Response3ESubheader = "D000";
     private const string Response4ESubheader = "D400";
+    private const string Reserved4E = "0000";
 
     /// <summary>4E ASCII 응답 프레임의 시리얼 번호를 읽습니다.</summary>
     /// <param name="frame">수신된 응답 프레임 바이트 배열입니다.</param>
@@ -31,7 +34,17 @@ public static class MCAsciiResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"4E 응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
         }
 
-        return (ushort)BinaryBuffer.ReadAsciiHex(frame, SerialNumberOffset, LengthFieldCharacterCount);
+        if (!MatchesAscii(frame, 0, Response4ESubheader))
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 서브헤더가 '{Response4ESubheader}'가 아닙니다.");
+        }
+
+        if (!MatchesAscii(frame, ReservedOffset4E, Reserved4E))
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, "4E 응답의 예약 필드가 '0000'이 아닙니다.");
+        }
+
+        return (ushort)BinaryBuffer.ReadAsciiHex(frame, SerialNumberOffset, SerialNumberCharacterCount);
     }
 
     /// <summary>ASCII 읽기 응답 프레임에서 데이터를 추출합니다.</summary>
@@ -100,12 +113,9 @@ public static class MCAsciiResponseParser
     private static void ValidateHeader(MCFrameType frameType, ushort expectedSerialNumber, byte[] frame)
     {
         string expectedSubheader = frameType == MCFrameType.Frame4E ? Response4ESubheader : Response3ESubheader;
-        for (int index = 0; index < expectedSubheader.Length; index++)
+        if (!MatchesAscii(frame, 0, expectedSubheader))
         {
-            if (frame[index] != expectedSubheader[index])
-            {
-                throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 서브헤더가 '{expectedSubheader}'가 아닙니다.");
-            }
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 서브헤더가 '{expectedSubheader}'가 아닙니다.");
         }
 
         if (frameType == MCFrameType.Frame4E && ReadSerialNumber(frame) != expectedSerialNumber)
@@ -114,9 +124,27 @@ public static class MCAsciiResponseParser
         }
     }
 
+    private static bool MatchesAscii(byte[] frame, int offset, string expected)
+    {
+        for (int index = 0; index < expected.Length; index++)
+        {
+            if (frame[offset + index] != expected[index])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static void ValidateLength(byte[] frame, int headerLength)
     {
         int lengthField = BinaryBuffer.ReadAsciiHex(frame, headerLength - LengthFieldCharacterCount, LengthFieldCharacterCount);
+        if (lengthField < EndCodeCharacterCount)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 길이 필드({lengthField})는 최소 {EndCodeCharacterCount}문자 이상이어야 합니다.");
+        }
+
         if (frame.Length != headerLength + lengthField)
         {
             throw new PlcException(

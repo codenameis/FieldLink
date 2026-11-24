@@ -105,6 +105,156 @@ public sealed class FEnetProtocolTests
         Assert.Equal(ByteOrder.LittleEndian, client.ByteOrder);
     }
 
+    [Fact]
+    public async Task ReadAsync_BitAddress_UsesByteAlignedContinuousReadAndExtractsBits()
+    {
+        var mockSession = new MockTransportSession();
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            // %MB1: bit 7 = 1 (0x80), %MB2: bit 0 = 0, bit 1 = 1 (0x02)
+            return MakeResponseFrame(invokeId, 0x0055, 0, 0, new byte[] { 0x80, 0x02 });
+        });
+
+        var transport = new MockTransport(mockSession);
+        var protocol = new FEnetProtocol(transport);
+
+        byte[] bits = await protocol.ReadAsync(new PlcReadRequest("%MX15", PlcDataType.Boolean, 3), CancellationToken.None);
+
+        Assert.Equal(new byte[] { 1, 0, 1 }, bits);
+        byte[] sent = mockSession.SentBuffers[0];
+        int variableLength = sent[28] | (sent[29] << 8);
+        Assert.Equal("%MB1", Encoding.ASCII.GetString(sent, 30, variableLength));
+        Assert.Equal(2, sent[30 + variableLength] | (sent[31 + variableLength] << 8));
+    }
+
+    [Fact]
+    public async Task ReadAsync_LegacyBitAccess_M100WithBoolean_UsesByteReadAndRejectsD100()
+    {
+        var mockSession = new MockTransportSession();
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            // M100 -> byte 12 (100 / 8 = 12), bit 4 (100 % 8 = 4 -> 0x10)
+            return MakeResponseFrame(invokeId, 0x0055, 0, 0, new byte[] { 0x10 });
+        });
+
+        var transport = new MockTransport(mockSession);
+        var protocol = new FEnetProtocol(transport);
+
+        byte[] bits = await protocol.ReadAsync(new PlcReadRequest("M100", PlcDataType.Boolean, 1), CancellationToken.None);
+        Assert.Equal(new byte[] { 1 }, bits);
+
+        byte[] sent = mockSession.SentBuffers[0];
+        int variableLength = sent[28] | (sent[29] << 8);
+        Assert.Equal("%MB12", Encoding.ASCII.GetString(sent, 30, variableLength));
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D100", PlcDataType.Boolean, 1), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task WriteAsync_SingleBitUnaligned_PerformsByteReadModifyWrite()
+    {
+        var mockSession = new MockTransportSession();
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            return MakeResponseFrame(invokeId, 0x0055, 0, 0, new byte[] { 0x05 });
+        });
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            return MakeResponseFrame(invokeId, 0x0059, 0, 0, Array.Empty<byte>());
+        });
+
+        var transport = new MockTransport(mockSession);
+        var protocol = new FEnetProtocol(transport);
+
+        await protocol.WriteAsync(new PlcWriteRequest("%MX15", PlcDataType.Boolean, new byte[] { 1 }), CancellationToken.None);
+
+        Assert.Equal(2, mockSession.SentBuffers.Count);
+        byte[] writeSent = mockSession.SentBuffers[1];
+        int variableLength = writeSent[28] | (writeSent[29] << 8);
+        Assert.Equal("%MB1", Encoding.ASCII.GetString(writeSent, 30, variableLength));
+        Assert.Equal(0x85, writeSent[32 + variableLength]);
+    }
+
+    [Fact]
+    public async Task WriteAsync_ByteAlignedMultiBit_WritesBytesWithoutRead()
+    {
+        var mockSession = new MockTransportSession();
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            return MakeResponseFrame(invokeId, 0x0059, 0, 0, Array.Empty<byte>());
+        });
+
+        var transport = new MockTransport(mockSession);
+        var protocol = new FEnetProtocol(transport);
+
+        await protocol.WriteAsync(
+            new PlcWriteRequest("%MX8", PlcDataType.Boolean, new byte[] { 1, 0, 1, 0, 0, 0, 0, 1 }),
+            CancellationToken.None);
+
+        Assert.Single(mockSession.SentBuffers);
+        byte[] writeSent = mockSession.SentBuffers[0];
+        int variableLength = writeSent[28] | (writeSent[29] << 8);
+        Assert.Equal("%MB1", Encoding.ASCII.GetString(writeSent, 30, variableLength));
+        Assert.Equal(0x85, writeSent[32 + variableLength]);
+    }
+
+    [Fact]
+    public async Task WriteAsync_BitAddressChunkedPartialFailure_ReportsCompletedCount()
+    {
+        var mockSession = new MockTransportSession();
+        // Chunk 1 (%MB0): bit 7 -> RMW read (0x00), write succeeds
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            return MakeResponseFrame(invokeId, 0x0055, 0, 0, new byte[] { 0x00 });
+        });
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            return MakeResponseFrame(invokeId, 0x0059, 0, 0, Array.Empty<byte>());
+        });
+        // Chunk 2 (%MB1): bits 8..9 -> RMW read succeeds, write fails with DeviceError
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            return MakeResponseFrame(invokeId, 0x0055, 0, 0, new byte[] { 0x00 });
+        });
+        mockSession.EnqueueReceive((_, sendBytes) =>
+        {
+            ushort invokeId = (ushort)(sendBytes[14] | (sendBytes[15] << 8));
+            return MakeResponseFrame(invokeId, 0x0059, 1, (ushort)FEnetErrorCode.DataRangeExceeded, Array.Empty<byte>());
+        });
+
+        var transport = new MockTransport(mockSession);
+        var protocol = new FEnetProtocol(transport, new FEnetOptions { MaxWriteBytes = 1 });
+
+        var exception = await Assert.ThrowsAsync<PlcDeviceException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("%MX7", PlcDataType.Boolean, new byte[] { 1, 1, 0 }), CancellationToken.None));
+
+        Assert.Equal(1, exception.CompletedCount);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_OffsetOverflowPreFlight_ThrowsBeforeSending()
+    {
+        var mockSession = new MockTransportSession();
+        var transport = new MockTransport(mockSession);
+        var protocol = new FEnetProtocol(transport);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest($"%DW{int.MaxValue}", PlcDataType.Int16, 2), CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest($"%MX{int.MaxValue}", PlcDataType.Boolean, new byte[] { 1, 0 }), CancellationToken.None));
+
+        Assert.Empty(mockSession.SentBuffers);
+    }
+
     private static byte[] MakeResponseFrame(ushort invokeId, ushort command, ushort errorState, ushort errorCode, byte[] data)
     {
         ushort instructionLength = (ushort)(command == 0x0055 ? 14 + data.Length : 10);

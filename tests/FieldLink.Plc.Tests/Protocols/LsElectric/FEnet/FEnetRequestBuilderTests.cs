@@ -32,13 +32,14 @@ public sealed class FEnetRequestBuilderTests
         Assert.Equal(0x12, frame[16]);
         Assert.Equal(0x00, frame[17]);
 
-        // BCC verification
+        // BCC verification (Vector T1 spec value: 0x41)
         byte bcc = 0;
         for (int i = 0; i < 19; i++)
         {
             bcc = (byte)(bcc + frame[i]);
         }
 
+        Assert.Equal(0x41, bcc);
         Assert.Equal(frame[19], bcc);
 
         // Command: 0x0054
@@ -90,5 +91,11 @@ public sealed class FEnetRequestBuilderTests
 
         // Payload
         Assert.Equal(dataToWrite, new ReadOnlySpan<byte>(frame, 37, 4).ToArray());
+    }
+
+    [Fact]
+    public void BuildContinuousWrite_NullData_ThrowsArgumentNullException()
+    {
+        Assert.Throws<ArgumentNullException>(() => FEnetRequestBuilder.BuildContinuousWrite(1, "%DW100", null!));
     }
 }

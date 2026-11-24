@@ -85,6 +85,7 @@ public sealed class S7CommRequestBuilderTests
     public void ReadRequest_InvalidInput_Throws()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => S7CommRequestBuilder.BuildReadRequest(1, S7CommAddress.Parse("MB0"), 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => S7CommRequestBuilder.BuildReadRequest(1, S7CommAddress.Parse("MB0"), 8192));
         Assert.Throws<ArgumentException>(() => S7CommRequestBuilder.BuildReadRequest(1, S7CommAddress.Parse("M0.0"), 2));
         Assert.Throws<ArgumentNullException>(() => S7CommRequestBuilder.BuildReadRequest(1, null!, 1));
     }
@@ -92,6 +93,7 @@ public sealed class S7CommRequestBuilderTests
     [Fact]
     public void WriteRequest_InvalidInput_Throws()
     {
+        Assert.Throws<ArgumentNullException>(() => S7CommRequestBuilder.BuildWriteRequest(1, S7CommAddress.Parse("MB0"), null!));
         Assert.Throws<ArgumentException>(() => S7CommRequestBuilder.BuildWriteRequest(1, S7CommAddress.Parse("MB0"), Array.Empty<byte>()));
         Assert.Throws<ArgumentException>(() => S7CommRequestBuilder.BuildWriteRequest(1, S7CommAddress.Parse("M0.0"), new byte[2]));
         Assert.Throws<ArgumentOutOfRangeException>(() => S7CommRequestBuilder.BuildWriteRequest(1, S7CommAddress.Parse("MB0"), new byte[8192]));
