@@ -185,13 +185,14 @@ public sealed class ToyopucAddress
     /// <returns>워드 단위로 이동된 새 주소입니다.</returns>
     public ToyopucAddress OffsetWords(int wordOffset)
     {
-        if (wordOffset < 0 || WireAddress + (long)wordOffset > ushort.MaxValue)
+        long nextNumberLong = (long)Number + ((long)wordOffset * BitsPerWord);
+        if (wordOffset < 0 || WireAddress + (long)wordOffset > ushort.MaxValue || nextNumberLong > int.MaxValue)
         {
             throw new ArgumentOutOfRangeException(nameof(wordOffset), wordOffset, "TOYOPUC 워드 오프셋이 16비트 와이어 범위를 초과합니다.");
         }
 
         ushort nextWordWire = (ushort)(WireAddress + wordOffset);
-        return new ToyopucAddress($"{Original}+W{wordOffset}", Device, Number + (wordOffset * BitsPerWord), nextWordWire, Prg, isBit: false, bitOffset: 0);
+        return new ToyopucAddress($"{Original}+W{wordOffset}", Device, (int)nextNumberLong, nextWordWire, Prg, isBit: false, bitOffset: 0);
     }
 
     private static bool TryExtractDevice(string trimmed, out string devicePrefix, out string numberText)
@@ -231,25 +232,35 @@ public sealed class ToyopucAddress
 
             string wordPart = numberText.Substring(0, dotIndex);
             string bitPart = numberText.Substring(dotIndex + 1);
-            if (!int.TryParse(wordPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int wordIndex) || wordIndex < 0)
+            if (!long.TryParse(wordPart, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out long wordIndex)
+                || wordIndex < 0)
             {
                 return false;
             }
 
-            if (!byte.TryParse(bitPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out bitOffset) || bitOffset > MaxBitOffset)
+            if (!byte.TryParse(bitPart, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out bitOffset)
+                || bitOffset > MaxBitOffset)
             {
                 return false;
             }
 
-            hexNumber = (wordIndex * BitsPerWord) + bitOffset;
+            if (wordIndex > (int.MaxValue - bitOffset) / BitsPerWord)
+            {
+                return false;
+            }
+
+            hexNumber = (int)((wordIndex * BitsPerWord) + bitOffset);
             return true;
         }
 
-        if (!int.TryParse(numberText, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out hexNumber) || hexNumber < 0)
+        if (!long.TryParse(numberText, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out long parsedNumber)
+            || parsedNumber < 0
+            || parsedNumber > int.MaxValue)
         {
             return false;
         }
 
+        hexNumber = (int)parsedNumber;
         if (isBitAccess)
         {
             bitOffset = (byte)(hexNumber & MaxBitOffset);
@@ -354,6 +365,12 @@ public sealed class ToyopucAddress
         if (devicePrefix == "EB")
         {
             return TryResolveExtendedFileRegister(original, devicePrefix, hexNumber, isBitAccess, out result, out errorMessage);
+        }
+
+        if (isBitAccess && devicePrefix is "ES" or "EN" or "H" or "U")
+        {
+            errorMessage = $"확장 워드 전용 디바이스 '{devicePrefix}'는 비트 접근을 지원하지 않습니다: {original}";
+            return false;
         }
 
         byte programNumber = GetExtendedProgramNumber(devicePrefix);

@@ -1,3 +1,5 @@
+using System;
+using System.Globalization;
 using System.Text;
 using System.Threading.Tasks;
 using FieldLink.Plc.Abstractions;
@@ -9,9 +11,12 @@ namespace FieldLink.Plc.Tests.Protocols.Panasonic;
 
 public class MewtocolProtocolTests
 {
-    private static byte[] MakeResponse(byte station, char status, string body)
+    private static byte[] MakeResponse(byte station, char status, string body, char header = '%')
     {
-        string prefix = $"%{station:X2}{status}{body}";
+        string stationText = station == 0xEE
+            ? "EE"
+            : station.ToString("D2", CultureInfo.InvariantCulture);
+        string prefix = $"{header}{stationText}{status}{body}";
         byte bcc = 0;
         foreach (char character in prefix)
         {
@@ -42,6 +47,100 @@ public class MewtocolProtocolTests
         string sent = Encoding.ASCII.GetString(transport.SentFrames[0]);
         // Exact vector from §4: %01#RCSX00001D\r
         Assert.Equal("%01#RCSX00001D\r", sent);
+    }
+
+    [Theory]
+    [InlineData((byte)10, "%10")]
+    [InlineData((byte)16, "%16")]
+    [InlineData((byte)99, "%99")]
+    [InlineData((byte)0xEE, "%EE")]
+    public async Task ReadAsync_StationEncodingAndDecoding_UsesDecimalForStationsAndEeForDirect(byte station, string expectedPrefix)
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = station });
+        transport.EnqueueResponse(MakeResponse(station, '$', "RD3412"));
+
+        var request = new PlcReadRequest("DT0", PlcDataType.UInt16, 1);
+        byte[] result = await protocol.ReadAsync(request, default);
+
+        Assert.Equal(new byte[] { 0x34, 0x12 }, result);
+        string sent = Encoding.ASCII.GetString(transport.SentFrames[0]);
+        Assert.StartsWith($"{expectedPrefix}#RDD0000000000", sent);
+    }
+
+    [Fact]
+    public void ParseReadWords_HexStationMismatch_RejectsStation10WhenExpecting16()
+    {
+        byte[] responseFromStation10 = MakeResponse(10, '$', "RD3412");
+        var exception = Assert.Throws<PlcException>(
+            () => MewtocolResponseParser.ParseReadWords(responseFromStation10, expectedStation: 16, expectedWordCount: 1));
+        Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
+    }
+
+    [Theory]
+    [InlineData("00")]
+    [InlineData("1A")]
+    [InlineData("ee")]
+    public void ParseReadSingleBit_InvalidStationText_ThrowsInvalidResponse(string invalidStation)
+    {
+        string prefix = $"%{invalidStation}$RC1";
+        byte bcc = 0;
+        foreach (char character in prefix)
+        {
+            bcc ^= (byte)character;
+        }
+
+        byte[] frame = Encoding.ASCII.GetBytes($"{prefix}{bcc:X2}\r");
+        var exception = Assert.Throws<PlcException>(() => MewtocolResponseParser.ParseReadSingleBit(frame, expectedStation: 1));
+        Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
+    }
+
+    [Fact]
+    public void BuildWriteWords_StandardVsExpandedHeader_SwitchesAt24Words()
+    {
+        var address = MewtocolAddress.Parse("DT0");
+        byte[] frame24 = MewtocolRequestBuilder.BuildWriteWords(0xEE, address, 24, new byte[48]);
+        byte[] frame25 = MewtocolRequestBuilder.BuildWriteWords(0xEE, address, 25, new byte[50]);
+
+        Assert.Equal((byte)'%', frame24[0]);
+        Assert.Equal(116, frame24.Length);
+        Assert.True(frame24.Length <= 118);
+        Assert.Equal((byte)'<', frame25[0]);
+    }
+
+    [Fact]
+    public void ResponseParser_EnforcesExactPayloadLength()
+    {
+        byte[] extraBitResponse = MakeResponse(0xEE, '$', "RC10");
+        Assert.Throws<PlcException>(() => MewtocolResponseParser.ParseReadSingleBit(extraBitResponse, 0xEE));
+
+        byte[] extraWordResponse = MakeResponse(0xEE, '$', "RD3412ABCD");
+        Assert.Throws<PlcException>(() => MewtocolResponseParser.ParseReadWords(extraWordResponse, 0xEE, expectedWordCount: 1));
+
+        byte[] extraWriteResponse = MakeResponse(0xEE, '$', "WD00");
+        Assert.Throws<PlcException>(() => MewtocolResponseParser.VerifyWriteResponse(extraWriteResponse, 0xEE, "WD"));
+    }
+
+    [Fact]
+    public async Task WriteAsync_OverflowingEndAddressAcrossChunks_FailsBeforeSendingFirstChunk()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = 0xEE, MaxWriteWords = 5 });
+
+        var request = new PlcWriteRequest("DT99995", PlcDataType.UInt16, new byte[20]);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => protocol.WriteAsync(request, default));
+        Assert.Empty(transport.SentFrames);
+    }
+
+    [Fact]
+    public async Task ReadAsync_MaxReadWordsSmallerThanElementSize_ThrowsArgumentOutOfRangeException()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = 0xEE, MaxReadWords = 2 });
+
+        var request = new PlcReadRequest("DT0", PlcDataType.Int64, 1);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => protocol.ReadAsync(request, default));
+        Assert.Empty(transport.SentFrames);
     }
 
     [Fact]
@@ -97,7 +196,7 @@ public class MewtocolProtocolTests
         var request = new PlcWriteRequest("R0", PlcDataType.Boolean, bitData);
         var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(request, default));
 
-        Assert.Equal(65, exception.DeviceErrorCode);
+        Assert.Equal((int)MewtocolErrorCode.ProtectionError, exception.DeviceErrorCode);
         Assert.Equal(1, exception.CompletedCount);
     }
 
@@ -182,7 +281,7 @@ public class MewtocolProtocolTests
         var request = new PlcWriteRequest("DT100", PlcDataType.Int32, data);
         var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(request, default));
 
-        Assert.Equal(61, exception.DeviceErrorCode);
+        Assert.Equal((int)MewtocolErrorCode.DataError, exception.DeviceErrorCode);
         Assert.Equal(2, exception.CompletedCount);
         Assert.Equal(2, transport.SentFrames.Count);
         Assert.StartsWith("%EE#WDD0010000103", Encoding.ASCII.GetString(transport.SentFrames[0]));
@@ -202,7 +301,21 @@ public class MewtocolProtocolTests
         var request = new PlcReadRequest("X0", PlcDataType.Boolean, 1);
         var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.ReadAsync(request, default));
 
-        Assert.Equal(40, exception.DeviceErrorCode);
+        Assert.Equal((int)MewtocolErrorCode.BccError, exception.DeviceErrorCode);
         Assert.Contains("BCC", exception.Message);
+    }
+
+    [Fact]
+    public void MewtocolErrorCode_ContainsAll37OfficialCodes()
+    {
+        Array values = Enum.GetValues(typeof(MewtocolErrorCode));
+        Assert.Equal(37, values.Length);
+
+        foreach (MewtocolErrorCode code in values)
+        {
+            string description = code.GetDescription();
+            Assert.False(string.IsNullOrWhiteSpace(description));
+            Assert.DoesNotContain("알 수 없는 MEWTOCOL 오류 코드", description);
+        }
     }
 }

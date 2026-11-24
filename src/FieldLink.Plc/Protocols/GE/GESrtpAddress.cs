@@ -28,6 +28,8 @@ public sealed class GESrtpAddress
     private const byte RegisterMemoryWordCode = 0x08;
     private const byte AnalogInputWordCode = 0x0A;
     private const byte AnalogOutputWordCode = 0x0C;
+    private const int MinUserAddress = 1;
+    private const int MaxUserAddress = 65536;
     private const int TwoCharPrefixLength = 2;
     private const int SingleCharPrefixLength = 1;
 
@@ -111,9 +113,11 @@ public sealed class GESrtpAddress
             return false;
         }
 
-        if (!ushort.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out ushort userNumber) || userNumber == 0)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int userNumber)
+            || userNumber < MinUserAddress
+            || userNumber > MaxUserAddress)
         {
-            errorMessage = $"GE 주소 번호는 1 이상이어야 합니다: {address}";
+            errorMessage = $"GE 주소 번호는 {MinUserAddress}~{MaxUserAddress} 사이여야 합니다: {address}";
             return false;
         }
 

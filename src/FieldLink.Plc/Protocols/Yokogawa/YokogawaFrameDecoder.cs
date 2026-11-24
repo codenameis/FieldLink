@@ -10,7 +10,7 @@ public sealed class YokogawaFrameDecoder : IFrameDecoder
     private const int LengthFieldOffset = 2;
     private const int LengthFieldByteCount = 2;
     private const int LengthAdjustment = 4;
-    private const int MaximumFrameLength = 65535;
+    private const int MaximumFrameLength = 65536;
 
     private readonly HeaderLengthFrameDecoder _innerDecoder = new(
         HeaderLength,

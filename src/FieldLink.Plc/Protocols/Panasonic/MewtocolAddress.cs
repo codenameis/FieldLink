@@ -142,6 +142,14 @@ public sealed class MewtocolAddress
         }
 
         int nextWordNumber = checked(Number + elementOffset);
+        if (nextWordNumber > MaxWordRegisterNumber)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(elementOffset),
+                elementOffset,
+                $"이동 후 워드 번호({nextWordNumber})가 최대 범위({MaxWordRegisterNumber})를 초과합니다.");
+        }
+
         return new MewtocolAddress($"{Original}+{elementOffset}", Device, nextWordNumber, 0, isBit: false, Device);
     }
 
@@ -150,15 +158,31 @@ public sealed class MewtocolAddress
         if (Device is "T" or "C")
         {
             int nextTimerCounterNumber = checked(Number + bitOffsetDelta);
-            string timerCounterWire = $"{Device}0{nextTimerCounterNumber:D3}";
+            if (nextTimerCounterNumber > MaxTimerCounterNumber)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(bitOffsetDelta),
+                    bitOffsetDelta,
+                    $"이동 후 타이머/카운터 번호({nextTimerCounterNumber})가 최대 범위({MaxTimerCounterNumber})를 초과합니다.");
+            }
+
+            string timerCounterWire = string.Format(CultureInfo.InvariantCulture, "{0}0{1:D3}", Device, nextTimerCounterNumber);
             return new MewtocolAddress($"{Original}+{bitOffsetDelta}", Device, nextTimerCounterNumber, 0, isBit: true, timerCounterWire);
         }
 
-        int totalBits = checked((Number * BitsPerWord) + BitOffset + bitOffsetDelta);
-        int nextWordNumber = totalBits / BitsPerWord;
+        long totalBits = ((long)Number * BitsPerWord) + BitOffset + bitOffsetDelta;
+        long nextWordNumber = totalBits / BitsPerWord;
+        if (nextWordNumber > MaxContactWordNumber)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(bitOffsetDelta),
+                bitOffsetDelta,
+                $"이동 후 접점 워드 번호({nextWordNumber})가 최대 범위({MaxContactWordNumber})를 초과합니다.");
+        }
+
         byte nextBitOffset = (byte)(totalBits % BitsPerWord);
-        string contactWire = $"{Device}{nextWordNumber:D3}{nextBitOffset:X1}";
-        return new MewtocolAddress($"{Original}+{bitOffsetDelta}", Device, nextWordNumber, nextBitOffset, isBit: true, contactWire);
+        string contactWire = string.Format(CultureInfo.InvariantCulture, "{0}{1:D3}{2:X1}", Device, (int)nextWordNumber, nextBitOffset);
+        return new MewtocolAddress($"{Original}+{bitOffsetDelta}", Device, (int)nextWordNumber, nextBitOffset, isBit: true, contactWire);
     }
 
     private static bool TryParseContact(

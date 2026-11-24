@@ -71,7 +71,7 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
         if (!isCompositeBitAccess)
         {
             ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
-            Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, nameof(request));
+            Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, isWrite: false, nameof(request));
         }
 
         int requestedByteCount = request.ByteCount;
@@ -86,10 +86,12 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
         int unitsPerElement = (address.IsBit || isCompositeBitAccess)
             ? 1
             : Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        int deviceLimit = Math.Min(_options.MaxReadElements, address.MaxElementsPerRequest);
         int maxElementsPerChunk = (address.IsBit || isCompositeBitAccess)
-            ? _options.MaxReadElements
-            : RequestChunker.CalculateElementLimit(_options.MaxReadElements, unitsPerElement);
+            ? deviceLimit
+            : RequestChunker.CalculateElementLimit(deviceLimit, unitsPerElement);
 
+        ValidateEndAddressRange(address, effectiveRequest.Count, unitsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
 
@@ -98,9 +100,9 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
             foreach (RequestChunker.Chunk chunk in chunks)
             {
                 KeyenceHostLinkAddress chunkAddress = address.Offset(chunk.ElementOffset * unitsPerElement);
-                ushort pointCount = (ushort)((address.IsBit || isCompositeBitAccess)
+                ushort pointCount = checked((ushort)((address.IsBit || isCompositeBitAccess)
                     ? chunk.ElementCount
-                    : chunk.ElementCount * unitsPerElement);
+                    : chunk.ElementCount * unitsPerElement));
 
                 byte[] chunkData = await ReadChunkAsync(
                     session,
@@ -135,7 +137,7 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
         }
 
         ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
-        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, nameof(request));
+        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, isWrite: true, nameof(request));
 
         int totalOriginalCount = request.Count;
         int originalElementsPerUnit = 1;
@@ -148,10 +150,12 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
 
         int bytesPerElement = effectiveRequest.DataType.GetElementSize();
         int unitsPerElement = address.IsBit ? 1 : Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        int deviceLimit = Math.Min(_options.MaxWriteElements, address.MaxElementsPerRequest);
         int maxElementsPerChunk = address.IsBit
-            ? _options.MaxWriteElements
-            : RequestChunker.CalculateElementLimit(_options.MaxWriteElements, unitsPerElement);
+            ? deviceLimit
+            : RequestChunker.CalculateElementLimit(deviceLimit, unitsPerElement);
 
+        ValidateEndAddressRange(address, effectiveRequest.Count, unitsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         int completedElements = 0;
 
@@ -162,7 +166,7 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
                     KeyenceHostLinkAddress chunkAddress = address.Offset(chunk.ElementOffset * unitsPerElement);
-                    ushort pointCount = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * unitsPerElement);
+                    ushort pointCount = checked((ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * unitsPerElement));
                     byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
                     await WriteChunkAsync(session, chunkAddress, pointCount, chunkData, bytesPerDeviceUnit).ConfigureAwait(false);
@@ -182,10 +186,22 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
         }
     }
 
+    private static void ValidateEndAddressRange(KeyenceHostLinkAddress startAddress, int elementCount, int unitsPerElement)
+    {
+        long totalUnits = (long)elementCount * unitsPerElement;
+        if (totalUnits - 1 > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(elementCount), elementCount, "요청 범위가 허용 상한을 초과합니다.");
+        }
+
+        startAddress.Offset((int)(totalUnits - 1));
+    }
+
     private static void Validate32BitDeviceDataType(
         KeyenceHostLinkAddress address,
         PlcDataType dataType,
         int byteCount,
+        bool isWrite,
         string paramName)
     {
         if (!address.Is32BitDevice || address.IsBit)
@@ -194,7 +210,7 @@ public sealed class KeyenceHostLinkProtocol : IPlcProtocol
         }
 
         if (dataType is PlcDataType.Int16 or PlcDataType.UInt16 ||
-            (dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPer32BitDevice != 0))
+            (isWrite && dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPer32BitDevice != 0))
         {
             throw new ArgumentException(
                 $"32비트 디바이스({address.Device})는 32비트 이상 자료형 또는 4바이트 배수로만 접근할 수 있습니다.",

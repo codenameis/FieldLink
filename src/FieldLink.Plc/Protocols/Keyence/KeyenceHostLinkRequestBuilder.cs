@@ -21,7 +21,9 @@ public static class KeyenceHostLinkRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(station), station, $"국번은 0~{MaxStationNumber} 범위여야 합니다.");
         }
 
-        string command = station.HasValue ? $"CR {station.Value:D2}\r" : "CR\r";
+        string command = station.HasValue
+            ? string.Format(CultureInfo.InvariantCulture, "CR {0:D2}\r", station.Value)
+            : "CR\r";
         return Encoding.ASCII.GetBytes(command);
     }
 
@@ -41,7 +43,7 @@ public static class KeyenceHostLinkRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(count), count, "읽기 요소 수는 1 이상이어야 합니다.");
         }
 
-        string command = $"RDS {address.WireString} {count}\r";
+        string command = string.Format(CultureInfo.InvariantCulture, "RDS {0} {1}\r", address.WireString, count);
         return Encoding.ASCII.GetBytes(command);
     }
 
@@ -51,6 +53,11 @@ public static class KeyenceHostLinkRequestBuilder
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
+        }
+
+        if (address.IsBit)
+        {
+            throw new ArgumentException($"워드 디바이스 주소가 필요합니다: {address.Original}", nameof(address));
         }
 
         if (count == 0)
@@ -72,14 +79,14 @@ public static class KeyenceHostLinkRequestBuilder
         commandBuilder.Append("WRS ");
         commandBuilder.Append(address.WireString);
         commandBuilder.Append(' ');
-        commandBuilder.Append(count);
+        commandBuilder.Append(count.ToString(CultureInfo.InvariantCulture));
 
         for (int i = 0; i < count; i++)
         {
             int byteOffset = i * BytesPerWord;
             ushort wordValue = (ushort)(wordData[byteOffset] | (wordData[byteOffset + 1] << HighByteShift));
             commandBuilder.Append(' ');
-            commandBuilder.Append(wordValue);
+            commandBuilder.Append(wordValue.ToString(CultureInfo.InvariantCulture));
         }
 
         commandBuilder.Append('\r');
@@ -92,6 +99,16 @@ public static class KeyenceHostLinkRequestBuilder
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
+        }
+
+        if (address.IsBit)
+        {
+            throw new ArgumentException($"32비트 워드 디바이스 주소가 필요합니다: {address.Original}", nameof(address));
+        }
+
+        if (count == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "쓰기 32비트 요소 수는 1 이상이어야 합니다.");
         }
 
         if (dwordData is null)
@@ -108,7 +125,7 @@ public static class KeyenceHostLinkRequestBuilder
         commandBuilder.Append("WRS ");
         commandBuilder.Append(address.WireString);
         commandBuilder.Append(' ');
-        commandBuilder.Append(count);
+        commandBuilder.Append(count.ToString(CultureInfo.InvariantCulture));
 
         for (int i = 0; i < count; i++)
         {
@@ -130,21 +147,31 @@ public static class KeyenceHostLinkRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
+        if (!address.IsBit)
+        {
+            throw new ArgumentException($"비트 디바이스 주소가 필요합니다: {address.Original}", nameof(address));
+        }
+
+        if (count == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "쓰기 비트 수는 1 이상이어야 합니다.");
+        }
+
         if (bitData is null)
         {
             throw new ArgumentNullException(nameof(bitData));
         }
 
-        if (bitData.Length < count)
+        if (bitData.Length != count)
         {
-            throw new ArgumentException("비트 데이터 개수가 부족합니다.", nameof(bitData));
+            throw new ArgumentException("비트 데이터 길이가 비트 개수와 일치하지 않습니다.", nameof(bitData));
         }
 
         var commandBuilder = new StringBuilder();
         commandBuilder.Append("WRS ");
         commandBuilder.Append(address.WireString);
         commandBuilder.Append(' ');
-        commandBuilder.Append(count);
+        commandBuilder.Append(count.ToString(CultureInfo.InvariantCulture));
 
         for (int i = 0; i < count; i++)
         {

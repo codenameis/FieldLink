@@ -4,6 +4,7 @@ using FieldLink.Plc.Abstractions;
 using FieldLink.Plc.Conversion;
 using FieldLink.Plc.Protocols.Vigor;
 using FieldLink.Plc.Tests.Support;
+using FieldLink.Transport;
 using Xunit;
 
 namespace FieldLink.Plc.Tests.Protocols.Vigor;
@@ -287,5 +288,79 @@ public class VigorProtocolTests
         int byteSize = dataType == PlcDataType.Boolean ? count : count * 2;
         await Assert.ThrowsAsync<ArgumentException>(() =>
             protocol.WriteAsync(new PlcWriteRequest(startAddress, dataType, new byte[byteSize]), default));
+    }
+
+    [Fact]
+    public async Task ReadBitsAsync_ShortPackedPayload_ThrowsInvalidResponse()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new VigorProtocol(transport, new VigorOptions { StationNumber = 1 });
+
+        // 9비트 요청(2바이트 필요)에 대해 1바이트만 반환
+        transport.EnqueueResponse(MakeResponseFrame(1, declaredBodyLength: 2, statusCode: 0x00, 0xFF));
+
+        var exception = await Assert.ThrowsAsync<PlcException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("M0", PlcDataType.Boolean, 9), default));
+        Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
+    }
+
+    [Fact]
+    public async Task WriteAsync_ResponseWithUnexpectedPayload_ThrowsInvalidResponse()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new VigorProtocol(transport, new VigorOptions { StationNumber = 1 });
+
+        transport.EnqueueResponse(MakeResponseFrame(1, declaredBodyLength: 2, statusCode: 0x00, 0x01));
+
+        var exception = await Assert.ThrowsAsync<PlcException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("D100", PlcDataType.Int16, [0x34, 0x12]), default));
+        Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
+    }
+
+    [Fact]
+    public void DecoderAndParser_RejectOversizedFrameAndStrayUnescapedDle()
+    {
+        var decoder = new VigorFrameDecoder();
+
+        // 1. MaximumFrameLength(2048) 초과 프레임(DLE ETX 포함) 거부
+        byte[] oversized = new byte[2054];
+        oversized[0] = 0x10;
+        oversized[1] = 0x02;
+        oversized[2050] = 0x10;
+        oversized[2051] = 0x03;
+        oversized[2052] = (byte)'0';
+        oversized[2053] = (byte)'0';
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(oversized), out _));
+
+        // 2. 본문 내 이스케이프되지 않은 DLE (0x10 0x05) 거부
+        byte[] strayDle = [0x10, 0x02, 0x01, 0x02, 0x00, 0x00, 0x10, 0x05, 0x10, 0x03, 0x30, 0x30];
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(strayDle), out _));
+        Assert.Throws<PlcException>(() => VigorResponseParser.ParseResponse(strayDle, 1));
+    }
+
+    [Fact]
+    public void VigorOptions_EnforcesManualChunkCaps()
+    {
+        var valid = new VigorOptions { StationNumber = 1, MaxWordsPerRequest = 64, MaxBitsPerRequest = 1024 };
+        Assert.Equal(64, valid.MaxWordsPerRequest);
+        Assert.Equal(1024, valid.MaxBitsPerRequest);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VigorOptions { MaxWordsPerRequest = 65 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new VigorOptions { MaxBitsPerRequest = 1025 });
+    }
+
+    [Fact]
+    public async Task ReadAsync_32BitCounterNon4ByteStringAndWordLimitSmallerThanElement_BehaveCleanly()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new VigorProtocol(transport, new VigorOptions { StationNumber = 1 });
+
+        transport.EnqueueResponse(MakeResponseFrame(1, declaredBodyLength: 9, statusCode: 0x00, 1, 2, 3, 4, 5, 6, 7, 8));
+        byte[] bytes = await protocol.ReadAsync(new PlcReadRequest("C200", PlcDataType.Byte, 5), default);
+        Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, bytes);
+
+        var smallProtocol = new VigorProtocol(transport, new VigorOptions { StationNumber = 1, MaxWordsPerRequest = 2 });
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            smallProtocol.ReadAsync(new PlcReadRequest("D0", PlcDataType.Int64, 1), default));
     }
 }

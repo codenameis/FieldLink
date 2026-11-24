@@ -14,6 +14,7 @@ public sealed class ToyopucProtocol : IPlcProtocol
 {
     private const int BytesPerWord = 2;
     private const int BitsPerWord = 16;
+    private const int ExtendedBankSize = 0x8000;
     private const byte WriteBitCommandEcho = 0x21;
     private const byte BasicReadWordsCommandEcho = 0x1C;
     private const byte BasicWriteWordsCommandEcho = 0x1D;
@@ -102,6 +103,7 @@ public sealed class ToyopucProtocol : IPlcProtocol
 
     private async Task<byte[]> ReadBasicBitsAsync(ToyopucAddress startAddress, int bitCount, CancellationToken cancellationToken)
     {
+        startAddress.Offset(bitCount - 1);
         byte[] bitValues = new byte[bitCount];
 
         await _transport.RunExclusiveAsync(async session =>
@@ -122,7 +124,8 @@ public sealed class ToyopucProtocol : IPlcProtocol
 
     private async Task<byte[]> ReadExtendedBitsAsync(ToyopucAddress startAddress, int bitCount, CancellationToken cancellationToken)
     {
-        int totalWords = (startAddress.BitOffset + bitCount + BitsPerWord - 1) / BitsPerWord;
+        int totalWords = CalculateBitSpanWords(startAddress.BitOffset, bitCount);
+        startAddress.OffsetWords(totalWords - 1);
         byte[] wordBytes = await ReadWordRangeAsync(startAddress, totalWords, cancellationToken).ConfigureAwait(false);
         return ExtractBitsFromWords(wordBytes, startAddress.BitOffset, bitCount);
     }
@@ -132,18 +135,15 @@ public sealed class ToyopucProtocol : IPlcProtocol
         int elementSize = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
+        List<WordChunk> chunks = PlanWordChunks(startAddress, effectiveRequest.Count, maxElementsPerChunk, wordsPerElement);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
 
         await _transport.RunExclusiveAsync(async session =>
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            foreach (WordChunk chunk in chunks)
             {
-                ToyopucAddress chunkAddress = startAddress.Offset(chunk.ElementOffset * wordsPerElement);
-                ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
-                byte[] chunkData = await ExchangeReadWordsAsync(session, chunkAddress, wordCount).ConfigureAwait(false);
-
-                int destinationOffset = chunk.ElementOffset * elementSize;
+                byte[] chunkData = await ExchangeReadWordsAsync(session, chunk.Address, chunk.WordCount).ConfigureAwait(false);
+                int destinationOffset = chunk.WordOffset * BytesPerWord;
                 Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
             }
 
@@ -163,7 +163,7 @@ public sealed class ToyopucProtocol : IPlcProtocol
             foreach (RequestChunker.Chunk chunk in chunks)
             {
                 ToyopucAddress chunkAddress = startAddress.OffsetWords(chunk.ElementOffset);
-                ushort wordCount = (ushort)chunk.ElementCount;
+                ushort wordCount = checked((ushort)chunk.ElementCount);
                 byte[] chunkData = await ExchangeReadWordsAsync(session, chunkAddress, wordCount).ConfigureAwait(false);
 
                 int destinationOffset = chunk.ElementOffset * BytesPerWord;
@@ -186,6 +186,7 @@ public sealed class ToyopucProtocol : IPlcProtocol
 
     private async Task WriteBasicBitsAsync(ToyopucAddress startAddress, PlcWriteRequest request, CancellationToken cancellationToken)
     {
+        startAddress.Offset(request.Count - 1);
         byte[] bitData = request.GetData();
         int completedElements = 0;
 
@@ -212,9 +213,11 @@ public sealed class ToyopucProtocol : IPlcProtocol
         }
     }
 
+    // TOYOPUC 0x21 단일 비트 쓰기 명령에는 PRG 필드가 없으므로 확장 영역 비트 쓰기는 0x94/0x95 Read-Modify-Write로 처리합니다.
     private async Task WriteExtendedBitsAsync(ToyopucAddress startAddress, PlcWriteRequest request, CancellationToken cancellationToken)
     {
-        int totalWords = (startAddress.BitOffset + request.Count + BitsPerWord - 1) / BitsPerWord;
+        int totalWords = CalculateBitSpanWords(startAddress.BitOffset, request.Count);
+        startAddress.OffsetWords(totalWords - 1);
         int maxWordsPerChunk = Math.Min(_options.MaxReadWords, _options.MaxWriteWords);
         List<RequestChunker.Chunk> wordChunks = RequestChunker.Plan(totalWords, maxWordsPerChunk);
         byte[] bitData = request.GetData();
@@ -250,7 +253,7 @@ public sealed class ToyopucProtocol : IPlcProtocol
         byte[] bitData)
     {
         ToyopucAddress chunkWordAddress = startAddress.OffsetWords(wordChunk.ElementOffset);
-        ushort wordCount = (ushort)wordChunk.ElementCount;
+        ushort wordCount = checked((ushort)wordChunk.ElementCount);
         byte[] wordBytes = await ExchangeReadWordsAsync(session, chunkWordAddress, wordCount).ConfigureAwait(false);
 
         int modifiedBitCount = ApplyBitsToWordChunk(
@@ -273,26 +276,22 @@ public sealed class ToyopucProtocol : IPlcProtocol
         int elementSize = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
+        List<WordChunk> chunks = PlanWordChunks(startAddress, effectiveRequest.Count, maxElementsPerChunk, wordsPerElement);
+        byte[] fullWriteBytes = effectiveRequest.GetData();
+        int completedWords = 0;
         int completedElements = 0;
 
         try
         {
             await _transport.RunExclusiveAsync(async session =>
             {
-                foreach (RequestChunker.Chunk chunk in chunks)
+                foreach (WordChunk chunk in chunks)
                 {
-                    ToyopucAddress chunkAddress = startAddress.Offset(chunk.ElementOffset * wordsPerElement);
-                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
-                    byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
-
-                    byte[] requestFrame = ToyopucRequestBuilder.BuildWriteWords(chunkAddress, wordCount, chunkData);
-                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                    byte expectedCommand = chunkAddress.Prg.HasValue ? ExtendedWriteWordsCommandEcho : BasicWriteWordsCommandEcho;
-                    ToyopucResponseParser.VerifyWriteResponse(responseFrame, expectedCommand);
-                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
-                        completedElements,
-                        chunk.ElementCount,
+                    await WriteSingleWordChunkAsync(session, chunk, fullWriteBytes).ConfigureAwait(false);
+                    completedWords += chunk.WordCount;
+                    completedElements = CalculateCompletedElements(
+                        completedWords,
+                        wordsPerElement,
                         originalElementsPerUnit,
                         totalOriginalCount);
                 }
@@ -304,6 +303,82 @@ public sealed class ToyopucProtocol : IPlcProtocol
         {
             throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
+    }
+
+    private async Task WriteSingleWordChunkAsync(ITransportSession session, WordChunk chunk, byte[] fullWriteBytes)
+    {
+        int byteLength = chunk.WordCount * BytesPerWord;
+        byte[] chunkData = new byte[byteLength];
+        Buffer.BlockCopy(fullWriteBytes, chunk.WordOffset * BytesPerWord, chunkData, 0, byteLength);
+
+        byte[] requestFrame = ToyopucRequestBuilder.BuildWriteWords(chunk.Address, chunk.WordCount, chunkData);
+        byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+        byte expectedCommand = chunk.Address.Prg.HasValue ? ExtendedWriteWordsCommandEcho : BasicWriteWordsCommandEcho;
+        ToyopucResponseParser.VerifyWriteResponse(responseFrame, expectedCommand);
+    }
+
+    private static int CalculateCompletedElements(
+        int completedWords,
+        int wordsPerElement,
+        int originalElementsPerUnit,
+        int totalOriginalCount)
+    {
+        if (originalElementsPerUnit > 1)
+        {
+            return Math.Min(totalOriginalCount, completedWords * originalElementsPerUnit);
+        }
+
+        return completedWords / wordsPerElement;
+    }
+
+    private static int CalculateBitSpanWords(byte startBitOffset, int bitCount)
+    {
+        long totalWordsLong = ((long)startBitOffset + bitCount + BitsPerWord - 1) / BitsPerWord;
+        if (totalWordsLong > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bitCount), bitCount, "요청 비트 범위가 허용 상한을 초과합니다.");
+        }
+
+        return (int)totalWordsLong;
+    }
+
+    private static List<WordChunk> PlanWordChunks(
+        ToyopucAddress startAddress,
+        int elementCount,
+        int maxElementsPerChunk,
+        int wordsPerElement)
+    {
+        long totalWordsLong = (long)elementCount * wordsPerElement;
+        if (totalWordsLong - 1 > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(elementCount), elementCount, "요청 워드 범위가 허용 상한을 초과합니다.");
+        }
+
+        int totalWords = (int)totalWordsLong;
+        startAddress.Offset(totalWords - 1);
+
+        int alignedMaxWords = checked(maxElementsPerChunk * wordsPerElement);
+        var chunks = new List<WordChunk>();
+        int currentWordOffset = 0;
+
+        while (currentWordOffset < totalWords)
+        {
+            ToyopucAddress chunkAddress = startAddress.Offset(currentWordOffset);
+            int remainingWords = totalWords - currentWordOffset;
+            int chunkWordLimit = alignedMaxWords;
+
+            if (chunkAddress.Device == "EB")
+            {
+                int wordsLeftInBank = ExtendedBankSize - chunkAddress.WireAddress;
+                chunkWordLimit = Math.Min(chunkWordLimit, wordsLeftInBank);
+            }
+
+            ushort wordCount = checked((ushort)Math.Min(remainingWords, chunkWordLimit));
+            chunks.Add(new WordChunk(chunkAddress, currentWordOffset, wordCount));
+            currentWordOffset += wordCount;
+        }
+
+        return chunks;
     }
 
     private static byte[] ExtractBitsFromWords(byte[] wordBytes, byte startBitOffset, int bitCount)
@@ -356,5 +431,21 @@ public sealed class ToyopucProtocol : IPlcProtocol
         }
 
         return modifiedCount;
+    }
+
+    private readonly struct WordChunk
+    {
+        public WordChunk(ToyopucAddress address, int wordOffset, ushort wordCount)
+        {
+            Address = address;
+            WordOffset = wordOffset;
+            WordCount = wordCount;
+        }
+
+        public ToyopucAddress Address { get; }
+
+        public int WordOffset { get; }
+
+        public ushort WordCount { get; }
     }
 }

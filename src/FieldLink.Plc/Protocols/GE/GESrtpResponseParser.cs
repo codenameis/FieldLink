@@ -24,12 +24,14 @@ public static class GESrtpResponseParser
 
     /// <summary>세션 초기화 응답(패킷 타입 0x01)을 검증합니다. (사양서 §1.1)</summary>
     /// <param name="responseFrame">수신한 응답 프레임 바이트 배열입니다.</param>
-    /// <exception cref="PlcException">응답 길이가 부족하거나 초기화 거절 응답일 때.</exception>
+    /// <exception cref="PlcException">응답 길이가 56바이트가 아니거나 초기화 거절 응답일 때.</exception>
     public static void ValidateInitResponse(byte[] responseFrame)
     {
-        if (responseFrame is null || responseFrame.Length < HeaderLength)
+        if (responseFrame is null || responseFrame.Length != HeaderLength)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "SRTP 초기화 응답 프레임 길이가 부족합니다.");
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"SRTP 초기화 응답 프레임 길이가 {HeaderLength}바이트여야 합니다. (수신: {responseFrame?.Length ?? 0}바이트)");
         }
 
         if (responseFrame[PacketTypeOffset] != InitResponsePacketType)
@@ -80,7 +82,20 @@ public static class GESrtpResponseParser
         ValidateResponseHeader(responseFrame, expectedSequenceId);
 
         byte messageType = responseFrame[MessageTypeOffset];
-        if (messageType != ShortAckMessageType && messageType != ExtendedAckMessageType)
+        if (messageType == ShortAckMessageType)
+        {
+            ushort extendedLength = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, ExtendedPayloadLengthOffset);
+            if (extendedLength != 0)
+            {
+                throw new PlcException(
+                    PlcErrorKind.InvalidResponse,
+                    $"SRTP 단문 쓰기 응답에 확장 페이로드({extendedLength}바이트)가 포함될 수 없습니다.");
+            }
+
+            return;
+        }
+
+        if (messageType != ExtendedAckMessageType)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"지원하지 않는 SRTP 쓰기 응답 메시지 타입입니다: 0x{messageType:X2}");
         }
@@ -98,6 +113,15 @@ public static class GESrtpResponseParser
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
                 $"SRTP 응답 패킷 타입이 일치하지 않습니다 (예상: 0x03, 수신: 0x{responseFrame[PacketTypeOffset]:X2}).");
+        }
+
+        ushort extendedLength = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, ExtendedPayloadLengthOffset);
+        int expectedFrameLength = HeaderLength + extendedLength;
+        if (responseFrame.Length != expectedFrameLength)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"SRTP 응답 프레임 길이가 헤더 확장 길이와 일치하지 않습니다 (기대: {expectedFrameLength}, 수신: {responseFrame.Length}).");
         }
 
         ushort sequenceId = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, SequenceIdOffset);
@@ -133,6 +157,14 @@ public static class GESrtpResponseParser
 
     private static byte[] ExtractShortPiggybackData(byte[] responseFrame, int expectedByteCount)
     {
+        ushort extendedLength = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, ExtendedPayloadLengthOffset);
+        if (extendedLength != 0)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"SRTP 단문 응답에 확장 페이로드({extendedLength}바이트)가 포함될 수 없습니다.");
+        }
+
         if (expectedByteCount > MaxPiggybackByteCount)
         {
             throw new PlcException(
@@ -148,11 +180,11 @@ public static class GESrtpResponseParser
     private static byte[] ExtractExtendedPayloadData(byte[] responseFrame, int expectedByteCount)
     {
         int payloadByteCount = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, ExtendedPayloadLengthOffset);
-        if (payloadByteCount < expectedByteCount || responseFrame.Length < ExtendedPayloadOffset + expectedByteCount)
+        if (payloadByteCount != expectedByteCount || responseFrame.Length != ExtendedPayloadOffset + expectedByteCount)
         {
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
-                $"SRTP 확장 페이로드 길이가 부족합니다 (필요: {expectedByteCount}바이트, 수신: {payloadByteCount}바이트).");
+                $"SRTP 확장 페이로드 길이가 일치하지 않습니다 (기대: {expectedByteCount}바이트, 수신: {payloadByteCount}바이트).");
         }
 
         byte[] result = new byte[expectedByteCount];

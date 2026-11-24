@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using FieldLink.Plc.Abstractions;
 using FieldLink.Plc.Protocols.Jtekt;
@@ -176,6 +177,45 @@ public class ToyopucProtocolTests
     }
 
     [Fact]
+    public async Task ReadAsync_EbCrossingBankBoundary_SplitsAt0x8000WithCorrectPrg()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new ToyopucProtocol(transport);
+
+        // EB7FFE + 4 words -> Bank 0 (PRG 0x09, 0x7FFE, 2 words) + Bank 1 (PRG 0x0A, 0x0000, 2 words)
+        transport.EnqueueResponse([0x80, 0x00, 0x05, 0x00, 0x94, 1, 0, 2, 0]);
+        transport.EnqueueResponse([0x80, 0x00, 0x05, 0x00, 0x94, 3, 0, 4, 0]);
+
+        var request = new PlcReadRequest("EB7FFE", PlcDataType.UInt16, 4);
+        byte[] result = await protocol.ReadAsync(request, default);
+
+        Assert.Equal(new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 }, result);
+        Assert.Equal(2, transport.SentFrames.Count);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x06, 0x00, 0x94, 0x09, 0xFE, 0x7F, 0x02, 0x00 }, transport.SentFrames[0]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x06, 0x00, 0x94, 0x0A, 0x00, 0x00, 0x02, 0x00 }, transport.SentFrames[1]);
+    }
+
+    [Fact]
+    public async Task WriteAsync_EbCrossingSecondBankBoundary_SplitsAt0x10000AndPreservesCompletedCountOnError()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new ToyopucProtocol(transport);
+
+        // EBFFFE + 2 Int32 elements (4 words) -> Bank 1 (PRG 0x0A, 0x7FFE, 2 words) + Bank 2 (PRG 0x0B, 0x0000, 2 words)
+        transport.EnqueueResponse([0x80, 0x00, 0x01, 0x00, 0x95]);
+        transport.EnqueueResponse([0x80, 0x40, 0x01, 0x00, 0x40]);
+
+        byte[] data = [1, 0, 2, 0, 3, 0, 4, 0];
+        var request = new PlcWriteRequest("EBFFFE", PlcDataType.Int32, data);
+        var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(request, default));
+
+        Assert.Equal(1, exception.CompletedCount);
+        Assert.Equal(2, transport.SentFrames.Count);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x08, 0x00, 0x95, 0x0A, 0xFE, 0x7F, 1, 0, 2, 0 }, transport.SentFrames[0]);
+        Assert.Equal(new byte[] { 0x00, 0x00, 0x08, 0x00, 0x95, 0x0B, 0x00, 0x00, 3, 0, 4, 0 }, transport.SentFrames[1]);
+    }
+
+    [Fact]
     public async Task ReadAsync_Int32MultiChunk_ChunksAlignedByElementAndAdvancesWords()
     {
         var transport = new ScriptedTransport();
@@ -218,6 +258,80 @@ public class ToyopucProtocolTests
     }
 
     [Fact]
+    public async Task ReadAsync_MaxReadWordsSmallerThanElementSize_ThrowsArgumentOutOfRangeException()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new ToyopucProtocol(transport, new ToyopucOptions { MaxReadWords = 2 });
+
+        var request = new PlcReadRequest("D100", PlcDataType.Int64, 1);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => protocol.ReadAsync(request, default));
+        Assert.Empty(transport.SentFrames);
+    }
+
+    [Fact]
+    public async Task WriteAsync_EndAddressExceedsWireLimit_FailsBeforeSendingFirstChunk()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new ToyopucProtocol(transport, new ToyopucOptions { MaxWriteWords = 2 });
+
+        var request = new PlcWriteRequest("B9FFE", PlcDataType.UInt16, new byte[8]);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => protocol.WriteAsync(request, default));
+        Assert.Empty(transport.SentFrames);
+    }
+
+    [Fact]
+    public void BuildWriteWords_BodyLengthExceedingUInt16_ThrowsArgumentOutOfRangeException()
+    {
+        var extendedAddress = ToyopucAddress.Parse("H0");
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            ToyopucRequestBuilder.BuildWriteWords(extendedAddress, 32766, new byte[32766 * 2]));
+
+        var basicAddress = ToyopucAddress.Parse("D0");
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            ToyopucRequestBuilder.BuildWriteWords(basicAddress, 32767, new byte[32767 * 2]));
+    }
+
+    [Fact]
+    public void ToyopucOptions_Enforces32765WordLimit()
+    {
+        var validOptions = new ToyopucOptions { MaxReadWords = 32765, MaxWriteWords = 32765 };
+        Assert.Equal(32765, validOptions.MaxReadWords);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ToyopucOptions { MaxReadWords = 32766 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ToyopucOptions { MaxWriteWords = 32766 });
+    }
+
+    [Fact]
+    public void ToyopucFrameDecoder_Supports65535ByteResponseFrame()
+    {
+        var decoder = new ToyopucFrameDecoder();
+        int bodyLength = 1 + (32765 * 2);
+        byte[] frame = new byte[4 + bodyLength];
+        frame[2] = (byte)(bodyLength & 0xFF);
+        frame[3] = (byte)(bodyLength >> 8);
+
+        bool hasFrame = decoder.TryGetFrameLength(new ArraySegment<byte>(frame), out int frameLength);
+        Assert.True(hasFrame);
+        Assert.Equal(frame.Length, frameLength);
+    }
+
+    [Fact]
+    public void ResponseParser_EnforcesExactFrameLengths()
+    {
+        byte[] mismatchedBodyLength = [0x80, 0x00, 0x01, 0x00, 0x1D, 0x99];
+        Assert.Throws<PlcException>(() => ToyopucResponseParser.VerifyWriteResponse(mismatchedBodyLength, 0x1D));
+
+        byte[] extraWriteBody = [0x80, 0x00, 0x02, 0x00, 0x1D, 0x00];
+        Assert.Throws<PlcException>(() => ToyopucResponseParser.VerifyWriteResponse(extraWriteBody, 0x1D));
+
+        byte[] extraBitBody = [0x80, 0x00, 0x03, 0x00, 0x20, 0x01, 0x02];
+        Assert.Throws<PlcException>(() => ToyopucResponseParser.ParseReadBit(extraBitBody));
+
+        byte[] extraWordBody = [0x80, 0x00, 0x05, 0x00, 0x1C, 0x01, 0x00, 0x02, 0x00];
+        Assert.Throws<PlcException>(() => ToyopucResponseParser.ParseReadWords(extraWordBody, 0x1C, expectedWordCount: 1));
+    }
+
+    [Fact]
     public async Task ReadAsync_ErrorResponse_ThrowsPlcDeviceException()
     {
         var transport = new ScriptedTransport();
@@ -230,7 +344,7 @@ public class ToyopucProtocolTests
         var request = new PlcReadRequest("D100", PlcDataType.Int16, 1);
         var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.ReadAsync(request, default));
 
-        Assert.Equal(0x40, exception.DeviceErrorCode);
+        Assert.Equal((int)ToyopucErrorCode.AddressOutOfRange, exception.DeviceErrorCode);
         Assert.Contains("주소 범위 초과", exception.Message);
     }
 

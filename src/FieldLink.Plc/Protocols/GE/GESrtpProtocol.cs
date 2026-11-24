@@ -76,6 +76,7 @@ public sealed class GESrtpProtocol : IPlcProtocol
         int elementByteSize = effectiveRequest.DataType.GetElementSize();
         int unitsPerElement = CalculateUnitsPerElement(address, elementByteSize);
         int maxElements = CalculateMaxReadElements(address, elementByteSize, unitsPerElement);
+        ValidateEndAddressRange(address, effectiveRequest.Count, unitsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElements);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
@@ -120,6 +121,7 @@ public sealed class GESrtpProtocol : IPlcProtocol
         int elementByteSize = effectiveRequest.DataType.GetElementSize();
         int unitsPerElement = CalculateUnitsPerElement(address, elementByteSize);
         int maxElements = CalculateMaxWriteElements(address, elementByteSize, unitsPerElement);
+        ValidateEndAddressRange(address, effectiveRequest.Count, unitsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElements);
         int completedElements = 0;
@@ -205,32 +207,45 @@ public sealed class GESrtpProtocol : IPlcProtocol
     {
         if (address.IsWord)
         {
-            int effectiveMaxWords = Math.Min(_options.MaxWordsPerRequest, Math.Max(1, _options.MaxReadBytes / BytesPerWord));
+            int effectiveMaxWords = Math.Min(_options.MaxWordsPerRequest, _options.MaxReadBytes / BytesPerWord);
             return RequestChunker.CalculateElementLimit(effectiveMaxWords, unitsPerElement);
         }
 
         if (address.IsBit)
         {
-            return Math.Max(1, (_options.MaxReadBytes * BitsPerByte) - (BitsPerByte - 1));
+            int bitLimitByBytes = (_options.MaxReadBytes * BitsPerByte) - (BitsPerByte - 1);
+            return Math.Max(1, Math.Min(ushort.MaxValue, bitLimitByBytes));
         }
 
-        return Math.Max(1, _options.MaxReadBytes / elementByteSize);
+        return RequestChunker.CalculateElementLimit(_options.MaxReadBytes, elementByteSize);
     }
 
     private int CalculateMaxWriteElements(GESrtpAddress address, int elementByteSize, int unitsPerElement)
     {
         if (address.IsWord)
         {
-            int effectiveMaxWords = Math.Min(_options.MaxWordsPerRequest, Math.Max(1, _options.MaxWriteBytes / BytesPerWord));
+            int effectiveMaxWords = Math.Min(_options.MaxWordsPerRequest, _options.MaxWriteBytes / BytesPerWord);
             return RequestChunker.CalculateElementLimit(effectiveMaxWords, unitsPerElement);
         }
 
         if (address.IsBit)
         {
-            return Math.Max(1, (_options.MaxWriteBytes * BitsPerByte) - (BitsPerByte - 1));
+            int bitLimitByBytes = (_options.MaxWriteBytes * BitsPerByte) - (BitsPerByte - 1);
+            return Math.Max(1, Math.Min(ushort.MaxValue, bitLimitByBytes));
         }
 
-        return Math.Max(1, _options.MaxWriteBytes / elementByteSize);
+        return RequestChunker.CalculateElementLimit(_options.MaxWriteBytes, elementByteSize);
+    }
+
+    private static void ValidateEndAddressRange(GESrtpAddress startAddress, int elementCount, int unitsPerElement)
+    {
+        long totalUnits = (long)elementCount * unitsPerElement;
+        if (totalUnits - 1 > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(elementCount), elementCount, "요청 범위가 SRTP 16비트 주소 상한을 초과합니다.");
+        }
+
+        startAddress.Offset((int)(totalUnits - 1));
     }
 
     private async Task<byte[]> ReadChunkAsync(
@@ -241,7 +256,7 @@ public sealed class GESrtpProtocol : IPlcProtocol
     {
         int unitsPerElement = CalculateUnitsPerElement(baseAddress, elementByteSize);
         GESrtpAddress chunkAddress = baseAddress.Offset(chunk.ElementOffset * unitsPerElement);
-        ushort wireQuantity = (ushort)(chunk.ElementCount * unitsPerElement);
+        ushort wireQuantity = checked((ushort)(chunk.ElementCount * unitsPerElement));
         ushort sequenceId = NextSequenceId();
 
         byte[] requestFrame = GESrtpRequestBuilder.BuildReadRequest(sequenceId, chunkAddress, wireQuantity);
@@ -268,7 +283,7 @@ public sealed class GESrtpProtocol : IPlcProtocol
     {
         int unitsPerElement = CalculateUnitsPerElement(baseAddress, request.DataType.GetElementSize());
         GESrtpAddress chunkAddress = baseAddress.Offset(chunk.ElementOffset * unitsPerElement);
-        ushort wireQuantity = (ushort)(chunk.ElementCount * unitsPerElement);
+        ushort wireQuantity = checked((ushort)(chunk.ElementCount * unitsPerElement));
         byte[] rawSlice = request.GetData(chunk.ElementOffset, chunk.ElementCount);
         byte[] payloadBytes = chunkAddress.IsBit
             ? PackWriteBits(chunkAddress.WireAddress, rawSlice)

@@ -10,6 +10,10 @@ public static class YokogawaResponseParser
     private const int SubheaderOffset = 0;
     private const int EndCodeOffset = 1;
     private const int SizeFieldOffset = 2;
+    private const int ErrorDetailPayloadLength = 2;
+    private const int DetailCpuOffset = 4;
+    private const int DetailCodeOffset = 5;
+    private const int UpperNibbleMask = 0xF0;
     private const byte ResponseFlagMask = 0x80;
     private const byte EndCodeSuccess = 0x00;
 
@@ -25,7 +29,13 @@ public static class YokogawaResponseParser
     /// <summary>쓰기 응답 프레임의 성공 여부를 검증합니다.</summary>
     public static void VerifyWriteResponse(byte[] frame, byte expectedCommand)
     {
-        ValidateHeader(frame, expectedCommand);
+        int payloadSize = ValidateHeader(frame, expectedCommand);
+        if (payloadSize != 0)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"Yokogawa 쓰기 응답에 예상치 못한 데이터({payloadSize}바이트)가 포함되었습니다.");
+        }
     }
 
     private static int ValidateHeader(byte[] frame, byte expectedCommand)
@@ -55,24 +65,55 @@ public static class YokogawaResponseParser
         byte endCode = frame[EndCodeOffset];
         if (endCode != EndCodeSuccess)
         {
-            throw new PlcDeviceException(endCode, FormatErrorMessage(endCode));
+            ThrowDeviceException(frame, endCode, declaredSize);
         }
 
         return declaredSize;
     }
 
-    private static string FormatErrorMessage(byte endCode) => endCode switch
+    private static void ThrowDeviceException(byte[] frame, byte endCode, int declaredSize)
     {
-        0x01 => "CPU 번호 오류입니다. (1~4 범위 초과, ER01)",
-        0x02 => "명령 오류입니다. (명령 없음 또는 실행 불가, ER02)",
-        0x03 => "디바이스 오류입니다. (해당 디바이스 없음, ER03)",
-        0x04 => "설정값 범위 오류입니다. (ER04)",
-        0x05 => "데이터 개수 범위 오류입니다. (ER05)",
-        0x06 => "모니터 오류입니다. (ER06)",
-        0x08 => "파라미터 오류입니다. (ER08)",
-        0x09 => "ID 오류입니다. (ER09)",
-        0x51 => "시퀀스 CPU 무응답(타임아웃) 오류입니다. (ER51)",
-        0x52 => "시퀀스 CPU 처리 오류입니다. (ER52)",
-        _ => $"Yokogawa 종료 코드 오류: 0x{endCode:X2}",
+        if (declaredSize != 0 && declaredSize != ErrorDetailPayloadLength)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"Yokogawa 오류 응답 파라미터 길이가 올바르지 않습니다: {declaredSize}바이트");
+        }
+
+        var errorCode = (YokogawaErrorCode)endCode;
+        string baseMessage = errorCode.GetDescription();
+
+        if (declaredSize == ErrorDetailPayloadLength && HasValidDetailCode(errorCode))
+        {
+            byte cpuNumber = frame[DetailCpuOffset];
+            byte detailCode = frame[DetailCodeOffset];
+            string detailCategory = DescribeDetailCategory(detailCode);
+            throw new PlcDeviceException(
+                endCode,
+                $"{baseMessage} [CPU={cpuNumber}, 상세 코드=0x{detailCode:X2}: {detailCategory}]");
+        }
+
+        throw new PlcDeviceException(endCode, baseMessage);
+    }
+
+    private static bool HasValidDetailCode(YokogawaErrorCode errorCode) => errorCode is
+        YokogawaErrorCode.DeviceError or
+        YokogawaErrorCode.SettingValueOutOfRange or
+        YokogawaErrorCode.DataCountOutOfRange or
+        YokogawaErrorCode.ParameterError or
+        YokogawaErrorCode.CpuProcessingError;
+
+    private static string DescribeDetailCategory(byte detailCode) => (detailCode & UpperNibbleMask) switch
+    {
+        0x10 => "자기진단 오류",
+        0x20 => "프로그램/파라미터 오류",
+        0x40 => "CPU 통신 오류",
+        0x80 => "디바이스 액세스 오류",
+        0x90 => "명령 오류",
+        0xA0 => "파라미터 오류",
+        0xB0 => "운전 모드 오류",
+        0xC0 => "파라미터 오류",
+        0xF0 => "시스템 오류",
+        _ => "기타 상세 오류",
     };
 }

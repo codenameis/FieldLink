@@ -1,3 +1,4 @@
+using System;
 using FieldLink.Plc.Protocols.Panasonic;
 using Xunit;
 
@@ -49,5 +50,27 @@ public class MewtocolAddressTests
         Assert.Equal("R0110", offsetBy2.WireString);
         Assert.Equal(11, offsetBy2.Number);
         Assert.Equal(0, offsetBy2.BitOffset);
+    }
+
+    [Theory]
+    [InlineData("DT99999", 1)]
+    [InlineData("R999F", 1)]
+    [InlineData("T999", 1)]
+    [InlineData("C999", 1)]
+    public void Offset_ExceedingWireWidth_ThrowsArgumentOutOfRangeException(string addressText, int delta)
+    {
+        var address = MewtocolAddress.Parse(addressText);
+        Assert.Throws<ArgumentOutOfRangeException>(() => address.Offset(delta));
+    }
+
+    [Theory]
+    [InlineData("D100000")]
+    [InlineData("R10000")]
+    [InlineData("T1000")]
+    [InlineData("R1.16")]
+    [InlineData("D 100")]
+    public void Parse_InvalidAddress_ThrowsFormatException(string addressText)
+    {
+        Assert.Throws<FormatException>(() => MewtocolAddress.Parse(addressText));
     }
 }

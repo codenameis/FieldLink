@@ -47,15 +47,26 @@ public sealed class VigorFrameDecoder : IFrameDecoder
 
                 if (array[i + 1] == Etx)
                 {
-                    int totalLen = (i + TailAfterEtxMarkerLength) - offset;
-                    if (count >= totalLen)
+                    int totalLength = (i + TailAfterEtxMarkerLength) - offset;
+                    if (totalLength > MaximumFrameLength)
                     {
-                        frameLength = totalLen;
+                        throw new TransportException(
+                            TransportFailure.InvalidFrame,
+                            $"프레임 길이({totalLength})가 최대 허용 길이({MaximumFrameLength})를 초과했습니다.");
+                    }
+
+                    if (count >= totalLength)
+                    {
+                        frameLength = totalLength;
                         return true;
                     }
 
                     return false;
                 }
+
+                throw new TransportException(
+                    TransportFailure.InvalidFrame,
+                    $"VIGOR 본문 내 이스케이프되지 않은 DLE(0x10)가 감지되었습니다 (다음 바이트: 0x{array[i + 1]:X2}).");
             }
 
             i++;

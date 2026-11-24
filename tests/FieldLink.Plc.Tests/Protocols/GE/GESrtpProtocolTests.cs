@@ -262,6 +262,106 @@ public class GESrtpProtocolTests
         Assert.Equal(1, exception.CompletedCount);
     }
 
+    [Fact]
+    public void ResponseParser_EnforcesExactInitAndExtendedFrameLengths()
+    {
+        byte[] oversizedInit = new byte[57];
+        oversizedInit[0] = 0x01;
+        Assert.Throws<PlcException>(() => GESrtpResponseParser.ValidateInitResponse(oversizedInit));
+
+        byte[] trailingByteShortAck = new byte[57];
+        trailingByteShortAck[0] = 0x03;
+        trailingByteShortAck[2] = 0x01;
+        trailingByteShortAck[31] = 0xD4;
+        Assert.Throws<PlcException>(() => GESrtpResponseParser.ParseReadResponse(trailingByteShortAck, 1, 1));
+
+        byte[] mismatchedExtended = new byte[60];
+        mismatchedExtended[0] = 0x03;
+        mismatchedExtended[2] = 0x01;
+        mismatchedExtended[4] = 0x02; // declared 2 -> expects 58, actual 60
+        mismatchedExtended[31] = 0x94;
+        Assert.Throws<PlcException>(() => GESrtpResponseParser.ParseReadResponse(mismatchedExtended, 1, 2));
+    }
+
+    [Fact]
+    public void GESrtpOptions_EnforcesExtendedPayloadAndWordCaps()
+    {
+        var valid = new GESrtpOptions
+        {
+            MaxReadBytes = 65480,
+            MaxWriteBytes = 65480,
+            MaxWordsPerRequest = 32740,
+        };
+        Assert.Equal(65480, valid.MaxReadBytes);
+        Assert.Equal(32740, valid.MaxWordsPerRequest);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new GESrtpOptions { MaxReadBytes = 65481 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new GESrtpOptions { MaxWriteBytes = 65481 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new GESrtpOptions { MaxWordsPerRequest = 32741 });
+    }
+
+    [Fact]
+    public void BuildWriteRequest_EmptyPayload_ThrowsArgumentException()
+    {
+        var address = GESrtpAddress.Parse("R1");
+        Assert.Throws<ArgumentException>(() => GESrtpRequestBuilder.BuildWriteRequest(1, address, 1, []));
+    }
+
+    [Fact]
+    public async Task ReadAsync_LargeBitReadWithMaxReadBytes65480_ClampsBitChunkToUInt16MaxWithoutWraparound()
+    {
+        var transport = new ReconnectableMockTransport();
+        var protocol = new GESrtpProtocol(transport, new GESrtpOptions { MaxReadBytes = 65480 });
+
+        transport.EnqueueResponse(CreateInitResponse());
+        byte[] chunk1Payload = new byte[8192]; // ceil(65535 / 8)
+        transport.EnqueueResponse(CreateExtendedAckResponse(sequenceId: 1, chunk1Payload));
+        transport.EnqueueResponse(CreateShortAckResponse(sequenceId: 2, [0x01]));
+
+        var request = new PlcReadRequest("M1", PlcDataType.Boolean, 65536);
+        byte[] result = await protocol.ReadAsync(request, default);
+
+        Assert.Equal(65536, result.Length);
+        Assert.Equal(3, transport.SentFrames.Count);
+        ushort firstWireCount = (ushort)(transport.SentFrames[1][46] | (transport.SentFrames[1][47] << 8));
+        ushort secondWireCount = (ushort)(transport.SentFrames[2][46] | (transport.SentFrames[2][47] << 8));
+        Assert.Equal(65535, firstWireCount);
+        Assert.Equal(1, secondWireCount);
+    }
+
+    [Fact]
+    public async Task ReadAsync_LimitSmallerThanElementSizeOrAddressOverflow_ThrowsBeforeTransport()
+    {
+        var transport = new ReconnectableMockTransport();
+
+        var smallWordProtocol = new GESrtpProtocol(transport, new GESrtpOptions { MaxWordsPerRequest = 2 });
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => smallWordProtocol.ReadAsync(new PlcReadRequest("R1", PlcDataType.Int64, 1), default));
+
+        var smallByteProtocol = new GESrtpProtocol(transport, new GESrtpOptions { MaxReadBytes = 2 });
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => smallByteProtocol.ReadAsync(new PlcReadRequest("M1", PlcDataType.Int32, 1), default));
+
+        var defaultProtocol = new GESrtpProtocol(transport);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => defaultProtocol.ReadAsync(new PlcReadRequest("R65536", PlcDataType.UInt16, 2), default));
+
+        Assert.Empty(transport.SentFrames);
+    }
+
+    private static byte[] CreateExtendedAckResponse(ushort sequenceId, byte[] payload)
+    {
+        byte[] response = new byte[56 + payload.Length];
+        response[0] = 0x03;
+        response[2] = (byte)sequenceId;
+        response[3] = (byte)(sequenceId >> 8);
+        response[4] = (byte)payload.Length;
+        response[5] = (byte)(payload.Length >> 8);
+        response[31] = 0x94;
+        Array.Copy(payload, 0, response, 56, payload.Length);
+        return response;
+    }
+
     private static byte[] CreateInitResponse()
     {
         byte[] response = new byte[56];

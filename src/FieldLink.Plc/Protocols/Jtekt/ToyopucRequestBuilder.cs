@@ -17,6 +17,7 @@ public static class ToyopucRequestBuilder
     private const int ExtendedWireAddressOffset = 6;
     private const int ExtendedWordCountOffset = 8;
     private const int ExtendedWriteDataOffset = 8;
+    private const int ExtendedBankSize = 0x8000;
 
     private const ushort ReadBitBodyLength = 3;
     private const ushort WriteBitBodyLength = 4;
@@ -46,6 +47,11 @@ public static class ToyopucRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
+        if (!address.IsBit || address.Prg.HasValue)
+        {
+            throw new ArgumentException($"기본 영역 비트 주소가 필요합니다: {address.Original}", nameof(address));
+        }
+
         byte[] requestFrame = new byte[HeaderLength + ReadBitBodyLength];
         BinaryBuffer.WriteUInt16LittleEndian(requestFrame, LengthFieldOffset, ReadBitBodyLength);
         requestFrame[CommandOffset] = ReadBitCommand;
@@ -62,6 +68,11 @@ public static class ToyopucRequestBuilder
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
+        }
+
+        if (!address.IsBit || address.Prg.HasValue)
+        {
+            throw new ArgumentException($"기본 영역 비트 주소가 필요합니다: {address.Original}", nameof(address));
         }
 
         byte[] requestFrame = new byte[HeaderLength + WriteBitBodyLength];
@@ -85,8 +96,10 @@ public static class ToyopucRequestBuilder
 
         if (wordCount == 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 개수는 1 이상이어야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), wordCount, "워드 개수는 1 이상이어야 합니다.");
         }
+
+        ValidateWordWireRange(address, wordCount);
 
         if (address.Prg.HasValue)
         {
@@ -121,7 +134,7 @@ public static class ToyopucRequestBuilder
 
         if (wordCount == 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 개수는 1 이상이어야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), wordCount, "워드 개수는 1 이상이어야 합니다.");
         }
 
         if (wordData is null)
@@ -134,11 +147,23 @@ public static class ToyopucRequestBuilder
             throw new ArgumentException("데이터 길이가 워드 개수와 일치하지 않습니다.", nameof(wordData));
         }
 
+        ValidateWordWireRange(address, wordCount);
+
+        int headerBodySize = address.Prg.HasValue ? ExtendedWriteWordsHeaderBodySize : BasicWriteWordsHeaderBodySize;
+        int bodyLength = headerBodySize + wordData.Length;
+        if (bodyLength > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(wordCount),
+                wordCount,
+                $"본문 길이({bodyLength})가 16비트 프레임 길이 상한({ushort.MaxValue})을 초과합니다.");
+        }
+
+        ushort wireBodyLength = (ushort)bodyLength;
         if (address.Prg.HasValue)
         {
-            ushort extendedBodyLength = (ushort)(ExtendedWriteWordsHeaderBodySize + wordData.Length);
-            byte[] extendedFrame = new byte[HeaderLength + extendedBodyLength];
-            BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, LengthFieldOffset, extendedBodyLength);
+            byte[] extendedFrame = new byte[HeaderLength + wireBodyLength];
+            BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, LengthFieldOffset, wireBodyLength);
             extendedFrame[CommandOffset] = ExtendedWriteWordsCommand;
             extendedFrame[ExtendedProgramNumberOffset] = address.Prg.Value;
             BinaryBuffer.WriteUInt16LittleEndian(extendedFrame, ExtendedWireAddressOffset, address.WireAddress);
@@ -146,12 +171,30 @@ public static class ToyopucRequestBuilder
             return extendedFrame;
         }
 
-        ushort basicBodyLength = (ushort)(BasicWriteWordsHeaderBodySize + wordData.Length);
-        byte[] basicFrame = new byte[HeaderLength + basicBodyLength];
-        BinaryBuffer.WriteUInt16LittleEndian(basicFrame, LengthFieldOffset, basicBodyLength);
+        byte[] basicFrame = new byte[HeaderLength + wireBodyLength];
+        BinaryBuffer.WriteUInt16LittleEndian(basicFrame, LengthFieldOffset, wireBodyLength);
         basicFrame[CommandOffset] = BasicWriteWordsCommand;
         BinaryBuffer.WriteUInt16LittleEndian(basicFrame, BasicWireAddressOffset, address.WireAddress);
         Buffer.BlockCopy(wordData, 0, basicFrame, BasicWriteDataOffset, wordData.Length);
         return basicFrame;
+    }
+
+    private static void ValidateWordWireRange(ToyopucAddress address, ushort wordCount)
+    {
+        if (address.Device == "EB" && (long)address.WireAddress + wordCount > ExtendedBankSize)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(wordCount),
+                wordCount,
+                $"EB 단일 요청이 0x{ExtendedBankSize:X} 뱅크 경계를 초과합니다.");
+        }
+
+        if ((long)address.WireAddress + wordCount - 1 > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(wordCount),
+                wordCount,
+                "TOYOPUC 요청 워드 범위가 16비트 와이어 주소 상한을 초과합니다.");
+        }
     }
 }

@@ -56,6 +56,7 @@ public sealed class MewtocolProtocol : IPlcProtocol
 
         if (address.IsBit)
         {
+            ValidateEndAddress(address, request.Count);
             return await ReadBitsAsync(address, request.Count, cancellationToken).ConfigureAwait(false);
         }
 
@@ -78,6 +79,7 @@ public sealed class MewtocolProtocol : IPlcProtocol
 
         if (address.IsBit)
         {
+            ValidateEndAddress(address, request.Count);
             await WriteBitsAsync(address, request, cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -109,6 +111,8 @@ public sealed class MewtocolProtocol : IPlcProtocol
     {
         int elementSize = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
+        ValidateWordEndAddress(startAddress, effectiveRequest.Count, wordsPerElement);
+
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
@@ -118,7 +122,7 @@ public sealed class MewtocolProtocol : IPlcProtocol
             foreach (RequestChunker.Chunk chunk in chunks)
             {
                 MewtocolAddress chunkAddress = startAddress.Offset(chunk.ElementOffset * wordsPerElement);
-                ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
 
                 byte[] requestFrame = MewtocolRequestBuilder.BuildReadWords(_options.Station, chunkAddress, wordCount);
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
@@ -168,6 +172,8 @@ public sealed class MewtocolProtocol : IPlcProtocol
         PlcWriteRequest effectiveRequest = ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out int originalElementsPerUnit);
         int elementSize = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
+        ValidateWordEndAddress(startAddress, effectiveRequest.Count, wordsPerElement);
+
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         int completedElements = 0;
@@ -178,13 +184,7 @@ public sealed class MewtocolProtocol : IPlcProtocol
             {
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
-                    MewtocolAddress chunkAddress = startAddress.Offset(chunk.ElementOffset * wordsPerElement);
-                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
-                    byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
-
-                    byte[] requestFrame = MewtocolRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, wordCount, chunkData);
-                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                    MewtocolResponseParser.VerifyWriteResponse(responseFrame, _options.Station, WriteWordsEcho);
+                    await WriteWordChunkAsync(session, startAddress, effectiveRequest, chunk, wordsPerElement).ConfigureAwait(false);
                     completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
                         completedElements,
                         chunk.ElementCount,
@@ -199,5 +199,37 @@ public sealed class MewtocolProtocol : IPlcProtocol
         {
             throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
+    }
+
+    private async Task WriteWordChunkAsync(
+        ITransportSession session,
+        MewtocolAddress startAddress,
+        PlcWriteRequest effectiveRequest,
+        RequestChunker.Chunk chunk,
+        int wordsPerElement)
+    {
+        MewtocolAddress chunkAddress = startAddress.Offset(chunk.ElementOffset * wordsPerElement);
+        ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
+        byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
+
+        byte[] requestFrame = MewtocolRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, wordCount, chunkData);
+        byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+        MewtocolResponseParser.VerifyWriteResponse(responseFrame, _options.Station, WriteWordsEcho);
+    }
+
+    private static void ValidateEndAddress(MewtocolAddress startAddress, int elementCount)
+    {
+        startAddress.Offset(elementCount - 1);
+    }
+
+    private static void ValidateWordEndAddress(MewtocolAddress startAddress, int elementCount, int wordsPerElement)
+    {
+        long totalWords = (long)elementCount * wordsPerElement;
+        if (totalWords - 1 > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(elementCount), elementCount, "요청 워드 범위가 허용 상한을 초과합니다.");
+        }
+
+        startAddress.Offset((int)(totalWords - 1));
     }
 }

@@ -43,6 +43,20 @@ public static class VigorResponseParser
         return data;
     }
 
+    /// <summary>VIGOR 쓰기 응답 프레임을 검증하고 추가 데이터가 없음을 확인합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    public static void VerifyWriteResponse(byte[] frame, byte expectedStation)
+    {
+        byte[] data = ParseResponse(frame, expectedStation);
+        if (data.Length != 0)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"VIGOR 쓰기 응답에 예상치 못한 데이터({data.Length}바이트)가 포함되었습니다.");
+        }
+    }
+
     private static void ValidateFrameEnvelope(byte[] frame, out int etxIndex)
     {
         if (frame is null || frame.Length < MinimumFrameLength)
@@ -64,7 +78,8 @@ public static class VigorResponseParser
 
     private static int FindDleEtxIndex(byte[] frame)
     {
-        for (int i = BodyStartOffset; i < frame.Length - 1; i++)
+        int bodyEndLimit = frame.Length - ChecksumHexLength;
+        for (int i = BodyStartOffset; i < bodyEndLimit - 1; i++)
         {
             if (frame[i] != Dle)
             {
@@ -81,6 +96,10 @@ public static class VigorResponseParser
             {
                 return i;
             }
+
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"VIGOR 응답 본문 내 이스케이프되지 않은 DLE(0x10)가 포함되었습니다 (다음 바이트: 0x{frame[i + 1]:X2}).");
         }
 
         return -1;
@@ -112,7 +131,8 @@ public static class VigorResponseParser
         byte statusCode = unescapedBody[StatusCodeOffset];
         if (statusCode != StatusCodeSuccess)
         {
-            throw new PlcDeviceException(statusCode, FormatErrorMessage(statusCode));
+            string message = ((VigorErrorCode)statusCode).GetDescription();
+            throw new PlcDeviceException(statusCode, message);
         }
     }
 
@@ -121,8 +141,15 @@ public static class VigorResponseParser
         int unescapedLength = 0;
         for (int i = 0; i < length; i++)
         {
-            if (buffer[offset + i] == Dle && i + 1 < length && buffer[offset + i + 1] == Dle)
+            if (buffer[offset + i] == Dle)
             {
+                if (i + 1 >= length || buffer[offset + i + 1] != Dle)
+                {
+                    throw new PlcException(
+                        PlcErrorKind.InvalidResponse,
+                        "VIGOR 응답 본문 내 이스케이프되지 않은 DLE(0x10)가 포함되었습니다.");
+                }
+
                 i++;
             }
 
@@ -134,7 +161,7 @@ public static class VigorResponseParser
         for (int i = 0; i < length; i++)
         {
             byte currentByte = buffer[offset + i];
-            if (currentByte == Dle && i + 1 < length && buffer[offset + i + 1] == Dle)
+            if (currentByte == Dle)
             {
                 i++;
             }
@@ -161,14 +188,4 @@ public static class VigorResponseParser
                 $"VIGOR 체크섬 오류: 계산값={calculatedSum:X2}, 수신값={receivedSum:X2}");
         }
     }
-
-    private static string FormatErrorMessage(byte errorCode) => errorCode switch
-    {
-        0x02 => "체크섬(Sum Check) 오류입니다. (0x02)",
-        0x04 => "요청 데이터 개수가 0이거나 허용 블록 크기를 초과했습니다. (0x04)",
-        0x06 => "디바이스 주소 범위 초과 오류입니다. (0x06)",
-        0x08 => "ASCII 변환 오류입니다. (0x08)",
-        0x31 => "존재하지 않거나 지원하지 않는 기능 코드입니다. (0x31)",
-        _ => $"VIGOR 오류 코드: 0x{errorCode:X2}",
-    };
 }

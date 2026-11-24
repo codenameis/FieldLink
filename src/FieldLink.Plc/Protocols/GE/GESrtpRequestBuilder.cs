@@ -72,6 +72,11 @@ public static class GESrtpRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(count), "읽기 개수는 1 이상이어야 합니다.");
         }
 
+        if ((long)address.WireAddress + count - 1 > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "요청 범위가 SRTP 16비트 주소 상한을 초과합니다.");
+        }
+
         byte[] frame = new byte[HeaderLength];
         frame[PacketTypeOffset] = ServiceRequestPacketType;
         BinaryBuffer.WriteUInt16LittleEndian(frame, SequenceIdOffset, sequenceId);
@@ -117,9 +122,19 @@ public static class GESrtpRequestBuilder
             throw new ArgumentNullException(nameof(data));
         }
 
+        if (data.Length == 0)
+        {
+            throw new ArgumentException("쓰기 페이로드 데이터는 비어 있을 수 없습니다.", nameof(data));
+        }
+
         if (data.Length > ushort.MaxValue)
         {
             throw new ArgumentOutOfRangeException(nameof(data), data.Length, "SRTP 확장 페이로드 크기가 16비트 길이를 초과했습니다.");
+        }
+
+        if ((long)address.WireAddress + count - 1 > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "요청 범위가 SRTP 16비트 주소 상한을 초과합니다.");
         }
 
         ushort payloadByteCount = (ushort)data.Length;

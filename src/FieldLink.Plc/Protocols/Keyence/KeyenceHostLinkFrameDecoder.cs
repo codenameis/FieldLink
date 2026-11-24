@@ -8,7 +8,7 @@ public sealed class KeyenceHostLinkFrameDecoder : IFrameDecoder
 {
     private const byte CarriageReturn = 0x0D;
     private const byte LineFeed = 0x0A;
-    private const int DefaultMaximumFrameLength = 4096;
+    private const int DefaultMaximumFrameLength = 16384;
 
     private static readonly byte[] EndDelimiter = [CarriageReturn, LineFeed];
     private readonly DelimitedFrameDecoder _innerDecoder = new(EndDelimiter, maximumFrameLength: DefaultMaximumFrameLength);

@@ -85,6 +85,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
 
     private async Task<byte[]> ReadBitsAsync(YokogawaAddress address, int totalBits, CancellationToken cancellationToken)
     {
+        ValidateEndAddressRange(address, totalBits, 1);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, _options.MaxBitsPerRequest);
         byte[] result = new byte[totalBits];
 
@@ -93,7 +94,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
             foreach (RequestChunker.Chunk chunk in chunks)
             {
                 YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort bitCount = (ushort)chunk.ElementCount;
+                ushort bitCount = checked((ushort)chunk.ElementCount);
 
                 byte[] requestFrame = YokogawaRequestBuilder.BuildReadRequest(_options.CpuNumber, chunkAddress, bitCount);
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
@@ -120,6 +121,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
         int bytesPerElement = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, bytesPerElement / BytesPerWord);
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxWordsPerRequest, wordsPerElement);
+        ValidateEndAddressRange(address, effectiveRequest.Count, wordsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
@@ -129,7 +131,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
             foreach (RequestChunker.Chunk chunk in chunks)
             {
                 YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
-                ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
                 int expectedByteCount = wordCount * BytesPerWord;
 
                 byte[] requestFrame = YokogawaRequestBuilder.BuildReadRequest(_options.CpuNumber, chunkAddress, wordCount);
@@ -156,6 +158,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
     private async Task WriteBitsAsync(YokogawaAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
     {
         int totalBits = request.Count;
+        ValidateEndAddressRange(address, totalBits, 1);
         byte[] rawBytes = request.GetData();
         byte[] bitBytes = new byte[totalBits];
         for (int i = 0; i < totalBits; i++)
@@ -173,7 +176,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
                     YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                    ushort bitCount = (ushort)chunk.ElementCount;
+                    ushort bitCount = checked((ushort)chunk.ElementCount);
                     byte[] chunkBits = new byte[bitCount];
                     Array.Copy(bitBytes, chunk.ElementOffset, chunkBits, 0, bitCount);
 
@@ -199,6 +202,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
         int bytesPerElement = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, bytesPerElement / BytesPerWord);
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxWordsPerRequest, wordsPerElement);
+        ValidateEndAddressRange(address, effectiveRequest.Count, wordsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         int completedElements = 0;
@@ -210,7 +214,7 @@ public sealed class YokogawaProtocol : IPlcProtocol
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
                     YokogawaAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
-                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                    ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
                     byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
                     byte[] requestFrame = YokogawaRequestBuilder.BuildWriteWordRequest(_options.CpuNumber, chunkAddress, wordCount, chunkData);
@@ -229,6 +233,16 @@ public sealed class YokogawaProtocol : IPlcProtocol
         catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
             throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
+        }
+    }
+
+    private static void ValidateEndAddressRange(YokogawaAddress address, int elementCount, int wordsPerElement)
+    {
+        long totalUnits = (long)elementCount * wordsPerElement;
+        long endNumber = (long)address.Number + totalUnits - 1;
+        if (endNumber > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(elementCount), elementCount, "요청 범위가 Yokogawa 주소 상한을 초과합니다.");
         }
     }
 }

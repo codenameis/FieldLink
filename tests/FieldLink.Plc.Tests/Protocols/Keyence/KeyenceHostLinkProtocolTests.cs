@@ -87,7 +87,7 @@ public class KeyenceHostLinkProtocolTests
         var request = new PlcReadRequest("DM100", PlcDataType.Int16, 1);
         var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.ReadAsync(request, default));
 
-        Assert.Equal(0, exception.DeviceErrorCode);
+        Assert.Equal((int)KeyenceHostLinkErrorCode.DeviceNumberError, exception.DeviceErrorCode);
         Assert.Contains("디바이스 번호 이상", exception.Message);
     }
 
@@ -118,7 +118,7 @@ public class KeyenceHostLinkProtocolTests
         var writeRequest = new PlcWriteRequest("DM100", PlcDataType.Int32, readResult);
         var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(writeRequest, default));
 
-        Assert.Equal(4, exception.DeviceErrorCode);
+        Assert.Equal((int)KeyenceHostLinkErrorCode.WriteProtected, exception.DeviceErrorCode);
         Assert.Equal(1, exception.CompletedCount);
         Assert.Equal(4, transport.SentFrames.Count);
         Assert.Equal("WRS DM100 2 1 2\r", Encoding.ASCII.GetString(transport.SentFrames[2]));
@@ -126,35 +126,135 @@ public class KeyenceHostLinkProtocolTests
     }
 
     [Fact]
-    public async Task ReadAndWriteAsync_32BitDevices_Z0AndTS0_FormatsDWordsAndRejects16BitAccess()
+    public async Task ReadAndWriteAsync_32BitDevices_Z1AndTS0_FormatsDWordsAndAllowsNon4ByteReads()
     {
         var transport = new ScriptedTransport();
         var protocol = new KeyenceHostLinkProtocol(transport);
 
-        // Z0에 Int16 읽기/쓰기 시 32비트 디바이스 절단 방지를 위해 ArgumentException
+        // Z1에 Int16 읽기/쓰기 및 홀수 바이트 쓰기는 거부
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            protocol.ReadAsync(new PlcReadRequest("Z0", PlcDataType.Int16, 1), default));
+            protocol.ReadAsync(new PlcReadRequest("Z1", PlcDataType.Int16, 1), default));
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            protocol.WriteAsync(new PlcWriteRequest("Z0", PlcDataType.Int16, new byte[] { 0x01, 0x00 }), default));
+            protocol.WriteAsync(new PlcWriteRequest("Z1", PlcDataType.Int16, new byte[] { 0x01, 0x00 }), default));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("Z1", PlcDataType.Byte, new byte[] { 0x01, 0x02 }), default));
 
         // T0 복합 디바이스 직접 쓰기 거부
         await Assert.ThrowsAsync<ArgumentException>(() =>
             protocol.WriteAsync(new PlcWriteRequest("T0", PlcDataType.Int32, new byte[4]), default));
 
-        // Z0 및 TS0 32비트 읽기/쓰기 검증 (WRS Z0 1 100000\r — Z1 침범 없음)
+        // Z1 및 TS0 32비트 읽기/쓰기 + 비4바이트 배수 Byte/String 읽기 허용 검증
         transport.EnqueueResponse(Encoding.ASCII.GetBytes("100000\r\n"));
+        transport.EnqueueResponse(Encoding.ASCII.GetBytes("1144201745 1732584193\r\n"));
         transport.EnqueueResponse(Encoding.ASCII.GetBytes("OK\r\n"));
         transport.EnqueueResponse(Encoding.ASCII.GetBytes("OK\r\n"));
 
-        byte[] readZ0 = await protocol.ReadAsync(new PlcReadRequest("Z0", PlcDataType.Int32, 1), default);
-        Assert.Equal(BitConverter.GetBytes(100000), readZ0);
+        byte[] readZ1 = await protocol.ReadAsync(new PlcReadRequest("Z1", PlcDataType.Int32, 1), default);
+        Assert.Equal(BitConverter.GetBytes(100000), readZ1);
 
-        await protocol.WriteAsync(new PlcWriteRequest("Z0", PlcDataType.Int32, BitConverter.GetBytes(100000)), default);
+        byte[] readBytes = await protocol.ReadAsync(new PlcReadRequest("Z1", PlcDataType.Byte, 5), default);
+        Assert.Equal(5, readBytes.Length);
+
+        await protocol.WriteAsync(new PlcWriteRequest("Z1", PlcDataType.Int32, BitConverter.GetBytes(100000)), default);
         await protocol.WriteAsync(new PlcWriteRequest("TS0", PlcDataType.UInt32, BitConverter.GetBytes(5000u)), default);
 
-        Assert.Equal(3, transport.SentFrames.Count);
-        Assert.Equal("RDS Z0 1\r", Encoding.ASCII.GetString(transport.SentFrames[0]));
-        Assert.Equal("WRS Z0 1 100000\r", Encoding.ASCII.GetString(transport.SentFrames[1]));
-        Assert.Equal("WRS TS0 1 5000\r", Encoding.ASCII.GetString(transport.SentFrames[2]));
+        Assert.Equal(4, transport.SentFrames.Count);
+        Assert.Equal("RDS Z1 1\r", Encoding.ASCII.GetString(transport.SentFrames[0]));
+        Assert.Equal("RDS Z1 2\r", Encoding.ASCII.GetString(transport.SentFrames[1]));
+        Assert.Equal("WRS Z1 1 100000\r", Encoding.ASCII.GetString(transport.SentFrames[2]));
+        Assert.Equal("WRS TS0 1 5000\r", Encoding.ASCII.GetString(transport.SentFrames[3]));
+    }
+
+    [Fact]
+    public async Task ReadAsync_TcExceedingDeviceChunkLimit64_ClampsTo64AndSplits()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new KeyenceHostLinkProtocol(transport, new KeyenceHostLinkOptions { MaxReadElements = 256 });
+
+        string[] sixtyFourValues = new string[64];
+        for (int i = 0; i < 64; i++)
+        {
+            sixtyFourValues[i] = (i + 1).ToString();
+        }
+
+        transport.EnqueueResponse(Encoding.ASCII.GetBytes(string.Join(" ", sixtyFourValues) + "\r\n"));
+        transport.EnqueueResponse(Encoding.ASCII.GetBytes("65\r\n"));
+
+        byte[] result = await protocol.ReadAsync(new PlcReadRequest("TC0", PlcDataType.UInt32, 65), default);
+
+        Assert.Equal(65 * 4, result.Length);
+        Assert.Equal(2, transport.SentFrames.Count);
+        Assert.Equal("RDS TC0 64\r", Encoding.ASCII.GetString(transport.SentFrames[0]));
+        Assert.Equal("RDS TC64 1\r", Encoding.ASCII.GetString(transport.SentFrames[1]));
+    }
+
+    [Fact]
+    public void ResponseParser_MissingCrLfOrExtraTokens_ThrowsInvalidResponse()
+    {
+        Assert.Throws<PlcException>(() =>
+            KeyenceHostLinkResponseParser.VerifyWriteResponse(Encoding.ASCII.GetBytes("OK\n")));
+        Assert.Throws<PlcException>(() =>
+            KeyenceHostLinkResponseParser.VerifyWriteResponse(Encoding.ASCII.GetBytes("OK\r")));
+        Assert.Throws<PlcException>(() =>
+            KeyenceHostLinkResponseParser.ParseReadWords(Encoding.ASCII.GetBytes("1 2\r\n"), expectedCount: 1));
+        Assert.Throws<PlcException>(() =>
+            KeyenceHostLinkResponseParser.ParseReadDWords(Encoding.ASCII.GetBytes("1 2\r\n"), expectedCount: 1));
+        Assert.Throws<PlcException>(() =>
+            KeyenceHostLinkResponseParser.ParseReadBits(Encoding.ASCII.GetBytes("1 0\r\n"), expectedCount: 1));
+    }
+
+    [Fact]
+    public void KeyenceHostLinkOptions_And_Decoder_EnforceLimitsAndInitOrder()
+    {
+        var order1 = new KeyenceHostLinkOptions { MaxReadElements = 10, MaxWordsPerRequest = 50 };
+        var order2 = new KeyenceHostLinkOptions { MaxWordsPerRequest = 50, MaxReadElements = 10 };
+
+        Assert.Equal(10, order1.MaxReadElements);
+        Assert.Equal(50, order1.MaxWriteElements);
+        Assert.Equal(10, order2.MaxReadElements);
+        Assert.Equal(50, order2.MaxWriteElements);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new KeyenceHostLinkOptions { MaxWordsPerRequest = 1001 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new KeyenceHostLinkOptions { MaxReadElements = 1001 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new KeyenceHostLinkOptions { MaxWriteElements = 1001 });
+
+        var decoder = new KeyenceHostLinkFrameDecoder();
+        byte[] largeResponse = new byte[16384];
+        Array.Fill(largeResponse, (byte)'1');
+        largeResponse[16382] = (byte)'\r';
+        largeResponse[16383] = (byte)'\n';
+        bool hasFrame = decoder.TryGetFrameLength(new ArraySegment<byte>(largeResponse), out int frameLength);
+        Assert.True(hasFrame);
+        Assert.Equal(16384, frameLength);
+    }
+
+    [Fact]
+    public void RequestBuilder_RejectsZeroCountAndMismatchedBitLength()
+    {
+        var wordAddress = KeyenceHostLinkAddress.Parse("DM100");
+        var dwordAddress = KeyenceHostLinkAddress.Parse("Z1");
+        var bitAddress = KeyenceHostLinkAddress.Parse("MR100");
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => KeyenceHostLinkRequestBuilder.BuildWriteDWords(dwordAddress, 0, []));
+        Assert.Throws<ArgumentOutOfRangeException>(() => KeyenceHostLinkRequestBuilder.BuildWriteBits(bitAddress, 0, []));
+        Assert.Throws<ArgumentException>(() => KeyenceHostLinkRequestBuilder.BuildWriteBits(bitAddress, 1, [1, 0]));
+        Assert.Throws<ArgumentException>(() => KeyenceHostLinkRequestBuilder.BuildWriteWords(bitAddress, 1, [1, 0]));
+        Assert.Throws<ArgumentException>(() => KeyenceHostLinkRequestBuilder.BuildWriteBits(wordAddress, 1, [1]));
+    }
+
+    [Fact]
+    public async Task ReadAsync_LimitSmallerThanElementSizeOrExceedingBounds_ThrowsBeforeTransport()
+    {
+        var transport = new ScriptedTransport();
+        var smallProtocol = new KeyenceHostLinkProtocol(transport, new KeyenceHostLinkOptions { MaxReadElements = 1 });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => smallProtocol.ReadAsync(new PlcReadRequest("Z1", PlcDataType.Int64, 1), default));
+
+        var defaultProtocol = new KeyenceHostLinkProtocol(transport);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => defaultProtocol.ReadAsync(new PlcReadRequest("Z1", PlcDataType.Int32, 13), default));
+
+        Assert.Empty(transport.SentFrames);
     }
 }

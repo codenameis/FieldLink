@@ -9,9 +9,10 @@ public sealed class VigorAddress
 {
     private const int MaxAddressNumber = 999999;
     private const int MaxOctalAddressNumber = 777;
+    private const int MaxOctalValue = 511; // 8진수 777의 실제 10진 값
     private const int MaxStandardRegisterNumber = 8999;
     private const int MaxStepRelayNumber = 4095;
-    private const int MaxSpecialDeviceNumber = 999;
+    private const int MaxSpecialDeviceNumber = 255;
     private const int MaxTimerCounterIndex = 255;
     private const int MaxFileRegisterNumber = 23999;
     private const int Max16BitCounterNumber = 199;
@@ -46,6 +47,7 @@ public sealed class VigorAddress
     private const byte DeviceCodeCounter32BitPresentValueC = 0xAD;
 
     private static readonly string[] TwoCharPrefixes = ["SM", "SD", "TC", "TS", "CC", "CS"];
+    private readonly byte[] _bcdAddress;
 
     private VigorAddress(
         string original,
@@ -60,7 +62,7 @@ public sealed class VigorAddress
         Device = device;
         Number = number;
         DeviceCode = deviceCode;
-        BcdAddress = bcdAddress;
+        _bcdAddress = bcdAddress;
         IsBit = isBit;
         Is32BitWord = is32BitWord;
     }
@@ -77,8 +79,13 @@ public sealed class VigorAddress
     /// <summary>VIGOR 프로토콜 1바이트 디바이스 코드입니다.</summary>
     public byte DeviceCode { get; }
 
-    /// <summary>리틀엔디언 3바이트 BCD 주소입니다.</summary>
-    public byte[] BcdAddress { get; }
+    /// <summary>리틀엔디언 3바이트 BCD 주소 복사본입니다.</summary>
+    public byte[] BcdAddress => (byte[])_bcdAddress.Clone();
+
+    internal void WriteBcdAddress(byte[] destination, int offset)
+    {
+        Buffer.BlockCopy(_bcdAddress, 0, destination, offset, _bcdAddress.Length);
+    }
 
     /// <summary>비트 접점 여부입니다.</summary>
     public bool IsBit { get; }
@@ -176,12 +183,26 @@ public sealed class VigorAddress
         if (IsOctalDevice(Device))
         {
             int currentOctalValue = OctalDecimalToValue(Number);
-            int nextOctalValue = checked(currentOctalValue + count);
-            nextNumber = ValueToOctalDecimal(nextOctalValue);
+            long nextOctalValueLong = (long)currentOctalValue + count;
+            if (nextOctalValueLong > MaxOctalValue)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(count),
+                    count,
+                    $"8진수 디바이스({Device}) 오프셋 결과가 최대 범위(0~{MaxOctalAddressNumber})를 초과합니다.");
+            }
+
+            nextNumber = ValueToOctalDecimal((int)nextOctalValueLong);
         }
         else
         {
-            nextNumber = checked(Number + count);
+            long nextNumberLong = (long)Number + count;
+            if (nextNumberLong > int.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(count), count, "주소 오프셋이 허용 범위를 초과합니다.");
+            }
+
+            nextNumber = (int)nextNumberLong;
         }
 
         if (!IsWithinDeviceCodeBounds(DeviceCode, nextNumber))
@@ -389,9 +410,12 @@ public sealed class VigorAddress
         while (remaining > 0)
         {
             int digit = remaining % DecimalBase;
-            value += digit * multiplier;
-            multiplier *= OctalRadix;
+            value = checked(value + (digit * multiplier));
             remaining /= DecimalBase;
+            if (remaining > 0)
+            {
+                multiplier = checked(multiplier * OctalRadix);
+            }
         }
 
         return value;
@@ -406,9 +430,12 @@ public sealed class VigorAddress
         while (remaining > 0)
         {
             int digit = remaining % OctalRadix;
-            octalDecimal += digit * multiplier;
-            multiplier *= DecimalBase;
+            octalDecimal = checked(octalDecimal + (digit * multiplier));
             remaining /= OctalRadix;
+            if (remaining > 0)
+            {
+                multiplier = checked(multiplier * DecimalBase);
+            }
         }
 
         return octalDecimal;

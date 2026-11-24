@@ -139,4 +139,76 @@ public class YokogawaProtocolTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             protocol.ReadAsync(new PlcReadRequest("D100", PlcDataType.Boolean, 1), default));
     }
+
+    [Fact]
+    public void YokogawaOptions_And_Decoder_EnforceLimits()
+    {
+        var valid = new YokogawaOptions { CpuNumber = 4, MaxWordsPerRequest = 32763, MaxBitsPerRequest = 65527 };
+        Assert.Equal((byte)4, valid.CpuNumber);
+        Assert.Equal(32763, valid.MaxWordsPerRequest);
+        Assert.Equal(65527, valid.MaxBitsPerRequest);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YokogawaOptions { CpuNumber = 0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YokogawaOptions { CpuNumber = 5 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YokogawaOptions { MaxWordsPerRequest = 32764 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YokogawaOptions { MaxBitsPerRequest = 65528 });
+
+        var decoder = new YokogawaFrameDecoder();
+        byte[] frame65536 = new byte[65536];
+        frame65536[0] = 0x91;
+        frame65536[2] = 0xFF;
+        frame65536[3] = 0xFC; // 65532 payload + 4 header = 65536
+        Assert.True(decoder.TryGetFrameLength(new ArraySegment<byte>(frame65536), out int length));
+        Assert.Equal(65536, length);
+    }
+
+    [Fact]
+    public void RequestBuilder_ValidatesCpuAddressBitFlagAndBitValues()
+    {
+        var wordAddress = YokogawaAddress.Parse("D100");
+        var bitAddress = YokogawaAddress.Parse("Y10");
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => YokogawaRequestBuilder.BuildReadRequest(0, wordAddress, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => YokogawaRequestBuilder.BuildReadRequest(5, wordAddress, 1));
+        Assert.Throws<ArgumentNullException>(() => YokogawaRequestBuilder.BuildWriteWordRequest(1, null!, 1, [0x01, 0x00]));
+        Assert.Throws<ArgumentNullException>(() => YokogawaRequestBuilder.BuildWriteBitRequest(1, null!, 1, [0x01]));
+        Assert.Throws<ArgumentException>(() => YokogawaRequestBuilder.BuildWriteWordRequest(1, bitAddress, 1, [0x01, 0x00]));
+        Assert.Throws<ArgumentException>(() => YokogawaRequestBuilder.BuildWriteBitRequest(1, wordAddress, 1, [0x01]));
+        Assert.Throws<ArgumentOutOfRangeException>(() => YokogawaRequestBuilder.BuildWriteBitRequest(1, bitAddress, 1, [0x02]));
+        Assert.Throws<ArgumentOutOfRangeException>(() => YokogawaRequestBuilder.BuildWriteWordRequest(1, wordAddress, 32764, new byte[32764 * 2]));
+    }
+
+    [Fact]
+    public void ResponseParser_SurfacesDetailErrorCodeAndRejectsNonEmptyWritePayload()
+    {
+        byte[] errorWithDetail = [0x91, 0x03, 0x00, 0x02, 0x01, 0x82];
+        var deviceException = Assert.Throws<PlcDeviceException>(() =>
+            YokogawaResponseParser.ParseReadResponse(errorWithDetail, expectedCommand: 0x11));
+
+        Assert.Equal(0x03, deviceException.DeviceErrorCode);
+        Assert.Contains("0x82", deviceException.Message);
+        Assert.Contains("CPU=1", deviceException.Message);
+        Assert.Contains("디바이스 액세스 오류", deviceException.Message);
+
+        byte[] invalidWriteResponse = [0x92, 0x00, 0x00, 0x02, 0x00, 0x00];
+        var writeException = Assert.Throws<PlcException>(() =>
+            YokogawaResponseParser.VerifyWriteResponse(invalidWriteResponse, expectedCommand: 0x12));
+        Assert.Equal(PlcErrorKind.InvalidResponse, writeException.Kind);
+    }
+
+    [Fact]
+    public async Task Protocol_WordLimitSmallerThanElementSizeOrAddressOverflow_ThrowsBeforeTransport()
+    {
+        var transport = new ScriptedTransport();
+        var smallProtocol = new YokogawaProtocol(transport, new YokogawaOptions { CpuNumber = 1, MaxWordsPerRequest = 2 });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => smallProtocol.ReadAsync(new PlcReadRequest("D100", PlcDataType.Int64, 1), default));
+
+        var defaultProtocol = new YokogawaProtocol(transport);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => defaultProtocol.ReadAsync(new PlcReadRequest("D2147483647", PlcDataType.UInt16, 2), default));
+
+        Assert.Empty(transport.SentFrames);
+    }
 }

@@ -24,8 +24,6 @@ public static class VigorRequestBuilder
     private const int FunctionCodeOffset = 3;
     private const int DeviceCodeOffset = 4;
     private const int AddressLowOffset = 5;
-    private const int AddressMiddleOffset = 6;
-    private const int AddressHighOffset = 7;
     private const int CountOffset = 8;
     private const int BytesPer16BitWord = 2;
     private const int BytesPer32BitCounter = 4;
@@ -77,8 +75,17 @@ public static class VigorRequestBuilder
                 nameof(data));
         }
 
+        int bodyLengthValue = CommandHeaderLength + data.Length;
+        if (bodyLengthValue > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(data),
+                data.Length,
+                $"VIGOR 쓰기 본문 길이({bodyLengthValue})가 16비트 길이 상한({ushort.MaxValue})을 초과합니다.");
+        }
+
         ushort wordCount = checked((ushort)(data.Length / bytesPerDeviceUnit));
-        ushort bodyLength = checked((ushort)(CommandHeaderLength + data.Length));
+        ushort bodyLength = (ushort)bodyLengthValue;
 
         byte[] body = new byte[BodyPrefixLength + bodyLength];
         FillBodyHeader(body, station, bodyLength, FunctionWriteWords, address, wordCount);
@@ -106,7 +113,16 @@ public static class VigorRequestBuilder
         }
 
         int byteCount = (values.Length + (BitsPerByte - 1)) / BitsPerByte;
-        ushort bodyLength = checked((ushort)(CommandHeaderLength + byteCount));
+        int bodyLengthValue = CommandHeaderLength + byteCount;
+        if (bodyLengthValue > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(values),
+                values.Length,
+                $"VIGOR 비트 쓰기 본문 길이({bodyLengthValue})가 16비트 길이 상한({ushort.MaxValue})을 초과합니다.");
+        }
+
+        ushort bodyLength = (ushort)bodyLengthValue;
         byte[] body = new byte[BodyPrefixLength + bodyLength];
         FillBodyHeader(body, station, bodyLength, FunctionWriteBits, address, (ushort)values.Length);
 
@@ -133,9 +149,7 @@ public static class VigorRequestBuilder
         BinaryBuffer.WriteUInt16LittleEndian(body, BodyLengthOffset, bodyLength);
         body[FunctionCodeOffset] = functionCode;
         body[DeviceCodeOffset] = address.DeviceCode;
-        body[AddressLowOffset] = address.BcdAddress[0];
-        body[AddressMiddleOffset] = address.BcdAddress[1];
-        body[AddressHighOffset] = address.BcdAddress[2];
+        address.WriteBcdAddress(body, AddressLowOffset);
         BinaryBuffer.WriteUInt16LittleEndian(body, CountOffset, count);
     }
 

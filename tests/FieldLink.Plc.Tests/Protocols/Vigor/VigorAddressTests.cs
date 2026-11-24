@@ -10,10 +10,14 @@ public class VigorAddressTests
     [InlineData("D100", 0xA0, new byte[] { 0x00, 0x01, 0x00 }, false, false)]
     [InlineData("D9000", 0xA1, new byte[] { 0x00, 0x00, 0x00 }, false, false)]
     [InlineData("D9010", 0xA1, new byte[] { 0x10, 0x00, 0x00 }, false, false)]
+    [InlineData("D9255", 0xA1, new byte[] { 0x55, 0x02, 0x00 }, false, false)]
     [InlineData("SD10", 0xA1, new byte[] { 0x10, 0x00, 0x00 }, false, false)]
+    [InlineData("SD255", 0xA1, new byte[] { 0x55, 0x02, 0x00 }, false, false)]
     [InlineData("M10", 0x92, new byte[] { 0x10, 0x00, 0x00 }, true, false)]
     [InlineData("M9000", 0x94, new byte[] { 0x00, 0x00, 0x00 }, true, false)]
+    [InlineData("M9255", 0x94, new byte[] { 0x55, 0x02, 0x00 }, true, false)]
     [InlineData("SM10", 0x94, new byte[] { 0x10, 0x00, 0x00 }, true, false)]
+    [InlineData("SM255", 0x94, new byte[] { 0x55, 0x02, 0x00 }, true, false)]
     [InlineData("S4095", 0x93, new byte[] { 0x95, 0x40, 0x00 }, true, false)]
     [InlineData("X012", 0x90, new byte[] { 0x12, 0x00, 0x00 }, true, false)]
     [InlineData("Y005", 0x91, new byte[] { 0x05, 0x00, 0x00 }, true, false)]
@@ -70,6 +74,10 @@ public class VigorAddressTests
     [InlineData("S4096")]
     [InlineData("C300")]
     [InlineData("T256")]
+    [InlineData("SM256")]
+    [InlineData("SD256")]
+    [InlineData("M9256")]
+    [InlineData("D9256")]
     public void Parse_InvalidAddress_ThrowsFormatExceptionOrArgument(string invalid)
     {
         if (string.IsNullOrWhiteSpace(invalid))
@@ -80,5 +88,18 @@ public class VigorAddressTests
         {
             Assert.Throws<FormatException>(() => VigorAddress.Parse(invalid));
         }
+    }
+
+    [Fact]
+    public void BcdAddress_ReturnsDefensiveCopy_And_OctalOffsetRejectsLargeOverflow()
+    {
+        var address = VigorAddress.Parse("D100");
+        byte[] copy = address.BcdAddress;
+        copy[0] = 0xFF;
+        Assert.Equal(new byte[] { 0x00, 0x01, 0x00 }, address.BcdAddress);
+
+        var x0 = VigorAddress.Parse("X0");
+        Assert.Throws<ArgumentOutOfRangeException>(() => x0.Offset(0x40000000));
+        Assert.Throws<ArgumentOutOfRangeException>(() => x0.Offset(512));
     }
 }

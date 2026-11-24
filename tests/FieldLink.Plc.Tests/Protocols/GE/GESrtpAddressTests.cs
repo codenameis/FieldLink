@@ -1,3 +1,4 @@
+using System;
 using FieldLink.Plc.Protocols.GE;
 using Xunit;
 
@@ -10,6 +11,9 @@ public class GESrtpAddressTests
     [InlineData("M1", false, 0x16, 0)]
     [InlineData("M100", false, 0x16, 99)]
     [InlineData("R100", false, 0x08, 99)]
+    [InlineData("R65536", false, 0x08, 65535)]
+    [InlineData("%R65536", false, 0x08, 65535)]
+    [InlineData("M65536", true, 0x4C, 65535)]
     [InlineData("AI10", false, 0x0A, 9)]
     [InlineData("AQ5", false, 0x0C, 4)]
     [InlineData("I1", true, 0x46, 0)]
@@ -33,9 +37,11 @@ public class GESrtpAddressTests
     [Theory]
     [InlineData("R0")]
     [InlineData("M0")]
+    [InlineData("R65537")]
+    [InlineData("M65537")]
     [InlineData("Z10")]
     public void Parse_InvalidAddress_ThrowsFormatException(string invalid)
     {
-        Assert.Throws<System.FormatException>(() => GESrtpAddress.Parse(invalid));
+        Assert.Throws<FormatException>(() => GESrtpAddress.Parse(invalid));
     }
 }
