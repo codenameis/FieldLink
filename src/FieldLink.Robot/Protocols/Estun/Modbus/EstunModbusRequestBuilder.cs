@@ -24,6 +24,9 @@ public static class EstunModbusRequestBuilder
     private const int WriteMultipleDataOffset = 13;
     private const int ProjectNameByteLength = 20;
     private const int BytesPerRegister = 2;
+    private const char MaximumAsciiCharacter = '\x7F';
+
+    private static readonly char[] DisallowedControlCharacters = { '\r', '\n', '\0' };
 
     /// <summary>Holding Register 읽기(<c>FC 0x03</c>) Modbus TCP 프레임을 생성합니다.</summary>
     public static byte[] BuildReadHoldingRegisters(
@@ -104,10 +107,29 @@ public static class EstunModbusRequestBuilder
             throw new ArgumentException("프로젝트 이름은 비어 있을 수 없습니다.", nameof(projectName));
         }
 
+        if (projectName.IndexOfAny(DisallowedControlCharacters) >= 0)
+        {
+            throw new ArgumentException("프로젝트 이름에 개행 또는 널 문자를 포함할 수 없습니다.", nameof(projectName));
+        }
+
+        for (int i = 0; i < projectName.Length; i++)
+        {
+            if (projectName[i] > MaximumAsciiCharacter)
+            {
+                throw new ArgumentException("프로젝트 이름은 7비트 ASCII 문자만 사용할 수 있습니다.", nameof(projectName));
+            }
+        }
+
+        if (projectName.Length > ProjectNameByteLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(projectName),
+                projectName.Length,
+                $"Estun 프로젝트 이름은 최대 {ProjectNameByteLength}바이트 ASCII여야 합니다.");
+        }
+
         byte[] raw = new byte[ProjectNameByteLength];
-        byte[] ascii = Encoding.ASCII.GetBytes(projectName);
-        int copyLength = Math.Min(ascii.Length, ProjectNameByteLength);
-        Array.Copy(ascii, 0, raw, 0, copyLength);
+        Encoding.ASCII.GetBytes(projectName, 0, projectName.Length, raw, 0);
 
         return swapWords ? RobotBinaryBuffer.ReverseByWord(raw, 0, raw.Length) : raw;
     }

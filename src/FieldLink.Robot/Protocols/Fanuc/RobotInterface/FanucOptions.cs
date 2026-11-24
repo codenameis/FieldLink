@@ -7,8 +7,10 @@ namespace FieldLink.Robot.Protocols.Fanuc.RobotInterface;
 public sealed class FanucOptions
 {
     private const int DefaultClientId = 1024;
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan DefaultSnapshotCacheDuration = TimeSpan.FromMilliseconds(100);
+    private const int DefaultTimeoutSeconds = 5;
+    private const int DefaultSnapshotCacheDurationMilliseconds = 100;
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
+    private static readonly TimeSpan DefaultSnapshotCacheDuration = TimeSpan.FromMilliseconds(DefaultSnapshotCacheDurationMilliseconds);
 
     private readonly TimeSpan _timeout = DefaultTimeout;
     private readonly TimeSpan _snapshotCacheDuration = DefaultSnapshotCacheDuration;

@@ -1,9 +1,12 @@
+using System;
+using System.Collections.Generic;
+
 namespace FieldLink.Robot.Protocols.Fanuc.RobotInterface;
 
 /// <summary>FANUC Stage 3 SNPX 메모리 매핑에 등록하는 60개 명령 문자열 테이블입니다. (사양서 04 §2.3)</summary>
 internal static class FanucSnpxAssignments
 {
-    public static readonly string[] Commands =
+    public static readonly IReadOnlyList<string> Commands = Array.AsReadOnly(new[]
     {
         "CLRASG",
         "SETASG 1 500 ALM[E1] 1",
@@ -65,5 +68,5 @@ internal static class FanucSnpxAssignments
         "SETASG 6155 2 $TIMER[8].$TIMER_VAL 1",
         "SETASG 6157 2 $TIMER[9].$TIMER_VAL 1",
         "SETASG 6159 2 $TIMER[10].$TIMER_VAL 1",
-    };
+    });
 }

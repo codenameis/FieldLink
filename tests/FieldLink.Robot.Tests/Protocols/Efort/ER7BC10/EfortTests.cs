@@ -122,6 +122,37 @@ public sealed class EfortTests
         Assert.Equal(RobotErrorKind.Unsupported, writeResult.Error.Kind);
     }
 
+    [Fact]
+    public async Task Client_WhenSnapshotContainsNaN_ReadStringReturnsParseErrorAndToJsonIncludesAllFields()
+    {
+        byte[] validFrame = BuildMockSnapshotFrame(EfortProtocolVersion.V2Aligned);
+        EfortRobotSnapshot fullSnapshot = EfortResponseParser.ParseSnapshot(validFrame, EfortProtocolVersion.V2Aligned);
+        string fullJson = fullSnapshot.ToJson();
+        Assert.Contains("\"PacketStart\":", fullJson, StringComparison.Ordinal);
+        Assert.Contains("\"DigitalOutputs\":", fullJson, StringComparison.Ordinal);
+        Assert.Contains("\"AxisPositions\":", fullJson, StringComparison.Ordinal);
+        Assert.Contains("\"CartesianPositions\":", fullJson, StringComparison.Ordinal);
+        Assert.Contains("\"PacketEnd\":", fullJson, StringComparison.Ordinal);
+
+        Assert.NotSame(
+            EfortOptions.CreateLayout(EfortProtocolVersion.V2Aligned),
+            EfortOptions.CreateLayout(EfortProtocolVersion.V2Aligned));
+
+        byte[] nanFrame = (byte[])validFrame.Clone();
+        // V2Aligned postPaddingShift=100, DbAxisPos offset=448 -> byte 548
+        RobotBinaryBuffer.WriteSingleLittleEndian(nanFrame, 100 + 448, float.NaN);
+
+        var transport = new FakeTransport();
+        transport.EnqueueIncoming(nanFrame);
+
+        using var client = new EfortClient(transport, new EfortOptions { Version = EfortProtocolVersion.V2Aligned });
+        await client.OpenAsync();
+
+        RobotResult<string> jsonResult = await client.ReadStringAsync(string.Empty);
+        Assert.False(jsonResult.IsSuccess);
+        Assert.Equal(RobotErrorKind.ParseError, jsonResult.Error.Kind);
+    }
+
     private static byte[] BuildMockSnapshotFrame(EfortProtocolVersion version)
     {
         bool isV2 = version == EfortProtocolVersion.V2Aligned;

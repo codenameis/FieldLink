@@ -114,6 +114,16 @@ internal static class RobotJsonWriter
         builder.Append(']');
     }
 
+    public static void AppendSingle(StringBuilder builder, float value)
+    {
+        if (float.IsNaN(value) || float.IsInfinity(value))
+        {
+            throw new RobotException(RobotErrorKind.ParseError, $"JSON으로 직렬화할 수 없는 단정밀도 실수 값입니다: {value}");
+        }
+
+        builder.Append(value.ToString("R", CultureInfo.InvariantCulture));
+    }
+
     public static void AppendSingleArray(StringBuilder builder, IReadOnlyList<float> values)
     {
         builder.Append('[');
@@ -124,13 +134,7 @@ internal static class RobotJsonWriter
                 builder.Append(',');
             }
 
-            float value = values[i];
-            if (float.IsNaN(value) || float.IsInfinity(value))
-            {
-                throw new RobotException(RobotErrorKind.ParseError, $"JSON으로 직렬화할 수 없는 단정밀도 실수 값입니다: {value}");
-            }
-
-            builder.Append(value.ToString("R", CultureInfo.InvariantCulture));
+            AppendSingle(builder, values[i]);
         }
 
         builder.Append(']');

@@ -40,6 +40,14 @@ public static class HyundaiPacketBuilder
             throw new ArgumentException($"트래킹 데이터 배열 길이는 {AxisCount}이어야 합니다.", nameof(packet));
         }
 
+        for (int i = 0; i < AxisCount; i++)
+        {
+            if (double.IsNaN(packet.Data[i]) || double.IsInfinity(packet.Data[i]))
+            {
+                throw new ArgumentOutOfRangeException(nameof(packet), packet.Data[i], $"축 인덱스 {i}의 트래킹 값이 유한한 숫자가 아닙니다.");
+            }
+        }
+
         byte[] frame = new byte[PacketLength];
         frame[0] = (byte)packet.Command;
 

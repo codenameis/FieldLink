@@ -1,8 +1,11 @@
 using System;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using FieldLink.Robot.Protocols.Yaskawa.YrcEthernet;
 using FieldLink.Robot.Tests.Fakes;
+using FieldLink.Transport;
+using FieldLink.Transport.Framing;
 using Xunit;
 
 namespace FieldLink.Robot.Tests.Protocols.Yaskawa.YrcEthernet;
@@ -101,5 +104,92 @@ public sealed class YrcEthernetTests
 
         Assert.Throws<ArgumentOutOfRangeException>(() => YrcEthernetRequestBuilder.ValidateDisplayMessage(new string('A', 31), Encoding.ASCII));
         Assert.Throws<ArgumentOutOfRangeException>(() => YrcEthernetRequestBuilder.BuildIoReadData(1, 5));
+        Assert.Throws<ArgumentException>(() => YrcEthernetRequestBuilder.BuildPhase1Header("RALARM\r\n", null, Encoding.ASCII));
+        Assert.Throws<ArgumentException>(() => YrcEthernetRequestBuilder.BuildPhase2Payload(new byte[] { 0x41, 0x0D }));
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YrcRobotPose { X = double.NaN });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YrcRobotPose { ToolNumber = 64 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YrcRobotPose { Frame = 66 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YrcRobotPose { SpeedPercent = 0.0 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new YrcRobotPose { SpeedPercent = 100.1 });
+    }
+
+    [Fact]
+    public async Task Client_NonPersistentFaultClosesTransportKeepsIsOpenAndValidatesDrainAndRanges()
+    {
+        var nonPersistentTransport = new FakeTransport();
+        nonPersistentTransport.EnqueueIncomingAscii("OK:YR Server ShortSession.\r\n");
+        nonPersistentTransport.EnqueueIncomingAscii("BAD_ACK\r\n");
+
+        using var shortClient = new YrcEthernetClient(nonPersistentTransport);
+        await shortClient.OpenAsync();
+        RobotResult<string> failedCmd = await shortClient.ReadAlarmAsync();
+        Assert.False(failedCmd.IsSuccess);
+        Assert.Equal(RobotErrorKind.DeviceError, failedCmd.Error.Kind);
+        Assert.False(shortClient.IsPersistentConnection);
+        Assert.Equal(1, nonPersistentTransport.CloseCount);
+        Assert.True(shortClient.IsOpen);
+        await shortClient.CloseAsync();
+        Assert.False(shortClient.IsOpen);
+
+        var badDrainTransport = new FakeTransport();
+        badDrainTransport.EnqueueIncomingAscii("OK:YR Information Server(Ver) Keep-Alive:-1.\r\n");
+        badDrainTransport.EnqueueIncomingAscii("OK: HOLD\r\n");
+        badDrainTransport.EnqueueIncomingAscii("0000\rX");
+
+        using var badDrainClient = new YrcEthernetClient(badDrainTransport);
+        await badDrainClient.OpenAsync();
+        RobotResult badDrain = await badDrainClient.HoldAsync(true);
+        Assert.False(badDrain.IsSuccess);
+        Assert.Equal(RobotErrorKind.InvalidResponse, badDrain.Error.Kind);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => badDrainClient.ReadCartesianPositionAsync(coordinateSystem: 66));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => badDrainClient.ReadUserFrameAsync(frameNumber: 0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => badDrainClient.SetModeAsync(3));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => badDrainClient.SetCycleAsync(4));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => badDrainClient.SelectJobAsync("MAIN", -1));
+        await Assert.ThrowsAsync<ArgumentException>(() => badDrainClient.SelectJobAsync("MAIN,1", 1));
+
+        var openBlocked = new SlowOpenTransport();
+        var racingClient = new YrcEthernetClient(openBlocked);
+        Task<RobotResult> openTask = racingClient.OpenAsync();
+        await openBlocked.OpenEntered.Task;
+        racingClient.Dispose();
+        openBlocked.ReleaseOpen.TrySetResult(true);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => openTask);
+    }
+
+    private sealed class SlowOpenTransport : ITransport
+    {
+        public TaskCompletionSource<bool> OpenEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<bool> ReleaseOpen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TransportState State { get; private set; } = TransportState.Closed;
+
+        public async Task OpenAsync(CancellationToken cancellationToken = default)
+        {
+            OpenEntered.TrySetResult(true);
+            await ReleaseOpen.Task.ConfigureAwait(false);
+            State = TransportState.Open;
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            State = TransportState.Closed;
+            return Task.CompletedTask;
+        }
+
+        public Task<TResult> RunExclusiveAsync<TResult>(Func<ITransportSession, Task<TResult>> action, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<TResult> RunExclusiveAsync<TResult>(Func<ITransportSession, IFrameDecoder?, Task<TResult>> action, IFrameDecoder? decoder, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public void Dispose()
+        {
+            State = TransportState.Disposed;
+            ReleaseOpen.TrySetResult(true);
+        }
     }
 }

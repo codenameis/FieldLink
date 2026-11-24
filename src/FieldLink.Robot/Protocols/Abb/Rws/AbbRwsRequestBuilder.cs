@@ -74,12 +74,17 @@ public static class AbbRwsRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (address.IsRawUrl)
+        if (address.RawUrl is string rawUrl)
         {
-            return BuildRawGetRequest(address.RawUrl!);
+            return BuildRawGetRequest(rawUrl);
         }
 
-        string path = address.Shortcut!.Value switch
+        if (address.Shortcut is not AbbRwsShortcutKind shortcut)
+        {
+            throw new ArgumentOutOfRangeException(nameof(address));
+        }
+
+        string path = shortcut switch
         {
             AbbRwsShortcutKind.CtrlState => CtrlStatePath,
             AbbRwsShortcutKind.ErrorState => ErrorStatePath,

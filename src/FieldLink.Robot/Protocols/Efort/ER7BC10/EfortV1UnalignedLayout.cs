@@ -3,12 +3,6 @@ namespace FieldLink.Robot.Protocols.Efort.ER7BC10;
 /// <summary>EFORT v1(구버전 비정렬) 패킷 레이아웃 전략입니다.</summary>
 internal sealed class EfortV1UnalignedLayout : IEfortPacketLayout
 {
-    public static readonly EfortV1UnalignedLayout Instance = new();
-
-    private EfortV1UnalignedLayout()
-    {
-    }
-
     public int HeaderLength => 17;
 
     public int LengthFieldOffset => 15;

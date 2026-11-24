@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FieldLink.Robot.Abstractions;
 using FieldLink.Robot.Conversion;
+using FieldLink.Robot.Protocols.Shared;
 using FieldLink.Transport;
 
 namespace FieldLink.Robot.Protocols.Efort.ER7BC10;
@@ -14,12 +15,12 @@ public sealed class EfortClient : IRobotClient
     private readonly ITransport _transport;
     private readonly EfortOptions _options;
     private readonly EfortFrameDecoder _frameDecoder;
+    private readonly ProtocolLifecycleGate _lifecycleGate = new();
     private readonly object _sequenceLock = new();
 
     private ushort _sequence;
     private long _lastConnectionId = -1;
-    private bool _isOpen;
-    private bool _isDisposed;
+    private int _isOpen;
 
     /// <summary>전송 구현체와 옵션으로 EFORT 클라이언트를 초기화합니다.</summary>
     /// <param name="transport">TCP 전송 구현체입니다.</param>
@@ -32,7 +33,7 @@ public sealed class EfortClient : IRobotClient
     }
 
     /// <inheritdoc />
-    public bool IsOpen => !_isDisposed && _isOpen && _transport.State == TransportState.Open;
+    public bool IsOpen => !_lifecycleGate.IsDisposed && Volatile.Read(ref _isOpen) != 0 && _transport.State == TransportState.Open;
 
     /// <inheritdoc />
     public Task<RobotResult> OpenAsync(CancellationToken cancellationToken = default)
@@ -46,8 +47,32 @@ public sealed class EfortClient : IRobotClient
         return RobotErrorMapper.ExecuteAsync(
             async token =>
             {
-                await _transport.OpenAsync(token).ConfigureAwait(false);
-                _isOpen = true;
+                if (!await _lifecycleGate.TryEnterAsync(token).ConfigureAwait(false))
+                {
+                    throw new ObjectDisposedException(nameof(EfortClient));
+                }
+
+                try
+                {
+                    ThrowIfDisposed();
+                    if (IsOpen)
+                    {
+                        throw new InvalidOperationException("EFORT 클라이언트가 이미 열려 있습니다.");
+                    }
+
+                    await _transport.OpenAsync(token).ConfigureAwait(false);
+                    if (_lifecycleGate.IsDisposed)
+                    {
+                        await CloseTransportBestEffortAsync().ConfigureAwait(false);
+                        throw new ObjectDisposedException(nameof(EfortClient));
+                    }
+
+                    Volatile.Write(ref _isOpen, 1);
+                }
+                finally
+                {
+                    _lifecycleGate.Exit();
+                }
             },
             _options.Timeout,
             cancellationToken);
@@ -56,7 +81,7 @@ public sealed class EfortClient : IRobotClient
     /// <inheritdoc />
     public Task<RobotResult> CloseAsync(CancellationToken cancellationToken = default)
     {
-        if (!_isOpen)
+        if (Volatile.Read(ref _isOpen) == 0 || _lifecycleGate.IsDisposed)
         {
             return Task.FromResult(RobotResult.Success());
         }
@@ -64,8 +89,25 @@ public sealed class EfortClient : IRobotClient
         return RobotErrorMapper.ExecuteAsync(
             async token =>
             {
-                _isOpen = false;
-                await _transport.CloseAsync(token).ConfigureAwait(false);
+                if (!await _lifecycleGate.TryEnterAsync(token).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                try
+                {
+                    if (Volatile.Read(ref _isOpen) == 0)
+                    {
+                        return;
+                    }
+
+                    Volatile.Write(ref _isOpen, 0);
+                    await _transport.CloseAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _lifecycleGate.Exit();
+                }
             },
             _options.Timeout,
             cancellationToken);
@@ -104,17 +146,25 @@ public sealed class EfortClient : IRobotClient
     }
 
     /// <inheritdoc />
-    public async Task<RobotResult<string>> ReadStringAsync(string address, CancellationToken cancellationToken = default)
+    public Task<RobotResult<string>> ReadStringAsync(string address, CancellationToken cancellationToken = default)
     {
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
         }
 
-        RobotResult<EfortRobotSnapshot> snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
-        return snapshot.IsSuccess
-            ? RobotResult.Success(snapshot.Value.ToJson())
-            : RobotResult.Failure<string>(snapshot.Error);
+        ThrowIfDisposed();
+        EnsureOpen();
+
+        return RobotErrorMapper.ExecuteAsync(
+            async token =>
+            {
+                byte[] frame = await ExchangeRawFrameAsync(token).ConfigureAwait(false);
+                EfortRobotSnapshot snapshot = EfortResponseParser.ParseSnapshot(frame, _options.Version);
+                return snapshot.ToJson();
+            },
+            _options.Timeout,
+            cancellationToken);
     }
 
     /// <inheritdoc />
@@ -150,13 +200,13 @@ public sealed class EfortClient : IRobotClient
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_isDisposed)
+        if (_lifecycleGate.IsDisposed)
         {
             return;
         }
 
-        _isDisposed = true;
-        _isOpen = false;
+        Volatile.Write(ref _isOpen, 0);
+        _lifecycleGate.Dispose();
         _transport.Dispose();
     }
 
@@ -187,6 +237,18 @@ public sealed class EfortClient : IRobotClient
         }
     }
 
+    private async Task CloseTransportBestEffortAsync()
+    {
+        try
+        {
+            await _transport.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Dispose와 OpenAsync가 겹칠 때 이미 해제된 전송 계층의 닫기 실패는 무시한다.
+        }
+    }
+
     private void EnsureOpen()
     {
         if (!IsOpen)
@@ -197,7 +259,7 @@ public sealed class EfortClient : IRobotClient
 
     private void ThrowIfDisposed()
     {
-        if (_isDisposed)
+        if (_lifecycleGate.IsDisposed)
         {
             throw new ObjectDisposedException(nameof(EfortClient));
         }

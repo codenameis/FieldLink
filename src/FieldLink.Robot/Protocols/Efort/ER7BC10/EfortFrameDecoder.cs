@@ -18,9 +18,7 @@ public sealed class EfortFrameDecoder : IFrameDecoder
     /// <param name="maximumFrameLength">허용할 최대 프레임 바이트 수입니다.</param>
     public EfortFrameDecoder(EfortProtocolVersion version = EfortProtocolVersion.V2Aligned, int maximumFrameLength = DefaultMaximumFrameLength)
     {
-        _layout = version == EfortProtocolVersion.V2Aligned
-            ? EfortV2AlignedLayout.Instance
-            : EfortV1UnalignedLayout.Instance;
+        _layout = EfortOptions.CreateLayout(version);
 
         if (maximumFrameLength < _layout.HeaderLength)
         {
@@ -33,13 +31,13 @@ public sealed class EfortFrameDecoder : IFrameDecoder
     /// <inheritdoc />
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
-        if (received.Count < _layout.HeaderLength)
+        if (received.Count < _layout.HeaderLength || received.Array is not byte[] buffer)
         {
             frameLength = 0;
             return false;
         }
 
-        short declaredLength = RobotBinaryBuffer.ReadInt16LittleEndian(received.Array!, received.Offset + _layout.LengthFieldOffset);
+        short declaredLength = RobotBinaryBuffer.ReadInt16LittleEndian(buffer, received.Offset + _layout.LengthFieldOffset);
         // 사양서 02 §3, §7: 전체 길이가 헤더보다 작으면 본문 길이 0으로 처리해 후속 최소 길이 검사에서 실패시킴
         int expectedLength = declaredLength < _layout.HeaderLength ? _layout.HeaderLength : declaredLength;
 

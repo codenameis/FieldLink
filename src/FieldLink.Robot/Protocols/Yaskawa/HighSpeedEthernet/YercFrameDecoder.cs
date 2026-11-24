@@ -9,6 +9,7 @@ namespace FieldLink.Robot.Protocols.Yaskawa.HighSpeedEthernet;
 public sealed class YercFrameDecoder : IFrameDecoder
 {
     private const int HeaderLength = 32;
+    private const int HeaderSizeOffset = 4;
     private const int PayloadLengthOffset = 6;
     private const int DefaultMaximumFrameLength = 65536;
     private const byte MagicByte0 = (byte)'Y';
@@ -32,17 +33,24 @@ public sealed class YercFrameDecoder : IFrameDecoder
     /// <inheritdoc />
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
-        if (received.Count < HeaderLength)
+        if (received.Count < HeaderLength || received.Array is not byte[] array)
         {
             frameLength = 0;
             return false;
         }
 
-        byte[] array = received.Array!;
         int offset = received.Offset;
         if (array[offset] != MagicByte0 || array[offset + 1] != MagicByte1 || array[offset + 2] != MagicByte2 || array[offset + 3] != MagicByte3)
         {
             throw new TransportException(TransportFailure.InvalidFrame, "YERC 매직 헤더가 일치하지 않습니다.");
+        }
+
+        ushort headerSize = RobotBinaryBuffer.ReadUInt16LittleEndian(array, offset + HeaderSizeOffset);
+        if (headerSize != HeaderLength)
+        {
+            throw new TransportException(
+                TransportFailure.InvalidFrame,
+                $"YERC 헤더 크기({headerSize} 바이트)가 규격({HeaderLength} 바이트)과 일치하지 않습니다.");
         }
 
         ushort payloadLength = RobotBinaryBuffer.ReadUInt16LittleEndian(array, offset + PayloadLengthOffset);

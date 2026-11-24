@@ -55,4 +55,28 @@ public sealed class KukaSocketAsciiTests
         Assert.Equal(RobotErrorKind.DeviceError, lowerErr.Error.Kind);
         Assert.Contains("err: invalid var", lowerErr.Error.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task RequestBuilderAndClient_AllowCommasInWriteValuesWhileRejectingDelimiterInjection()
+    {
+        var transport = new FakeTransport();
+        transport.EnqueueIncomingAscii("OK");
+
+        using var client = new KukaSocketAsciiClient(transport);
+        await client.OpenAsync();
+
+        const string KrlStruct = "{E6POS: X 100.0, Y 200.0, Z 300.0}";
+        RobotResult writeStruct = await client.WriteVariablesAsync(new[] { "MY_POS" }, new[] { KrlStruct });
+        Assert.True(writeStruct.IsSuccess);
+        Assert.Equal(
+            System.Text.Encoding.ASCII.GetBytes($"01MY_POS={KrlStruct}"),
+            transport.SentFrames[0]);
+
+        Assert.Throws<ArgumentException>(() => KukaSocketAsciiRequestBuilder.BuildWriteRequest(new[] { "A,B" }, new[] { "1" }));
+        Assert.Throws<ArgumentException>(() => KukaSocketAsciiRequestBuilder.BuildWriteRequest(new[] { "A=B" }, new[] { "1" }));
+        Assert.Throws<ArgumentException>(() => KukaSocketAsciiRequestBuilder.BuildWriteRequest(new[] { "A\r\n" }, new[] { "1" }));
+        Assert.Throws<ArgumentException>(() => KukaSocketAsciiRequestBuilder.BuildWriteRequest(new[] { "A" }, new[] { "1\n2" }));
+        Assert.Throws<ArgumentException>(() => KukaSocketAsciiRequestBuilder.BuildReadRequest(new[] { "A\nB" }));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.StartProgramAsync("MAIN\r\n"));
+    }
 }

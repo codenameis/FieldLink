@@ -6,6 +6,10 @@ namespace FieldLink.Robot.Conversion;
 /// <summary>로봇 프로토콜 패킷 직렬화 및 역직렬화를 위한 바이트 오더·문자열 변환기입니다.</summary>
 internal static class RobotBinaryBuffer
 {
+    private const int BytesPerWord = 2;
+    private const int SingleByteCount = 4;
+    private const int DoubleByteCount = 8;
+
     public static ushort ReadUInt16LittleEndian(byte[] buffer, int offset) =>
         (ushort)(buffer[offset] | (buffer[offset + 1] << 8));
 
@@ -124,7 +128,7 @@ internal static class RobotBinaryBuffer
         byte[] bytes = BitConverter.GetBytes(value);
         if (BitConverter.IsLittleEndian)
         {
-            Array.Copy(bytes, 0, buffer, offset, 4);
+            Array.Copy(bytes, 0, buffer, offset, SingleByteCount);
             return;
         }
 
@@ -139,25 +143,35 @@ internal static class RobotBinaryBuffer
         byte[] bytes = BitConverter.GetBytes(value);
         if (BitConverter.IsLittleEndian)
         {
-            Array.Copy(bytes, 0, buffer, offset, 8);
+            Array.Copy(bytes, 0, buffer, offset, DoubleByteCount);
             return;
         }
 
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < DoubleByteCount; i++)
         {
-            buffer[offset + i] = bytes[7 - i];
+            buffer[offset + i] = bytes[DoubleByteCount - 1 - i];
         }
     }
 
     public static byte[] ReverseByWord(byte[] source, int offset, int length)
     {
-        if (length < 0 || length % 2 != 0)
+        if (source is null)
+        {
+            throw new ArgumentNullException(nameof(source));
+        }
+
+        if (length < 0 || length % BytesPerWord != 0)
         {
             throw new ArgumentOutOfRangeException(nameof(length), length, "워드 반전 길이는 0 이상의 짝수여야 합니다.");
         }
 
+        if (offset < 0 || length > source.Length - offset)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset), offset, "워드 반전 범위가 원본 버퍼를 초과했습니다.");
+        }
+
         byte[] reversed = new byte[length];
-        for (int i = 0; i < length; i += 2)
+        for (int i = 0; i < length; i += BytesPerWord)
         {
             reversed[i] = source[offset + i + 1];
             reversed[i + 1] = source[offset + i];

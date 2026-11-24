@@ -28,13 +28,13 @@ public sealed class FanucFrameDecoder : IFrameDecoder
     /// <inheritdoc />
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
-        if (received.Count < HeaderLength)
+        if (received.Count < HeaderLength || received.Array is not byte[] buffer)
         {
             frameLength = 0;
             return false;
         }
 
-        ushort payloadLength = RobotBinaryBuffer.ReadUInt16LittleEndian(received.Array!, received.Offset + PayloadLengthOffset);
+        ushort payloadLength = RobotBinaryBuffer.ReadUInt16LittleEndian(buffer, received.Offset + PayloadLengthOffset);
         int totalLength = HeaderLength + payloadLength;
         if (totalLength > _maximumFrameLength)
         {

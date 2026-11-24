@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FieldLink.Robot.Abstractions;
 using FieldLink.Robot.Conversion;
+using FieldLink.Robot.Protocols.Shared;
 using FieldLink.Transport;
 using FieldLink.Transport.Framing;
 
@@ -15,9 +16,9 @@ public sealed class KukaSocketAsciiClient : IRobotClient
     private readonly ITransport _transport;
     private readonly KukaSocketAsciiOptions _options;
     private readonly AvailableBytesFrameDecoder _frameDecoder;
+    private readonly ProtocolLifecycleGate _lifecycleGate = new();
 
-    private bool _isOpen;
-    private bool _isDisposed;
+    private int _isOpen;
 
     /// <summary>전송 구현체와 옵션으로 KUKA Socket ASCII 클라이언트를 초기화합니다.</summary>
     public KukaSocketAsciiClient(ITransport transport, KukaSocketAsciiOptions? options = null)
@@ -28,7 +29,7 @@ public sealed class KukaSocketAsciiClient : IRobotClient
     }
 
     /// <inheritdoc />
-    public bool IsOpen => !_isDisposed && _isOpen && _transport.State == TransportState.Open;
+    public bool IsOpen => !_lifecycleGate.IsDisposed && Volatile.Read(ref _isOpen) != 0 && _transport.State == TransportState.Open;
 
     /// <inheritdoc />
     public Task<RobotResult> OpenAsync(CancellationToken cancellationToken = default)
@@ -42,8 +43,32 @@ public sealed class KukaSocketAsciiClient : IRobotClient
         return RobotErrorMapper.ExecuteAsync(
             async token =>
             {
-                await _transport.OpenAsync(token).ConfigureAwait(false);
-                _isOpen = true;
+                if (!await _lifecycleGate.TryEnterAsync(token).ConfigureAwait(false))
+                {
+                    throw new ObjectDisposedException(nameof(KukaSocketAsciiClient));
+                }
+
+                try
+                {
+                    ThrowIfDisposed();
+                    if (IsOpen)
+                    {
+                        throw new InvalidOperationException("KUKA Socket ASCII 클라이언트가 이미 열려 있습니다.");
+                    }
+
+                    await _transport.OpenAsync(token).ConfigureAwait(false);
+                    if (_lifecycleGate.IsDisposed)
+                    {
+                        await CloseTransportBestEffortAsync().ConfigureAwait(false);
+                        throw new ObjectDisposedException(nameof(KukaSocketAsciiClient));
+                    }
+
+                    Volatile.Write(ref _isOpen, 1);
+                }
+                finally
+                {
+                    _lifecycleGate.Exit();
+                }
             },
             _options.Timeout,
             cancellationToken);
@@ -52,7 +77,7 @@ public sealed class KukaSocketAsciiClient : IRobotClient
     /// <inheritdoc />
     public Task<RobotResult> CloseAsync(CancellationToken cancellationToken = default)
     {
-        if (!_isOpen)
+        if (Volatile.Read(ref _isOpen) == 0 || _lifecycleGate.IsDisposed)
         {
             return Task.FromResult(RobotResult.Success());
         }
@@ -60,8 +85,25 @@ public sealed class KukaSocketAsciiClient : IRobotClient
         return RobotErrorMapper.ExecuteAsync(
             async token =>
             {
-                _isOpen = false;
-                await _transport.CloseAsync(token).ConfigureAwait(false);
+                if (!await _lifecycleGate.TryEnterAsync(token).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                try
+                {
+                    if (Volatile.Read(ref _isOpen) == 0)
+                    {
+                        return;
+                    }
+
+                    Volatile.Write(ref _isOpen, 0);
+                    await _transport.CloseAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _lifecycleGate.Exit();
+                }
             },
             _options.Timeout,
             cancellationToken);
@@ -173,13 +215,13 @@ public sealed class KukaSocketAsciiClient : IRobotClient
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_isDisposed)
+        if (_lifecycleGate.IsDisposed)
         {
             return;
         }
 
-        _isDisposed = true;
-        _isOpen = false;
+        Volatile.Write(ref _isOpen, 0);
+        _lifecycleGate.Dispose();
         _transport.Dispose();
     }
 
@@ -207,6 +249,18 @@ public sealed class KukaSocketAsciiClient : IRobotClient
             },
             cancellationToken);
 
+    private async Task CloseTransportBestEffortAsync()
+    {
+        try
+        {
+            await _transport.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Dispose와 OpenAsync가 겹칠 때 이미 해제된 전송 계층의 닫기 실패는 무시한다.
+        }
+    }
+
     private void EnsureOpen()
     {
         if (!IsOpen)
@@ -217,7 +271,7 @@ public sealed class KukaSocketAsciiClient : IRobotClient
 
     private void ThrowIfDisposed()
     {
-        if (_isDisposed)
+        if (_lifecycleGate.IsDisposed)
         {
             throw new ObjectDisposedException(nameof(KukaSocketAsciiClient));
         }

@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FieldLink.Robot.Abstractions;
 using FieldLink.Robot.Conversion;
+using FieldLink.Robot.Protocols.Shared;
 using FieldLink.Transport;
 
 namespace FieldLink.Robot.Protocols.Kuka.VarProxy;
@@ -13,12 +14,12 @@ public sealed class KukaVarProxyClient : IRobotClient
     private readonly ITransport _transport;
     private readonly KukaVarProxyOptions _options;
     private readonly KukaVarProxyFrameDecoder _frameDecoder = new();
+    private readonly ProtocolLifecycleGate _lifecycleGate = new();
     private readonly object _messageIdLock = new();
 
     private ushort _messageId;
     private long _lastConnectionId = -1;
-    private bool _isOpen;
-    private bool _isDisposed;
+    private int _isOpen;
 
     /// <summary>전송 구현체와 옵션으로 KUKAVARPROXY 클라이언트를 초기화합니다.</summary>
     public KukaVarProxyClient(ITransport transport, KukaVarProxyOptions? options = null)
@@ -28,7 +29,7 @@ public sealed class KukaVarProxyClient : IRobotClient
     }
 
     /// <inheritdoc />
-    public bool IsOpen => !_isDisposed && _isOpen && _transport.State == TransportState.Open;
+    public bool IsOpen => !_lifecycleGate.IsDisposed && Volatile.Read(ref _isOpen) != 0 && _transport.State == TransportState.Open;
 
     /// <inheritdoc />
     public Task<RobotResult> OpenAsync(CancellationToken cancellationToken = default)
@@ -42,8 +43,32 @@ public sealed class KukaVarProxyClient : IRobotClient
         return RobotErrorMapper.ExecuteAsync(
             async token =>
             {
-                await _transport.OpenAsync(token).ConfigureAwait(false);
-                _isOpen = true;
+                if (!await _lifecycleGate.TryEnterAsync(token).ConfigureAwait(false))
+                {
+                    throw new ObjectDisposedException(nameof(KukaVarProxyClient));
+                }
+
+                try
+                {
+                    ThrowIfDisposed();
+                    if (IsOpen)
+                    {
+                        throw new InvalidOperationException("KUKAVARPROXY 클라이언트가 이미 열려 있습니다.");
+                    }
+
+                    await _transport.OpenAsync(token).ConfigureAwait(false);
+                    if (_lifecycleGate.IsDisposed)
+                    {
+                        await CloseTransportBestEffortAsync().ConfigureAwait(false);
+                        throw new ObjectDisposedException(nameof(KukaVarProxyClient));
+                    }
+
+                    Volatile.Write(ref _isOpen, 1);
+                }
+                finally
+                {
+                    _lifecycleGate.Exit();
+                }
             },
             _options.Timeout,
             cancellationToken);
@@ -52,7 +77,7 @@ public sealed class KukaVarProxyClient : IRobotClient
     /// <inheritdoc />
     public Task<RobotResult> CloseAsync(CancellationToken cancellationToken = default)
     {
-        if (!_isOpen)
+        if (Volatile.Read(ref _isOpen) == 0 || _lifecycleGate.IsDisposed)
         {
             return Task.FromResult(RobotResult.Success());
         }
@@ -60,8 +85,25 @@ public sealed class KukaVarProxyClient : IRobotClient
         return RobotErrorMapper.ExecuteAsync(
             async token =>
             {
-                _isOpen = false;
-                await _transport.CloseAsync(token).ConfigureAwait(false);
+                if (!await _lifecycleGate.TryEnterAsync(token).ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                try
+                {
+                    if (Volatile.Read(ref _isOpen) == 0)
+                    {
+                        return;
+                    }
+
+                    Volatile.Write(ref _isOpen, 0);
+                    await _transport.CloseAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _lifecycleGate.Exit();
+                }
             },
             _options.Timeout,
             cancellationToken);
@@ -70,10 +112,7 @@ public sealed class KukaVarProxyClient : IRobotClient
     /// <summary>지정 KRL 변수의 원시 바이트 값을 읽습니다.</summary>
     public Task<RobotResult<byte[]>> ReadVariableRawAsync(string variableName, CancellationToken cancellationToken = default)
     {
-        if (variableName is null)
-        {
-            throw new ArgumentNullException(nameof(variableName));
-        }
+        _ = KukaVarProxyRequestBuilder.BuildReadRequest(0, variableName, _options.Encoding);
 
         ThrowIfDisposed();
         EnsureOpen();
@@ -108,15 +147,7 @@ public sealed class KukaVarProxyClient : IRobotClient
         string value,
         CancellationToken cancellationToken = default)
     {
-        if (variableName is null)
-        {
-            throw new ArgumentNullException(nameof(variableName));
-        }
-
-        if (value is null)
-        {
-            throw new ArgumentNullException(nameof(value));
-        }
+        _ = KukaVarProxyRequestBuilder.BuildWriteRequest(0, variableName, value, _options.Encoding);
 
         ThrowIfDisposed();
         EnsureOpen();
@@ -166,13 +197,13 @@ public sealed class KukaVarProxyClient : IRobotClient
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_isDisposed)
+        if (_lifecycleGate.IsDisposed)
         {
             return;
         }
 
-        _isDisposed = true;
-        _isOpen = false;
+        Volatile.Write(ref _isOpen, 0);
+        _lifecycleGate.Dispose();
         _transport.Dispose();
     }
 
@@ -191,6 +222,18 @@ public sealed class KukaVarProxyClient : IRobotClient
         }
     }
 
+    private async Task CloseTransportBestEffortAsync()
+    {
+        try
+        {
+            await _transport.CloseAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Dispose와 OpenAsync가 겹칠 때 이미 해제된 전송 계층의 닫기 실패는 무시한다.
+        }
+    }
+
     private void EnsureOpen()
     {
         if (!IsOpen)
@@ -201,7 +244,7 @@ public sealed class KukaVarProxyClient : IRobotClient
 
     private void ThrowIfDisposed()
     {
-        if (_isDisposed)
+        if (_lifecycleGate.IsDisposed)
         {
             throw new ObjectDisposedException(nameof(KukaVarProxyClient));
         }

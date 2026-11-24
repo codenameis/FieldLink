@@ -1,8 +1,12 @@
 using System;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
+using FieldLink.Robot.Conversion;
 using FieldLink.Robot.Protocols.Hyundai.OnLTrack;
 using FieldLink.Robot.Tests.Fakes;
+using FieldLink.Transport;
+using FieldLink.Transport.Udp;
 using Xunit;
 
 namespace FieldLink.Robot.Tests.Protocols.Hyundai.OnLTrack;
@@ -144,5 +148,80 @@ public sealed class HyundaiOnLTrackTests
         Assert.Equal(1.0, observed.Data[0], 6);
 
         await client.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ValidationBackoffAndDisposeRace_RejectNaNAndPreventSpinLoopOrSemaphoreLeaks()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HyundaiTrackingPacket { Data = new[] { double.NaN, 0, 0, 0, 0, 0 } });
+        Assert.Throws<ArgumentOutOfRangeException>(() => HyundaiPacketBuilder.BuildPacket(new HyundaiTrackingPacket
+        {
+            Command = HyundaiTrackingCommand.Process,
+            Data = new[] { 0, double.PositiveInfinity, 0, 0, 0, 0 }
+        }));
+
+        byte[] nanWire = HyundaiPacketBuilder.BuildPacket(new HyundaiTrackingPacket
+        {
+            Command = HyundaiTrackingCommand.Process,
+            Data = new[] { 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 }
+        });
+        RobotBinaryBuffer.WriteDoubleLittleEndian(nanWire, 16, double.NaN);
+        RobotException parseEx = Assert.Throws<RobotException>(() => HyundaiPacketParser.ParsePacket(nanWire));
+        Assert.Equal(RobotErrorKind.InvalidResponse, parseEx.Kind);
+
+        using var faultingListener = new FaultingUdpListenerTransport();
+        using var backoffClient = new HyundaiOnLTrackClient(faultingListener);
+        await backoffClient.OpenAsync();
+        await Task.Delay(160);
+        await backoffClient.CloseAsync();
+
+        // 50ms 백오프가 작동해 160ms 동안 무제한 100% CPU 스핀이 발생하지 않음을 검증한다.
+        Assert.InRange(faultingListener.ReceiveAttempts, 1, 8);
+
+        var listener = new FakeUdpListenerTransport();
+        var raceClient = new HyundaiOnLTrackClient(listener);
+        await raceClient.OpenAsync();
+        Task closeTask = raceClient.CloseAsync();
+        raceClient.Dispose();
+        await closeTask;
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => raceClient.OpenAsync());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => raceClient.MoveXAsync(1.0));
+    }
+
+    private sealed class FaultingUdpListenerTransport : IUdpListenerTransport
+    {
+        public int ReceiveAttempts;
+
+        public TransportState State { get; private set; } = TransportState.Closed;
+
+        public int BoundPort => 7127;
+
+        public Task OpenAsync(CancellationToken cancellationToken = default)
+        {
+            State = TransportState.Open;
+            return Task.CompletedTask;
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            State = TransportState.Closed;
+            return Task.CompletedTask;
+        }
+
+        public Task<UdpDatagram> ReceiveAsync(CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref ReceiveAttempts);
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromException<UdpDatagram>(new TransportException(TransportFailure.ReceiveFailed, "Simulated UDP fault"));
+        }
+
+        public Task SendToAsync(byte[] payload, IPEndPoint remoteEndPoint, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public void Dispose()
+        {
+            State = TransportState.Disposed;
+        }
     }
 }

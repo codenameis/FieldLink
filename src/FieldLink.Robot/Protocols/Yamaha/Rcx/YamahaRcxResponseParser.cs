@@ -38,7 +38,18 @@ public static class YamahaRcxResponseParser
             throw new ArgumentNullException(nameof(line));
         }
 
-        return line.StartsWith(ErrorPrefix, StringComparison.OrdinalIgnoreCase);
+        if (!line.StartsWith(ErrorPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (line.Length == ErrorPrefix.Length)
+        {
+            return true;
+        }
+
+        char nextCharacter = line[ErrorPrefix.Length];
+        return char.IsWhiteSpace(nextCharacter) || nextCharacter == ':' || char.IsDigit(nextCharacter);
     }
 
     /// <summary>완료 확인 라인이 <c>OK</c>로 시작하는지 검증합니다.</summary>

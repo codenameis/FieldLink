@@ -105,11 +105,13 @@ public sealed class EfortRobotSnapshot
     /// <summary>패킷 종료 문자열입니다.</summary>
     public string PacketEnd { get; init; } = string.Empty;
 
-    /// <summary>스냅샷의 주요 상태와 좌표를 JSON 문자열로 직렬화합니다.</summary>
+    /// <summary>스냅샷의 모든 상태·입출력·좌표 필드를 JSON 문자열로 직렬화합니다.</summary>
     public string ToJson()
     {
         var builder = new StringBuilder();
-        builder.Append("{\"PacketOrders\":");
+        builder.Append("{\"PacketStart\":");
+        RobotJsonWriter.AppendQuotedString(builder, PacketStart);
+        builder.Append(",\"PacketOrders\":");
         builder.Append(PacketOrders.ToString(CultureInfo.InvariantCulture));
         builder.Append(",\"PacketHeartbeat\":");
         builder.Append(PacketHeartbeat.ToString(CultureInfo.InvariantCulture));
@@ -117,10 +119,30 @@ public sealed class EfortRobotSnapshot
         builder.Append(ErrorStatus.ToString(CultureInfo.InvariantCulture));
         builder.Append(",\"HstopStatus\":");
         builder.Append(HstopStatus.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"AuthorityStatus\":");
+        builder.Append(AuthorityStatus.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"ServoStatus\":");
+        builder.Append(ServoStatus.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"AxisMoveStatus\":");
+        builder.Append(AxisMoveStatus.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"ProgMoveStatus\":");
+        builder.Append(ProgMoveStatus.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"ProgLoadStatus\":");
+        builder.Append(ProgLoadStatus.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"ProgHoldStatus\":");
+        builder.Append(ProgHoldStatus.ToString(CultureInfo.InvariantCulture));
         builder.Append(",\"ModeStatus\":");
         builder.Append(ModeStatus.ToString(CultureInfo.InvariantCulture));
         builder.Append(",\"SpeedStatus\":");
         builder.Append(SpeedStatus.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"DigitalOutputs\":");
+        RobotJsonWriter.AppendByteArray(builder, DigitalOutputs);
+        builder.Append(",\"DigitalInputs\":");
+        RobotJsonWriter.AppendByteArray(builder, DigitalInputs);
+        builder.Append(",\"IntegerOutputs\":");
+        RobotJsonWriter.AppendInt32Array(builder, IntegerOutputs);
+        builder.Append(",\"IntegerInputs\":");
+        RobotJsonWriter.AppendInt32Array(builder, IntegerInputs);
         builder.Append(",\"ProjectName\":");
         RobotJsonWriter.AppendQuotedString(builder, ProjectName);
         builder.Append(",\"ProgramName\":");
@@ -131,8 +153,22 @@ public sealed class EfortRobotSnapshot
         RobotJsonWriter.AppendSingleArray(builder, AxisPositions);
         builder.Append(",\"CartesianPositions\":");
         RobotJsonWriter.AppendSingleArray(builder, CartesianPositions);
+        builder.Append(",\"AxisSpeeds\":");
+        RobotJsonWriter.AppendSingleArray(builder, AxisSpeeds);
+        builder.Append(",\"AxisAccelerations\":");
+        RobotJsonWriter.AppendSingleArray(builder, AxisAccelerations);
+        builder.Append(",\"AxisJerks\":");
+        RobotJsonWriter.AppendSingleArray(builder, AxisJerks);
+        builder.Append(",\"AxisTorques\":");
+        RobotJsonWriter.AppendSingleArray(builder, AxisTorques);
+        builder.Append(",\"AxisDirectionCounts\":");
+        RobotJsonWriter.AppendInt32Array(builder, AxisDirectionCounts);
+        builder.Append(",\"AxisTimes\":");
+        RobotJsonWriter.AppendInt32Array(builder, AxisTimes);
         builder.Append(",\"DeviceTime\":");
         builder.Append(DeviceTime.ToString(CultureInfo.InvariantCulture));
+        builder.Append(",\"PacketEnd\":");
+        RobotJsonWriter.AppendQuotedString(builder, PacketEnd);
         builder.Append('}');
         return builder.ToString();
     }

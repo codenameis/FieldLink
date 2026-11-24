@@ -61,12 +61,17 @@ public sealed class FanucAddress
     public static bool TryParse(string? address, bool isBit, [NotNullWhen(true)] out FanucAddress? result)
     {
         result = null;
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null)
         {
             return false;
         }
 
-        string upper = address!.Trim().ToUpperInvariant();
+        string upper = address.Trim().ToUpperInvariant();
+        if (upper.Length == 0)
+        {
+            return false;
+        }
+
         return isBit ? TryParseBitAddress(upper, out result) : TryParseWordAddress(upper, out result);
     }
 

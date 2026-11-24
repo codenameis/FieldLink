@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using FieldLink.Robot.Protocols.Yaskawa.YrcEthernet;
 
 namespace FieldLink.Robot.Protocols.Yaskawa.HighSpeedEthernet;
 
@@ -75,7 +74,7 @@ public static class YercStatusCode
         if (TryConvertBcdToDecimal(addedStatus, out int decimalCode)
             && decimalCode is >= MinimumBcdAlarmCode and <= MaximumBcdAlarmCode)
         {
-            return $"{YrcErrorCode.GetDescription(decimalCode)} (0x{addedStatus:X4})";
+            return $"{YaskawaErrorDescriptions.GetDescription(decimalCode)} (0x{addedStatus:X4})";
         }
 
         return $"YERC 확장 오류가 발생했습니다. (AddedStatus=0x{addedStatus:X4})";

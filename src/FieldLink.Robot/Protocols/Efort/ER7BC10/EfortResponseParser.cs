@@ -13,6 +13,39 @@ public static class EfortResponseParser
     private const int CartesianAxisCount = 6;
     private const int NameFieldLength = 32;
     private const int ErrorTextFieldLength = 128;
+    private const int Int32ByteSize = sizeof(int);
+    private const int SingleByteSize = sizeof(float);
+
+    private const int PacketOrdersOffset = 0;
+    private const int PacketHeartbeatOffset = 2;
+    private const int ErrorStatusOffset = 4;
+    private const int HstopStatusOffset = 5;
+    private const int AuthorityStatusOffset = 6;
+    private const int ServoStatusOffset = 7;
+    private const int AxisMoveStatusOffset = 8;
+    private const int ProgMoveStatusOffset = 9;
+    private const int ProgLoadStatusOffset = 10;
+    private const int ProgHoldStatusOffset = 11;
+    private const int ModeStatusOffset = 12;
+    private const int SpeedStatusOffset = 14;
+    private const int DigitalOutputsOffset = 16;
+    private const int DigitalInputsOffset = 48;
+
+    private const int IntegerOutputsOffset = 0;
+    private const int IntegerInputsOffset = 128;
+    private const int ProjectNameOffset = 256;
+    private const int ProgramNameOffset = 288;
+    private const int ErrorTextOffset = 320;
+    private const int AxisPositionsOffset = 448;
+    private const int CartesianPositionsOffset = 476;
+    private const int AxisSpeedsOffset = 500;
+    private const int AxisAccelerationsOffset = 528;
+    private const int AxisJerksOffset = 556;
+    private const int AxisTorquesOffset = 584;
+    private const int AxisDirectionCountsOffset = 612;
+    private const int AxisTimesOffset = 640;
+    private const int DeviceTimeOffset = 668;
+    private const int PacketEndOffset = 672;
 
     /// <summary>EFORT 바이너리 상태 응답 프레임을 <see cref="EfortRobotSnapshot"/>으로 파싱합니다.</summary>
     /// <param name="frame">수신된 응답 바이트 배열입니다.</param>
@@ -26,10 +59,7 @@ public static class EfortResponseParser
             throw new ArgumentNullException(nameof(frame));
         }
 
-        IEfortPacketLayout layout = version == EfortProtocolVersion.V2Aligned
-            ? EfortV2AlignedLayout.Instance
-            : EfortV1UnalignedLayout.Instance;
-
+        IEfortPacketLayout layout = EfortOptions.CreateLayout(version);
         if (frame.Length < layout.MinimumResponseLength)
         {
             throw new RobotException(
@@ -44,35 +74,35 @@ public static class EfortResponseParser
         return new EfortRobotSnapshot
         {
             PacketStart = RobotBinaryBuffer.ReadTrimmedAscii(frame, 0, layout.PacketStartLength),
-            PacketOrders = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset),
-            PacketHeartbeat = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset + 2),
-            ErrorStatus = frame[headerOffset + 4],
-            HstopStatus = frame[headerOffset + 5],
-            AuthorityStatus = frame[headerOffset + 6],
-            ServoStatus = frame[headerOffset + 7],
-            AxisMoveStatus = frame[headerOffset + 8],
-            ProgMoveStatus = frame[headerOffset + 9],
-            ProgLoadStatus = frame[headerOffset + 10],
-            ProgHoldStatus = frame[headerOffset + 11],
-            ModeStatus = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset + 12),
-            SpeedStatus = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset + 14),
-            DigitalOutputs = Array.AsReadOnly(ReadBytes(frame, headerOffset + 16, DigitalIoChannelCount)),
-            DigitalInputs = Array.AsReadOnly(ReadBytes(frame, headerOffset + 48, DigitalIoChannelCount)),
-            IntegerOutputs = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset, IntegerIoChannelCount)),
-            IntegerInputs = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset + 128, IntegerIoChannelCount)),
-            ProjectName = RobotBinaryBuffer.ReadNullTrimmedString(frame, postPadOffset + 256, NameFieldLength, Encoding.ASCII),
-            ProgramName = RobotBinaryBuffer.ReadNullTrimmedString(frame, postPadOffset + 288, NameFieldLength, Encoding.ASCII),
-            ErrorText = RobotBinaryBuffer.ReadNullTrimmedString(frame, postPadOffset + 320, ErrorTextFieldLength, Encoding.ASCII),
-            AxisPositions = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + 448, AxisChannelCount)),
-            CartesianPositions = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + 476, CartesianAxisCount)),
-            AxisSpeeds = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + 500, AxisChannelCount)),
-            AxisAccelerations = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + 528, AxisChannelCount)),
-            AxisJerks = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + 556, AxisChannelCount)),
-            AxisTorques = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + 584, AxisChannelCount)),
-            AxisDirectionCounts = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset + 612, AxisChannelCount)),
-            AxisTimes = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset + 640, AxisChannelCount)),
-            DeviceTime = RobotBinaryBuffer.ReadInt32LittleEndian(frame, postPadOffset + 668),
-            PacketEnd = RobotBinaryBuffer.ReadTrimmedAscii(frame, postPadOffset + 672, layout.PacketEndLength)
+            PacketOrders = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset + PacketOrdersOffset),
+            PacketHeartbeat = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset + PacketHeartbeatOffset),
+            ErrorStatus = frame[headerOffset + ErrorStatusOffset],
+            HstopStatus = frame[headerOffset + HstopStatusOffset],
+            AuthorityStatus = frame[headerOffset + AuthorityStatusOffset],
+            ServoStatus = frame[headerOffset + ServoStatusOffset],
+            AxisMoveStatus = frame[headerOffset + AxisMoveStatusOffset],
+            ProgMoveStatus = frame[headerOffset + ProgMoveStatusOffset],
+            ProgLoadStatus = frame[headerOffset + ProgLoadStatusOffset],
+            ProgHoldStatus = frame[headerOffset + ProgHoldStatusOffset],
+            ModeStatus = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset + ModeStatusOffset),
+            SpeedStatus = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, headerOffset + SpeedStatusOffset),
+            DigitalOutputs = Array.AsReadOnly(ReadBytes(frame, headerOffset + DigitalOutputsOffset, DigitalIoChannelCount)),
+            DigitalInputs = Array.AsReadOnly(ReadBytes(frame, headerOffset + DigitalInputsOffset, DigitalIoChannelCount)),
+            IntegerOutputs = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset + IntegerOutputsOffset, IntegerIoChannelCount)),
+            IntegerInputs = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset + IntegerInputsOffset, IntegerIoChannelCount)),
+            ProjectName = RobotBinaryBuffer.ReadNullTrimmedString(frame, postPadOffset + ProjectNameOffset, NameFieldLength, Encoding.ASCII),
+            ProgramName = RobotBinaryBuffer.ReadNullTrimmedString(frame, postPadOffset + ProgramNameOffset, NameFieldLength, Encoding.ASCII),
+            ErrorText = RobotBinaryBuffer.ReadNullTrimmedString(frame, postPadOffset + ErrorTextOffset, ErrorTextFieldLength, Encoding.ASCII),
+            AxisPositions = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + AxisPositionsOffset, AxisChannelCount)),
+            CartesianPositions = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + CartesianPositionsOffset, CartesianAxisCount)),
+            AxisSpeeds = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + AxisSpeedsOffset, AxisChannelCount)),
+            AxisAccelerations = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + AxisAccelerationsOffset, AxisChannelCount)),
+            AxisJerks = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + AxisJerksOffset, AxisChannelCount)),
+            AxisTorques = Array.AsReadOnly(ReadSingleArray(frame, postPadOffset + AxisTorquesOffset, AxisChannelCount)),
+            AxisDirectionCounts = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset + AxisDirectionCountsOffset, AxisChannelCount)),
+            AxisTimes = Array.AsReadOnly(ReadInt32Array(frame, postPadOffset + AxisTimesOffset, AxisChannelCount)),
+            DeviceTime = RobotBinaryBuffer.ReadInt32LittleEndian(frame, postPadOffset + DeviceTimeOffset),
+            PacketEnd = RobotBinaryBuffer.ReadTrimmedAscii(frame, postPadOffset + PacketEndOffset, layout.PacketEndLength)
         };
     }
 
@@ -88,7 +118,7 @@ public static class EfortResponseParser
         int[] result = new int[count];
         for (int i = 0; i < count; i++)
         {
-            result[i] = RobotBinaryBuffer.ReadInt32LittleEndian(frame, offset + (i * 4));
+            result[i] = RobotBinaryBuffer.ReadInt32LittleEndian(frame, offset + (i * Int32ByteSize));
         }
 
         return result;
@@ -99,7 +129,7 @@ public static class EfortResponseParser
         float[] result = new float[count];
         for (int i = 0; i < count; i++)
         {
-            result[i] = RobotBinaryBuffer.ReadSingleLittleEndian(frame, offset + (i * 4));
+            result[i] = RobotBinaryBuffer.ReadSingleLittleEndian(frame, offset + (i * SingleByteSize));
         }
 
         return result;

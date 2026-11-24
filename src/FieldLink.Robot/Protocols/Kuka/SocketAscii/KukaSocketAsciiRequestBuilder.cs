@@ -15,6 +15,9 @@ public static class KukaSocketAsciiRequestBuilder
     private const string AddressSeparator = ",";
     private const string AssignmentSeparator = "=";
 
+    private static readonly char[] DisallowedAddressCharacters = { ',', '=', '\r', '\n', '\0' };
+    private static readonly char[] DisallowedControlCharacters = { '\r', '\n', '\0' };
+
     /// <summary>단일 또는 다중 변수 읽기(<c>00</c>) 요청 바이트를 생성합니다.</summary>
     public static byte[] BuildReadRequest(IReadOnlyList<string> addresses, Encoding? encoding = null)
     {
@@ -63,34 +66,17 @@ public static class KukaSocketAsciiRequestBuilder
         {
             ValidateVariableAddress(addresses[i], nameof(addresses));
 
-            if (values[i] is null)
+            string value = values[i] ?? throw new ArgumentNullException(nameof(values));
+            if (value.IndexOfAny(DisallowedControlCharacters) >= 0)
             {
-                throw new ArgumentNullException(nameof(values));
+                throw new ArgumentException("쓰기 값에는 CR(\\r), LF(\\n) 또는 널 문자를 포함할 수 없습니다.", nameof(values));
             }
 
-            if (values[i].IndexOf(',') >= 0)
-            {
-                throw new ArgumentException("쓰기 값에는 쉼표(',') 구분자를 포함할 수 없습니다.", nameof(values));
-            }
-
-            pairs[i] = $"{addresses[i]}{AssignmentSeparator}{values[i]}";
+            pairs[i] = $"{addresses[i]}{AssignmentSeparator}{value}";
         }
 
         string payload = WritePrefix + string.Join(AddressSeparator, pairs);
         return (encoding ?? Encoding.UTF8).GetBytes(payload);
-    }
-
-    private static void ValidateVariableAddress(string address, string parameterName)
-    {
-        if (string.IsNullOrWhiteSpace(address))
-        {
-            throw new ArgumentException("변수 주소 목록에 비어 있는 항목이 있습니다.", parameterName);
-        }
-
-        if (address.IndexOf(',') >= 0 || address.IndexOf('=') >= 0)
-        {
-            throw new ArgumentException($"변수 주소('{address}')에는 ',' 또는 '=' 문자를 포함할 수 없습니다.", parameterName);
-        }
     }
 
     /// <summary>지정 프로그램 시작(<c>03</c>) 요청 바이트를 생성합니다.</summary>
@@ -106,6 +92,11 @@ public static class KukaSocketAsciiRequestBuilder
             throw new ArgumentException("프로그램 이름은 비어 있을 수 없습니다.", nameof(programName));
         }
 
+        if (programName.IndexOfAny(DisallowedControlCharacters) >= 0)
+        {
+            throw new ArgumentException("프로그램 이름에 개행 또는 제어 문자를 포함할 수 없습니다.", nameof(programName));
+        }
+
         return (encoding ?? Encoding.UTF8).GetBytes(StartProgramPrefix + programName);
     }
 
@@ -116,4 +107,17 @@ public static class KukaSocketAsciiRequestBuilder
     /// <summary>현재 프로그램 정지(<c>0621</c>) 요청 바이트를 생성합니다.</summary>
     public static byte[] BuildStopProgramRequest(Encoding? encoding = null) =>
         (encoding ?? Encoding.UTF8).GetBytes(StopProgramCommand);
+
+    private static void ValidateVariableAddress(string address, string parameterName)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("변수 주소 목록에 비어 있는 항목이 있습니다.", parameterName);
+        }
+
+        if (address.IndexOfAny(DisallowedAddressCharacters) >= 0)
+        {
+            throw new ArgumentException($"변수 주소('{address}')에는 ',', '=', CR(\\r), LF(\\n) 문자를 포함할 수 없습니다.", parameterName);
+        }
+    }
 }

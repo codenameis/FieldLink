@@ -1,19 +1,30 @@
 using System;
-using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Xml;
-using System.Xml.Linq;
 using FieldLink.Robot.Conversion;
 
 namespace FieldLink.Robot.Protocols.Abb.Rws;
 
 /// <summary>ABB RWS XHTML 응답 본문을 도메인 값으로 해석하는 순수 정적 파서입니다.</summary>
-public static class AbbRwsResponseParser
+public static partial class AbbRwsResponseParser
 {
     private const string JointTargetClassPattern = "((rax_[0-9]+)|(eax_[a-z]))";
+    private const string CtrlStateClassName = "ctrlstate";
+    private const string ErrorStateClassName = "err-state";
+    private const string SpeedRatioClassName = "speedratio";
+    private const string OperationModeClassName = "opmode";
+    private const string InputDataClassName = "indata";
+    private const string OutputDataClassName = "outdata";
+    private const string EventLogItemClassName = "elog-message-li";
+    private const string SystemItemClassName = "sys-system-li";
+    private const string RobTargetItemClassName = "ms-robtargets";
+    private const string IoSignalItemClassName = "ios-signal";
+    private const string RapidExecutionItemClassName = "rap-execution";
+    private const string RapidTaskItemClassName = "rap-task-li";
+    private const int RegexTimeoutSeconds = 1;
+
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(RegexTimeoutSeconds);
 
     /// <summary>옵션에 따라 HTTP 응답 바이트를 UTF-8 또는 ISO-8859-1 문자열로 디코딩합니다.</summary>
     /// <param name="responseBytes">수신한 원시 응답 바이트입니다.</param>
@@ -48,15 +59,16 @@ public static class AbbRwsResponseParser
         }
 
         string pattern = $"<span class=\"{Regex.Escape(className)}\">([^<]+)";
-        Match match = Regex.Match(xhtml, pattern, RegexOptions.CultureInvariant);
+        Match match = MatchWithTimeout(xhtml, pattern);
         if (!match.Success)
         {
             throw new RobotException(
                 RobotErrorKind.ParseError,
-                $"ABB RWS 응답에서 span class='{className}' 요소를 찾지 못했습니다.");
+                $"ABB RWS 응답에서 span class='{className}' 요소를 찾지 못했습니다.",
+                Encoding.UTF8.GetBytes(xhtml));
         }
 
-        return match.Groups[1].Value;
+        return WebUtility.HtmlDecode(match.Groups[1].Value);
     }
 
     /// <summary>지정된 클래스명을 가진 모든 <c>&lt;span&gt;</c> 요소의 실수 값 배열을 추출합니다.</summary>
@@ -91,73 +103,6 @@ public static class AbbRwsResponseParser
         return ParseDoubleListByClassPattern(xhtml, JointTargetClassPattern);
     }
 
-    /// <summary>지정된 클래스명의 <c>&lt;li&gt;</c> 블록 내부 자식 <c>&lt;span&gt;</c> 요소들을 사전으로 파싱합니다.</summary>
-    /// <param name="xhtml">ABB RWS XHTML 응답 문자열입니다.</param>
-    /// <param name="listItemClassName">대상 <c>li</c>의 <c>class</c> 속성 이름입니다.</param>
-    /// <returns>키-값 사전입니다.</returns>
-    /// <exception cref="RobotException">해당 항목이 없거나 XML 파싱에 실패했을 때.</exception>
-    public static IReadOnlyDictionary<string, string> ParseObjectByClass(string xhtml, string listItemClassName)
-    {
-        if (xhtml is null)
-        {
-            throw new ArgumentNullException(nameof(xhtml));
-        }
-
-        if (string.IsNullOrWhiteSpace(listItemClassName))
-        {
-            throw new ArgumentException("리스트 항목 클래스 이름은 필수입니다.", nameof(listItemClassName));
-        }
-
-        string pattern = $"<li class=\"{Regex.Escape(listItemClassName)}\"[\\S\\s]+?</li>";
-        Match match = Regex.Match(xhtml, pattern, RegexOptions.CultureInvariant);
-        if (!match.Success)
-        {
-            throw new RobotException(
-                RobotErrorKind.ParseError,
-                $"ABB RWS 응답에서 li class='{listItemClassName}' 요소를 찾지 못했습니다.");
-        }
-
-        return ParseListItemElement(match.Value);
-    }
-
-    /// <summary>지정된 클래스명의 <c>&lt;li&gt;</c> 블록들을 최대 <paramref name="maxCount"/>개까지 사전 목록으로 파싱합니다.</summary>
-    /// <param name="xhtml">ABB RWS XHTML 응답 문자열입니다.</param>
-    /// <param name="listItemClassName">대상 <c>li</c>의 <c>class</c> 속성 이름입니다.</param>
-    /// <param name="maxCount">수집할 최대 항목 수입니다.</param>
-    /// <returns>사전 목록입니다.</returns>
-    public static IReadOnlyList<IReadOnlyDictionary<string, string>> ParseArrayByClass(
-        string xhtml,
-        string listItemClassName,
-        int maxCount)
-    {
-        if (xhtml is null)
-        {
-            throw new ArgumentNullException(nameof(xhtml));
-        }
-
-        if (string.IsNullOrWhiteSpace(listItemClassName))
-        {
-            throw new ArgumentException("리스트 항목 클래스 이름은 필수입니다.", nameof(listItemClassName));
-        }
-
-        if (maxCount < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxCount), maxCount, "최대 개수는 0 이상이어야 합니다.");
-        }
-
-        string pattern = $"<li class=\"{Regex.Escape(listItemClassName)}\"[\\S\\s]+?</li>";
-        MatchCollection matches = Regex.Matches(xhtml, pattern, RegexOptions.CultureInvariant);
-        int limit = Math.Min(matches.Count, maxCount);
-        var items = new List<IReadOnlyDictionary<string, string>>(limit);
-
-        for (int i = 0; i < limit; i++)
-        {
-            items.Add(ParseListItemElement(matches[i].Value));
-        }
-
-        return items.AsReadOnly();
-    }
-
     internal static string ParseShortcutAsString(AbbRwsAddress address, string xhtml)
     {
         if (address.IsRawUrl)
@@ -165,30 +110,35 @@ public static class AbbRwsResponseParser
             return xhtml;
         }
 
-        return address.Shortcut!.Value switch
+        if (address.Shortcut is not AbbRwsShortcutKind shortcut)
         {
-            AbbRwsShortcutKind.CtrlState => ParseSpanByClass(xhtml, "ctrlstate"),
-            AbbRwsShortcutKind.ErrorState => ParseSpanByClass(xhtml, "err-state"),
+            throw new ArgumentOutOfRangeException(nameof(address));
+        }
+
+        return shortcut switch
+        {
+            AbbRwsShortcutKind.CtrlState => ParseSpanByClass(xhtml, CtrlStateClassName),
+            AbbRwsShortcutKind.ErrorState => ParseSpanByClass(xhtml, ErrorStateClassName),
             AbbRwsShortcutKind.JointTarget => RobotJsonWriter.SerializeDoubleArray(ParseJointTarget(xhtml)),
             AbbRwsShortcutKind.PhysicalJoints => RobotJsonWriter.SerializeDoubleArray(ParseJointTarget(xhtml)),
-            AbbRwsShortcutKind.SpeedRatio => ParseSpanByClass(xhtml, "speedratio"),
-            AbbRwsShortcutKind.OperationMode => ParseSpanByClass(xhtml, "opmode"),
-            AbbRwsShortcutKind.IoIn => ParseSpanByClass(xhtml, "indata"),
-            AbbRwsShortcutKind.IoOut => ParseSpanByClass(xhtml, "outdata"),
-            AbbRwsShortcutKind.Io2In => ParseSpanByClass(xhtml, "indata"),
-            AbbRwsShortcutKind.Io2Out => ParseSpanByClass(xhtml, "outdata"),
+            AbbRwsShortcutKind.SpeedRatio => ParseSpanByClass(xhtml, SpeedRatioClassName),
+            AbbRwsShortcutKind.OperationMode => ParseSpanByClass(xhtml, OperationModeClassName),
+            AbbRwsShortcutKind.IoIn => ParseSpanByClass(xhtml, InputDataClassName),
+            AbbRwsShortcutKind.IoOut => ParseSpanByClass(xhtml, OutputDataClassName),
+            AbbRwsShortcutKind.Io2In => ParseSpanByClass(xhtml, InputDataClassName),
+            AbbRwsShortcutKind.Io2Out => ParseSpanByClass(xhtml, OutputDataClassName),
             AbbRwsShortcutKind.Log => RobotJsonWriter.SerializeStringDictionaryList(
-                ParseArrayByClass(xhtml, "elog-message-li", address.LogCount)),
+                ParseArrayByClass(xhtml, EventLogItemClassName, address.LogCount)),
             AbbRwsShortcutKind.System => RobotJsonWriter.SerializeStringDictionary(
-                ParseObjectByClass(xhtml, "sys-system-li")),
+                ParseObjectByClass(xhtml, SystemItemClassName)),
             AbbRwsShortcutKind.RobTarget => RobotJsonWriter.SerializeStringDictionary(
-                ParseObjectByClass(xhtml, "ms-robtargets")),
+                ParseObjectByClass(xhtml, RobTargetItemClassName)),
             AbbRwsShortcutKind.ServoEnable => RobotJsonWriter.SerializeStringDictionary(
-                ParseObjectByClass(xhtml, "ios-signal")),
+                ParseObjectByClass(xhtml, IoSignalItemClassName)),
             AbbRwsShortcutKind.RapidExecution => RobotJsonWriter.SerializeStringDictionary(
-                ParseObjectByClass(xhtml, "rap-execution")),
+                ParseObjectByClass(xhtml, RapidExecutionItemClassName)),
             AbbRwsShortcutKind.RapidTasks => RobotJsonWriter.SerializeStringDictionaryList(
-                ParseArrayByClass(xhtml, "rap-task-li", int.MaxValue)),
+                ParseArrayByClass(xhtml, RapidTaskItemClassName, int.MaxValue)),
             _ => throw new ArgumentOutOfRangeException(nameof(address))
         };
     }
@@ -196,17 +146,18 @@ public static class AbbRwsResponseParser
     private static double[] ParseDoubleListByClassPattern(string xhtml, string classPattern)
     {
         string pattern = $"<span class=\"{classPattern}\">([^<]+)";
-        MatchCollection matches = Regex.Matches(xhtml, pattern, RegexOptions.CultureInvariant);
+        MatchCollection matches = MatchesWithTimeout(xhtml, pattern);
         double[] values = new double[matches.Count];
 
         for (int i = 0; i < matches.Count; i++)
         {
-            string rawValue = matches[i].Groups[matches[i].Groups.Count - 1].Value.Trim();
-            if (!double.TryParse(rawValue, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed))
+            string rawValue = WebUtility.HtmlDecode(matches[i].Groups[matches[i].Groups.Count - 1].Value).Trim();
+            if (!double.TryParse(rawValue, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double parsed))
             {
                 throw new RobotException(
                     RobotErrorKind.ParseError,
-                    $"ABB RWS 숫자 값('{rawValue}')을 부동소수점으로 변환하지 못했습니다.");
+                    $"ABB RWS 숫자 값('{rawValue}')을 부동소수점으로 변환하지 못했습니다.",
+                    Encoding.UTF8.GetBytes(xhtml));
             }
 
             values[i] = parsed;
@@ -215,34 +166,35 @@ public static class AbbRwsResponseParser
         return values;
     }
 
-    private static IReadOnlyDictionary<string, string> ParseListItemElement(string listItemXml)
+    private static Match MatchWithTimeout(string xhtml, string pattern)
     {
         try
         {
-            XElement root = XElement.Parse(listItemXml);
-            var properties = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (XElement child in root.Elements())
-            {
-                if (!string.Equals(child.Name.LocalName, "span", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                XAttribute? classAttribute = child.Attribute("class");
-                if (classAttribute is not null)
-                {
-                    properties[classAttribute.Value] = child.Value;
-                }
-            }
-
-            return new ReadOnlyDictionary<string, string>(properties);
+            return Regex.Match(xhtml, pattern, RegexOptions.CultureInvariant, RegexTimeout);
         }
-        catch (XmlException exception)
+        catch (RegexMatchTimeoutException exception)
         {
             throw new RobotException(
                 RobotErrorKind.ParseError,
-                "ABB RWS XHTML 리스트 항목을 XML로 파싱하는 데 실패했습니다.",
-                innerException: exception);
+                "ABB RWS XHTML 응답 정규식 탐색 제한 시간이 초과되었습니다.",
+                Encoding.UTF8.GetBytes(xhtml),
+                exception);
+        }
+    }
+
+    private static MatchCollection MatchesWithTimeout(string xhtml, string pattern)
+    {
+        try
+        {
+            return Regex.Matches(xhtml, pattern, RegexOptions.CultureInvariant, RegexTimeout);
+        }
+        catch (RegexMatchTimeoutException exception)
+        {
+            throw new RobotException(
+                RobotErrorKind.ParseError,
+                "ABB RWS XHTML 응답 정규식 탐색 제한 시간이 초과되었습니다.",
+                Encoding.UTF8.GetBytes(xhtml),
+                exception);
         }
     }
 }

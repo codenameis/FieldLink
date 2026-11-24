@@ -19,6 +19,7 @@ public static class YrcEthernetResponseParser
     private const byte CarriageReturn = 0x0D;
     private const byte LineFeed = 0x0A;
     private const int CrLfLength = 2;
+    private static readonly TimeSpan ErrorRegexTimeout = TimeSpan.FromSeconds(1);
 
     /// <summary><c>CONNECT</c> 핸드셰이크 응답을 해석해 영구 연결 유지 여부를 반환합니다.</summary>
     public static bool ParseConnectResponse(string responseLine)
@@ -97,7 +98,7 @@ public static class YrcEthernetResponseParser
             throw new ArgumentNullException(nameof(errorLine));
         }
 
-        Match match = Regex.Match(errorLine, @"\(([0-9]+)\)\.?$", RegexOptions.CultureInvariant);
+        Match match = Regex.Match(errorLine, @"\(([0-9]+)\)\.?$", RegexOptions.CultureInvariant, ErrorRegexTimeout);
         if (match.Success && int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int code))
         {
             return new RobotDeviceException(code, $"{YrcErrorCode.GetDescription(code)} ({errorLine})");

@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using FieldLink.Robot.Protocols.Abb.Rws;
 using FieldLink.Robot.Protocols.Efort.ER7BC10;
 using FieldLink.Robot.Protocols.Estun.Modbus;
@@ -12,6 +13,7 @@ using FieldLink.Robot.Protocols.Yaskawa.YrcEthernet;
 using FieldLink.Robot.Tests.Fakes;
 using FieldLink.Transport;
 using FieldLink.Transport.Http;
+using FieldLink.Transport.Tcp;
 using FieldLink.Transport.Udp;
 using Xunit;
 
@@ -82,5 +84,76 @@ public sealed class RobotClientFactoryTests
         Assert.Throws<ArgumentNullException>(() => RobotClientFactory.CreateEstunModbus((ITransport)null!));
         Assert.Throws<ArgumentNullException>(() => RobotClientFactory.CreateHyundaiOnLTrack((IUdpListenerTransport)null!));
         Assert.Throws<ArgumentException>(() => RobotClientFactory.CreateFanucRobotInterface(string.Empty));
+    }
+
+    [Fact]
+    public void CreateClients_ForwardOptionTimeoutsToUnderlyingTransports()
+    {
+        TimeSpan customTimeout = TimeSpan.FromSeconds(17);
+
+        using YercUdpClient yercCustom = RobotClientFactory.CreateYaskawaHighSpeedEthernet(
+            "192.168.1.15",
+            options: new YercUdpOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingUdpOptions(yercCustom).ReceiveTimeout);
+
+        using YamahaRcxClient yamahaDefault = RobotClientFactory.CreateYamahaRcx("192.168.1.14");
+        Assert.Equal(TimeSpan.FromSeconds(30), GetUnderlyingTcpOptions(yamahaDefault).ConnectTimeout);
+
+        using YamahaRcxClient yamahaCustom = RobotClientFactory.CreateYamahaRcx(
+            "192.168.1.14",
+            options: new YamahaRcxOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingTcpOptions(yamahaCustom).ConnectTimeout);
+
+        using EstunClient estunCustom = RobotClientFactory.CreateEstunModbus(
+            "192.168.1.11",
+            options: new EstunOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingTcpOptions(estunCustom).ConnectTimeout);
+
+        using EfortClient efortCustom = RobotClientFactory.CreateEfortER7BC10V2(
+            "192.168.1.10",
+            options: new EfortOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingTcpOptions(efortCustom).ConnectTimeout);
+
+        using FanucClient fanucCustom = RobotClientFactory.CreateFanucRobotInterface(
+            "192.168.1.12",
+            options: new FanucOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingTcpOptions(fanucCustom).ConnectTimeout);
+
+        using KukaVarProxyClient kukaVarCustom = RobotClientFactory.CreateKukaVarProxy(
+            "192.168.1.13",
+            options: new KukaVarProxyOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingTcpOptions(kukaVarCustom).ConnectTimeout);
+
+        using KukaSocketAsciiClient kukaAsciiCustom = RobotClientFactory.CreateKukaSocketAscii(
+            "192.168.1.13",
+            options: new KukaSocketAsciiOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingTcpOptions(kukaAsciiCustom).ConnectTimeout);
+
+        using YrcEthernetClient yrcCustom = RobotClientFactory.CreateYaskawaYrcEthernet(
+            "192.168.1.15",
+            options: new YrcEthernetOptions { Timeout = customTimeout });
+        Assert.Equal(customTimeout, GetUnderlyingTcpOptions(yrcCustom).ConnectTimeout);
+    }
+
+    private static TcpTransportOptions GetUnderlyingTcpOptions(object client)
+    {
+        FieldInfo? transportField = client.GetType().GetField("_transport", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(transportField);
+        object? transport = transportField.GetValue(client);
+        Assert.IsType<TcpTransport>(transport);
+        FieldInfo? optionsField = typeof(TcpTransport).GetField("_options", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(optionsField);
+        return Assert.IsType<TcpTransportOptions>(optionsField.GetValue(transport));
+    }
+
+    private static UdpTransportOptions GetUnderlyingUdpOptions(object client)
+    {
+        FieldInfo? transportField = client.GetType().GetField("_transport", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(transportField);
+        object? transport = transportField.GetValue(client);
+        Assert.IsType<UdpTransport>(transport);
+        FieldInfo? optionsField = typeof(UdpTransport).GetField("_options", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(optionsField);
+        return Assert.IsType<UdpTransportOptions>(optionsField.GetValue(transport));
     }
 }

@@ -5,7 +5,8 @@ namespace FieldLink.Robot.Protocols.Efort.ER7BC10;
 /// <summary>EFORT ER7B-C10 프로토콜 통신에 사용하는 불변 설정입니다.</summary>
 public sealed class EfortOptions
 {
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
+    private const int DefaultTimeoutSeconds = 5;
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
 
     private readonly TimeSpan _timeout = DefaultTimeout;
 
@@ -27,8 +28,10 @@ public sealed class EfortOptions
         }
     }
 
-    internal IEfortPacketLayout GetLayout() =>
-        Version == EfortProtocolVersion.V2Aligned
-            ? EfortV2AlignedLayout.Instance
-            : EfortV1UnalignedLayout.Instance;
+    internal IEfortPacketLayout GetLayout() => CreateLayout(Version);
+
+    internal static IEfortPacketLayout CreateLayout(EfortProtocolVersion version) =>
+        version == EfortProtocolVersion.V2Aligned
+            ? new EfortV2AlignedLayout()
+            : new EfortV1UnalignedLayout();
 }

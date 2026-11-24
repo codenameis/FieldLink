@@ -6,8 +6,11 @@ namespace FieldLink.Robot.Protocols.Abb.Rws;
 /// <summary>ABB Robot Web Services(RWS) 클라이언트 연결과 디코딩에 사용하는 불변 설정입니다.</summary>
 public sealed class AbbRwsOptions
 {
+    private const int MinimumPort = 1;
+    private const int MaximumPort = 65535;
     private const int DefaultHttpPort = 80;
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
+    private const int DefaultTimeoutSeconds = 10;
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
 
     private readonly string _host = "127.0.0.1";
     private readonly int _port = DefaultHttpPort;
@@ -56,9 +59,9 @@ public sealed class AbbRwsOptions
         get => _port;
         init
         {
-            if (value is < 1 or > 65535)
+            if (value is < MinimumPort or > MaximumPort)
             {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "포트 번호는 1에서 65535 사이여야 합니다.");
+                throw new ArgumentOutOfRangeException(nameof(value), value, $"포트 번호는 {MinimumPort}에서 {MaximumPort} 사이여야 합니다.");
             }
 
             _port = value;

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 using System.Threading.Tasks;
 using FieldLink.Robot.Conversion;
@@ -189,6 +191,114 @@ public sealed class FanucTests
         RobotResult<bool[]> invalidBitSelector = await client.ReadBitsAsync(FanucSelector.Data, 1, 1);
         Assert.False(invalidBitSelector.IsSuccess);
         Assert.Equal(RobotErrorKind.Unsupported, invalidBitSelector.Error.Kind);
+    }
+
+    [Fact]
+    public async Task Client_MonotonicCacheInvalidationOverflowAndSrNullTermination_WorkAccurately()
+    {
+        long currentTicks = 1_000_000;
+        var transport = CreateHandshakeAwareTransport(snapshotMode: true);
+        using var client = new FanucClient(
+            transport,
+            new FanucOptions { SnapshotCacheDuration = TimeSpan.FromSeconds(5) },
+            () => currentTicks);
+        await client.OpenAsync();
+
+        RobotResult<FanucSnapshot> firstSnapshot = await client.ReadSnapshotAsync();
+        Assert.True(firstSnapshot.IsSuccess);
+        int sentAfterFirst = transport.SentFrames.Count;
+
+        // Within TTL (2s < 5s) -> hits cache
+        currentTicks += Stopwatch.Frequency * 2;
+        RobotResult<FanucSnapshot> cachedSnapshot = await client.ReadSnapshotAsync();
+        Assert.True(cachedSnapshot.IsSuccess);
+        Assert.Equal(sentAfterFirst, transport.SentFrames.Count);
+
+        // Write invalidates cache -> forces fresh snapshot read
+        Assert.True((await client.WriteStringAsync("SR1", "AB")).IsSuccess);
+        byte[] srWriteFrame = transport.SentFrames[^1];
+        Assert.Equal(2, RobotBinaryBuffer.ReadUInt16LittleEndian(srWriteFrame, 46)); // 2 chars + 2B null = 4 bytes (2 words)
+        Assert.Equal(new byte[] { (byte)'A', (byte)'B', 0x00, 0x00 }, srWriteFrame[48..52]);
+
+        int sentAfterWrite = transport.SentFrames.Count;
+        Assert.True((await client.ReadSnapshotAsync()).IsSuccess);
+        Assert.Equal(sentAfterWrite + 1, transport.SentFrames.Count);
+
+        // TTL expiry -> forces fresh snapshot read
+        currentTicks += Stopwatch.Frequency * 6;
+        Assert.True((await client.ReadSnapshotAsync()).IsSuccess);
+        Assert.Equal(sentAfterWrite + 2, transport.SentFrames.Count);
+
+        // Even 80-byte SR fits without overflow; 81-byte throws
+        Assert.True((await client.WriteStringAsync("SR1", new string('X', 80))).IsSuccess);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.WriteStringAsync("SR1", new string('X', 81)));
+
+        // Selector mismatch via address access returns Unsupported
+        RobotResult<byte[]> wordOnBitAddress = await client.ReadAddressWordsAsync("I1", 1);
+        Assert.False(wordOnBitAddress.IsSuccess);
+        Assert.Equal(RobotErrorKind.Unsupported, wordOnBitAddress.Error.Kind);
+
+        RobotResult<bool[]> bitOnWordAddress = await client.ReadAddressBitsAsync("D1", 1);
+        Assert.False(bitOnWordAddress.IsSuccess);
+        Assert.Equal(RobotErrorKind.Unsupported, bitOnWordAddress.Error.Kind);
+
+        // Overflow and invalid argument guards
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.ReadWordsAsync(FanucSelector.Data, 1, 32768));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.WriteWordsAsync(FanucSelector.Data, 1, new byte[65536]));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.ReadBitsAsync(FanucSelector.InputRelay, 2, 65529));
+        Assert.Throws<ArgumentOutOfRangeException>(() => FanucResponseParser.ParseReadResponse(new byte[56], -1));
+
+        // Pose NaN rejection
+        var badPose = new FanucPose { Joint = new float[] { float.NaN, 0, 0, 0, 0, 0, 0, 0, 0 }, UserFrame = -1, UserTool = 1 };
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.WriteJointPoseAsync(100, badPose));
+        Assert.Equal(60, FanucSnpxAssignments.Commands.Count);
+        Assert.IsAssignableFrom<IReadOnlyList<string>>(FanucSnpxAssignments.Commands);
+    }
+
+    [Fact]
+    public async Task Client_SnapshotCommentsAndNaNToJsonFailure_BehaveAsSpecified()
+    {
+        byte[] snapshotBytes = new byte[12260];
+        Encoding.ASCII.GetBytes("DI_COMMENT_1\0").CopyTo(snapshotBytes, 8180);
+        Encoding.ASCII.GetBytes("SR_COMMENT_1\0").CopyTo(snapshotBytes, 12020);
+        RobotBinaryBuffer.WriteSingleLittleEndian(snapshotBytes, 6552, float.NaN); // CurrentAngle = NaN
+
+        FanucSnapshot parsed = FanucResponseParser.ParseSnapshot(snapshotBytes, Encoding.ASCII);
+        Assert.Equal("DI_COMMENT_1", parsed.DigitalInputComments[0]);
+        Assert.Equal("SR_COMMENT_1", parsed.StringRegisterComments[0]);
+
+        var transport = new FakeTransport();
+        int step = 0;
+        transport.AutoResponder = frame =>
+        {
+            if (step < 2)
+            {
+                step++;
+                return new byte[56];
+            }
+
+            bool isExtended = frame.Length > 56;
+            byte service = isExtended ? frame[50] : frame[42];
+            if (service == 0x07)
+            {
+                byte[] ack = new byte[56];
+                ack[31] = 0xD4;
+                return ack;
+            }
+
+            byte[] extResp = new byte[56 + snapshotBytes.Length];
+            RobotBinaryBuffer.WriteUInt16LittleEndian(extResp, 4, (ushort)snapshotBytes.Length);
+            extResp[31] = 0x94;
+            Array.Copy(snapshotBytes, 0, extResp, 56, snapshotBytes.Length);
+            return extResp;
+        };
+
+        using var client = new FanucClient(transport);
+        await client.OpenAsync();
+
+        RobotResult<string> snapshotJson = await client.ReadStringAsync("snapshot");
+        Assert.False(snapshotJson.IsSuccess);
+        Assert.Equal(RobotErrorKind.ParseError, snapshotJson.Error.Kind);
     }
 
     private static FakeTransport CreateHandshakeAwareTransport(bool snapshotMode = false)

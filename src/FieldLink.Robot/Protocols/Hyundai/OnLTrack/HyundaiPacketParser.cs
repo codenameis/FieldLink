@@ -38,16 +38,20 @@ public static class HyundaiPacketParser
         double[] data = new double[HyundaiPacketBuilder.AxisCount];
         for (int i = 0; i < HyundaiPacketBuilder.LinearAxisCount; i++)
         {
-            data[i] = RobotBinaryBuffer.ReadDoubleLittleEndian(
+            double value = RobotBinaryBuffer.ReadDoubleLittleEndian(
                 datagram,
                 HyundaiPacketBuilder.DataOffset + (i * HyundaiPacketBuilder.DoubleByteSize)) * MillimetersPerMeter;
+            ValidateFiniteWireDouble(value, i, datagram);
+            data[i] = value;
         }
 
         for (int i = HyundaiPacketBuilder.LinearAxisCount; i < HyundaiPacketBuilder.AxisCount; i++)
         {
-            data[i] = RobotBinaryBuffer.ReadDoubleLittleEndian(
+            double value = RobotBinaryBuffer.ReadDoubleLittleEndian(
                 datagram,
                 HyundaiPacketBuilder.DataOffset + (i * HyundaiPacketBuilder.DoubleByteSize)) * RadiansToDegrees;
+            ValidateFiniteWireDouble(value, i, datagram);
+            data[i] = value;
         }
 
         return new HyundaiTrackingPacket
@@ -63,5 +67,16 @@ public static class HyundaiPacketParser
             IntDummy = RobotBinaryBuffer.ReadInt32LittleEndian(datagram, HyundaiPacketBuilder.IntDummyOffset),
             Data = data
         };
+    }
+
+    private static void ValidateFiniteWireDouble(double value, int axisIndex, byte[] datagram)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"Hyundai OnLTrack 패킷의 축 인덱스 {axisIndex}에 유한하지 않은 실수 값이 포함되어 있습니다.",
+                datagram);
+        }
     }
 }

@@ -79,12 +79,17 @@ public sealed class AbbRwsAddress
     public static bool TryParse(string? address, [NotNullWhen(true)] out AbbRwsAddress? result)
     {
         result = null;
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null)
         {
             return false;
         }
 
-        string trimmed = address!.Trim();
+        string trimmed = address.Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
         if (trimmed.StartsWith(UrlPrefix, StringComparison.OrdinalIgnoreCase))
         {
             string rawUrl = trimmed.Substring(UrlPrefix.Length);

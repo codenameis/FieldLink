@@ -5,6 +5,8 @@ namespace FieldLink.Robot.Conversion;
 /// <summary>바이트 배열과 불리언 비트 배열 간의 LSB 우선 패킹 및 언패킹 순수 함수입니다.</summary>
 internal static class RobotBitPacking
 {
+    private const int BitsPerByte = 8;
+
     public static int GetPackedByteCount(int bitCount)
     {
         if (bitCount < 0)
@@ -12,7 +14,7 @@ internal static class RobotBitPacking
             throw new ArgumentOutOfRangeException(nameof(bitCount), bitCount, "비트 수는 0 이상이어야 합니다.");
         }
 
-        return (bitCount + 7) / 8;
+        return bitCount == 0 ? 0 : ((bitCount - 1) / BitsPerByte) + 1;
     }
 
     public static byte[] Pack(bool[] bits)
@@ -47,7 +49,7 @@ internal static class RobotBitPacking
         }
 
         int requiredBytes = GetPackedByteCount(bitCount);
-        if (offset < 0 || offset + requiredBytes > buffer.Length)
+        if (offset < 0 || requiredBytes > buffer.Length - offset)
         {
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "비트 언패킹 범위가 버퍼를 초과했습니다.");
         }

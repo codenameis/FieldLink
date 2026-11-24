@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading.Tasks;
 using FieldLink.Robot.Conversion;
 using FieldLink.Robot.Protocols.Yaskawa.HighSpeedEthernet;
 using FieldLink.Robot.Tests.Fakes;
+using FieldLink.Transport;
 using Xunit;
 
 namespace FieldLink.Robot.Tests.Protocols.Yaskawa.HighSpeedEthernet;
@@ -55,10 +57,10 @@ public sealed class YercUdpTests
             {
                 byte[] alarmPayload = new byte[64];
                 RobotBinaryBuffer.WriteInt32LittleEndian(alarmPayload, 0, instance);
-                return BuildYercResponse(requestId, 0x00, 0, 0, alarmPayload);
+                return BuildYercResponse(requestId, 0x00, 0, 0, alarmPayload, frame[29]);
             }
 
-            return BuildYercResponse(requestId, 0x00, 0, 0);
+            return BuildYercResponse(requestId, 0x00, 0, 0, requestService: frame[29]);
         };
 
         using var client = new YercUdpClient(transport);
@@ -91,7 +93,7 @@ public sealed class YercUdpTests
             RobotBinaryBuffer.WriteInt32LittleEndian(payload, 0, 2);
             RobotBinaryBuffer.WriteUInt16LittleEndian(payload, 4, 111);
             RobotBinaryBuffer.WriteUInt16LittleEndian(payload, 6, 222);
-            return BuildYercResponse(frame[11], 0x00, 0, 0, payload);
+            return BuildYercResponse(frame[11], 0x00, 0, 0, payload, frame[29]);
         };
 
         using var withHeaderClient = new YercUdpClient(withHeaderTransport, new YercUdpOptions { IncludeBatchCountHeader = true });
@@ -106,7 +108,7 @@ public sealed class YercUdpTests
             byte[] payload = new byte[4];
             RobotBinaryBuffer.WriteUInt16LittleEndian(payload, 0, 333);
             RobotBinaryBuffer.WriteUInt16LittleEndian(payload, 2, 444);
-            return BuildYercResponse(frame[11], 0x00, 0, 0, payload);
+            return BuildYercResponse(frame[11], 0x00, 0, 0, payload, frame[29]);
         };
 
         using var withoutHeaderClient = new YercUdpClient(withoutHeaderTransport, new YercUdpOptions { IncludeBatchCountHeader = false });
@@ -116,7 +118,158 @@ public sealed class YercUdpTests
         Assert.Equal(new ushort[] { 333, 444 }, regsWithoutHeader.Value);
     }
 
-    private static byte[] BuildYercResponse(byte requestId, byte status, byte addedSize, ushort addedStatus, byte[]? payload = null)
+    [Fact]
+    public async Task Client_BatchWrites0x302To0x306_EncodeSpecHeadersAndPayloads()
+    {
+        var transport = new FakeTransport();
+        transport.AutoResponder = frame => BuildYercResponse(frame[11], 0x00, 0, 0, requestService: frame[29]);
+
+        using var client = new YercUdpClient(transport, new YercUdpOptions { IncludeBatchCountHeader = true });
+        await client.OpenAsync();
+
+        Assert.True((await client.WriteByteBatchAsync(10, new byte[] { 0x11, 0x22 })).IsSuccess);
+        Assert.True((await client.WriteInt16BatchAsync(20, new short[] { -123, 456 })).IsSuccess);
+        Assert.True((await client.WriteInt32BatchAsync(30, new[] { 100000, -200000 })).IsSuccess);
+        Assert.True((await client.WriteSingleBatchAsync(40, new[] { 1.5f, -2.5f })).IsSuccess);
+        Assert.True((await client.WriteStringBatchAsync(50, new[] { "AB", "CD" })).IsSuccess);
+
+        Assert.Equal(5, transport.SentFrames.Count);
+
+        byte[] byteFrame = transport.SentFrames[0];
+        Assert.Equal((ushort)YercCommand.BatchByte, RobotBinaryBuffer.ReadUInt16LittleEndian(byteFrame, 24));
+        Assert.Equal((byte)YercService.WriteMulti, byteFrame[29]);
+        Assert.Equal(6, RobotBinaryBuffer.ReadUInt16LittleEndian(byteFrame, 6));
+        Assert.Equal(2, RobotBinaryBuffer.ReadInt32LittleEndian(byteFrame, 32));
+        Assert.Equal(new byte[] { 0x11, 0x22 }, new[] { byteFrame[36], byteFrame[37] });
+
+        byte[] int16Frame = transport.SentFrames[1];
+        Assert.Equal((ushort)YercCommand.BatchInteger, RobotBinaryBuffer.ReadUInt16LittleEndian(int16Frame, 24));
+        Assert.Equal(8, RobotBinaryBuffer.ReadUInt16LittleEndian(int16Frame, 6));
+        Assert.Equal(2, RobotBinaryBuffer.ReadInt32LittleEndian(int16Frame, 32));
+        Assert.Equal((short)-123, RobotBinaryBuffer.ReadInt16LittleEndian(int16Frame, 36));
+        Assert.Equal((short)456, RobotBinaryBuffer.ReadInt16LittleEndian(int16Frame, 38));
+
+        byte[] int32Frame = transport.SentFrames[2];
+        Assert.Equal((ushort)YercCommand.BatchDoubleInteger, RobotBinaryBuffer.ReadUInt16LittleEndian(int32Frame, 24));
+        Assert.Equal(12, RobotBinaryBuffer.ReadUInt16LittleEndian(int32Frame, 6));
+        Assert.Equal(2, RobotBinaryBuffer.ReadInt32LittleEndian(int32Frame, 32));
+        Assert.Equal(100000, RobotBinaryBuffer.ReadInt32LittleEndian(int32Frame, 36));
+        Assert.Equal(-200000, RobotBinaryBuffer.ReadInt32LittleEndian(int32Frame, 40));
+
+        byte[] singleFrame = transport.SentFrames[3];
+        Assert.Equal((ushort)YercCommand.BatchReal, RobotBinaryBuffer.ReadUInt16LittleEndian(singleFrame, 24));
+        Assert.Equal(12, RobotBinaryBuffer.ReadUInt16LittleEndian(singleFrame, 6));
+        Assert.Equal(2, RobotBinaryBuffer.ReadInt32LittleEndian(singleFrame, 32));
+        Assert.Equal(1.5f, RobotBinaryBuffer.ReadSingleLittleEndian(singleFrame, 36));
+        Assert.Equal(-2.5f, RobotBinaryBuffer.ReadSingleLittleEndian(singleFrame, 40));
+
+        byte[] stringFrame = transport.SentFrames[4];
+        Assert.Equal((ushort)YercCommand.BatchString, RobotBinaryBuffer.ReadUInt16LittleEndian(stringFrame, 24));
+        Assert.Equal(36, RobotBinaryBuffer.ReadUInt16LittleEndian(stringFrame, 6));
+        Assert.Equal(2, RobotBinaryBuffer.ReadInt32LittleEndian(stringFrame, 32));
+        Assert.Equal("AB", RobotBinaryBuffer.ReadNullTrimmedString(stringFrame, 36, 16, Encoding.ASCII));
+        Assert.Equal("CD", RobotBinaryBuffer.ReadNullTrimmedString(stringFrame, 52, 16, Encoding.ASCII));
+
+        var rawTransport = new FakeTransport();
+        rawTransport.AutoResponder = frame => BuildYercResponse(frame[11], 0x00, 0, 0, requestService: frame[29]);
+
+        using var rawClient = new YercUdpClient(rawTransport, new YercUdpOptions { IncludeBatchCountHeader = false });
+        await rawClient.OpenAsync();
+        Assert.True((await rawClient.WriteInt16BatchAsync(20, new short[] { 7 })).IsSuccess);
+        Assert.Equal(2, RobotBinaryBuffer.ReadUInt16LittleEndian(rawTransport.SentFrames[0], 6));
+        Assert.Equal((short)7, RobotBinaryBuffer.ReadInt16LittleEndian(rawTransport.SentFrames[0], 32));
+    }
+
+    [Fact]
+    public async Task Client_BatchIo0x300_AlwaysUsesCountHeaderRegardlessOfOption()
+    {
+        var transport = new FakeTransport();
+        transport.AutoResponder = frame =>
+        {
+            ushort command = RobotBinaryBuffer.ReadUInt16LittleEndian(frame, 24);
+            byte service = frame[29];
+            if (command == (ushort)YercCommand.BatchIo && service == (byte)YercService.ReadMulti)
+            {
+                byte[] payload = new byte[4 + 2];
+                RobotBinaryBuffer.WriteInt32LittleEndian(payload, 0, 2);
+                payload[4] = 0xAA;
+                payload[5] = 0x55;
+                return BuildYercResponse(frame[11], 0x00, 0, 0, payload, service);
+            }
+
+            return BuildYercResponse(frame[11], 0x00, 0, 0, requestService: service);
+        };
+
+        using var client = new YercUdpClient(transport, new YercUdpOptions { IncludeBatchCountHeader = false });
+        await client.OpenAsync();
+
+        RobotResult<byte[]> readResult = await client.ReadIoBatchAsync(1, 2);
+        Assert.True(readResult.IsSuccess);
+        Assert.Equal(new byte[] { 0xAA, 0x55 }, readResult.Value);
+
+        RobotResult writeResult = await client.WriteIoBatchAsync(1, new byte[] { 0x01, 0x02 });
+        Assert.True(writeResult.IsSuccess);
+        byte[] writeFrame = transport.SentFrames[1];
+        Assert.Equal(6, RobotBinaryBuffer.ReadUInt16LittleEndian(writeFrame, 6));
+        Assert.Equal(2, RobotBinaryBuffer.ReadInt32LittleEndian(writeFrame, 32));
+        Assert.Equal(0x01, writeFrame[36]);
+        Assert.Equal(0x02, writeFrame[37]);
+    }
+
+    [Fact]
+    public async Task Client_ValidationChecks_RejectOddBytesNonFiniteFloatsAndInvalidRanges()
+    {
+        var transport = new FakeTransport();
+        using var client = new YercUdpClient(transport);
+        await client.OpenAsync();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.WriteIoBatchAsync(1, new byte[] { 0x01 }));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.WriteByteBatchAsync(1, new byte[] { 0x01 }));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.WriteSingleAsync(1, float.NaN));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.WriteSingleBatchAsync(1, new[] { float.PositiveInfinity }));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.SetCycleAsync(0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.SetCycleAsync(4));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => client.SelectJobAsync(null!, 1));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.SelectJobAsync("MAIN", -1));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => client.SelectJobAsync(new string('A', 33), 0));
+    }
+
+    [Fact]
+    public void ResponseParserAndDecoder_RejectInvalidHeaderSizeDataLengthAckAndService()
+    {
+        byte[] valid = BuildYercResponse(requestId: 5, status: 0x00, addedSize: 0, addedStatus: 0, payload: new byte[] { 0x42 }, requestService: (byte)YercService.GetSingle);
+
+        byte[] badHeaderSize = (byte[])valid.Clone();
+        RobotBinaryBuffer.WriteUInt16LittleEndian(badHeaderSize, 4, 30);
+        RobotException exHeaderSize = Assert.Throws<RobotException>(() => YercResponseParser.ExtractPayload(badHeaderSize, 5, (byte)YercService.GetSingle));
+        Assert.Equal(RobotErrorKind.InvalidResponse, exHeaderSize.Kind);
+
+        var decoder = new YercFrameDecoder();
+        Assert.Throws<TransportException>(() => decoder.TryGetFrameLength(new ArraySegment<byte>(badHeaderSize), out _));
+
+        byte[] badDataLength = (byte[])valid.Clone();
+        RobotBinaryBuffer.WriteUInt16LittleEndian(badDataLength, 6, 9);
+        RobotException exDataLength = Assert.Throws<RobotException>(() => YercResponseParser.ExtractPayload(badDataLength, 5, (byte)YercService.GetSingle));
+        Assert.Equal(RobotErrorKind.InvalidResponse, exDataLength.Kind);
+
+        byte[] missingAck = (byte[])valid.Clone();
+        missingAck[10] = 0x00;
+        RobotException exAck = Assert.Throws<RobotException>(() => YercResponseParser.ExtractPayload(missingAck, 5, (byte)YercService.GetSingle));
+        Assert.Equal(RobotErrorKind.InvalidResponse, exAck.Kind);
+
+        byte[] wrongService = (byte[])valid.Clone();
+        wrongService[24] = (byte)YercService.SetSingle | 0x80;
+        RobotException exService = Assert.Throws<RobotException>(() => YercResponseParser.ExtractPayload(wrongService, 5, (byte)YercService.GetSingle));
+        Assert.Equal(RobotErrorKind.InvalidResponse, exService.Kind);
+    }
+
+    private static byte[] BuildYercResponse(
+        byte requestId,
+        byte status,
+        byte addedSize,
+        ushort addedStatus,
+        byte[]? payload = null,
+        byte requestService = (byte)YercService.GetAll)
     {
         int payloadLen = payload?.Length ?? 0;
         byte[] response = new byte[32 + payloadLen];
@@ -128,6 +281,7 @@ public sealed class YercUdpTests
         RobotBinaryBuffer.WriteUInt16LittleEndian(response, 6, (ushort)payloadLen);
         response[10] = 0x01;
         response[11] = requestId;
+        response[24] = (byte)(requestService | 0x80);
         response[25] = status;
         response[26] = addedSize;
         if (addedSize == 1)

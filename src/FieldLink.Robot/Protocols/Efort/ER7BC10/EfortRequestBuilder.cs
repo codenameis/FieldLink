@@ -7,6 +7,8 @@ namespace FieldLink.Robot.Protocols.Efort.ER7BC10;
 public static class EfortRequestBuilder
 {
     private const ushort ReadStatusOrder = 1001;
+    private const int SequenceFieldOffset = 2;
+    private const int TailFieldOffset = 4;
     private const string PacketHeadText = "MessageHead";
     private const string PacketTailText = "MessageTail";
 
@@ -16,18 +18,16 @@ public static class EfortRequestBuilder
     /// <returns>직렬화된 요청 바이트 배열입니다.</returns>
     public static byte[] BuildReadCommand(ushort sequence, EfortProtocolVersion version = EfortProtocolVersion.V2Aligned)
     {
-        IEfortPacketLayout layout = version == EfortProtocolVersion.V2Aligned
-            ? EfortV2AlignedLayout.Instance
-            : EfortV1UnalignedLayout.Instance;
+        IEfortPacketLayout layout = EfortOptions.CreateLayout(version);
 
         byte[] frame = new byte[layout.RequestLength];
         Encoding.ASCII.GetBytes(PacketHeadText, 0, PacketHeadText.Length, frame, 0);
 
         RobotBinaryBuffer.WriteUInt16LittleEndian(frame, layout.LengthFieldOffset, (ushort)layout.RequestLength);
         RobotBinaryBuffer.WriteUInt16LittleEndian(frame, layout.HeaderLength, ReadStatusOrder);
-        RobotBinaryBuffer.WriteUInt16LittleEndian(frame, layout.HeaderLength + 2, sequence);
+        RobotBinaryBuffer.WriteUInt16LittleEndian(frame, layout.HeaderLength + SequenceFieldOffset, sequence);
 
-        int tailOffset = layout.HeaderLength + 4;
+        int tailOffset = layout.HeaderLength + TailFieldOffset;
         Encoding.ASCII.GetBytes(PacketTailText, 0, PacketTailText.Length, frame, tailOffset);
         return frame;
     }

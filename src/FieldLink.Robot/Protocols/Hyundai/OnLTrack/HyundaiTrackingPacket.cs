@@ -46,6 +46,11 @@ public sealed class HyundaiTrackingPacket
             double[] copy = new double[AxisCount];
             for (int i = 0; i < AxisCount; i++)
             {
+                if (double.IsNaN(value[i]) || double.IsInfinity(value[i]))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(value), value[i], $"축 인덱스 {i}의 트래킹 값이 유한한 숫자가 아닙니다.");
+                }
+
                 copy[i] = value[i];
             }
 

@@ -8,8 +8,12 @@ public static class EstunModbusResponseParser
 {
     private const int MbapPrefixLength = 6;
     private const int MinimumHeaderWithFunctionCode = 8;
+    private const int ReadResponseByteCountOffset = 8;
     private const int ReadResponseDataOffset = 9;
     private const int WriteResponseFrameLength = 12;
+    private const int WriteResponseAddressOffset = 8;
+    private const int WriteResponseValueOrQuantityOffset = 10;
+    private const int BytesPerRegister = 2;
     private const byte ExceptionBitMask = 0x80;
     private const byte ReadHoldingRegistersFunctionCode = 0x03;
     private const byte WriteSingleRegisterFunctionCode = 0x06;
@@ -29,7 +33,7 @@ public static class EstunModbusResponseParser
     {
         ValidateHeaderAndException(frame, expectedTransactionId, expectedStation, ReadHoldingRegistersFunctionCode);
 
-        int expectedByteCount = expectedQuantity * 2;
+        int expectedByteCount = expectedQuantity * BytesPerRegister;
         if (frame.Length < ReadResponseDataOffset + expectedByteCount)
         {
             throw new RobotException(
@@ -38,7 +42,7 @@ public static class EstunModbusResponseParser
                 frame);
         }
 
-        byte reportedByteCount = frame[8];
+        byte reportedByteCount = frame[ReadResponseByteCountOffset];
         if (reportedByteCount != expectedByteCount)
         {
             throw new RobotException(
@@ -52,28 +56,74 @@ public static class EstunModbusResponseParser
         return payload;
     }
 
-    /// <summary>단일 레지스터 쓰기(<c>FC 0x06</c>) 응답을 검증합니다.</summary>
-    public static void ValidateWriteSingleRegister(byte[] frame, ushort expectedTransactionId, byte expectedStation)
+    /// <summary>단일 레지스터 쓰기(<c>FC 0x06</c>) 응답의 길이와 에코 주소·값을 검증합니다.</summary>
+    public static void ValidateWriteSingleRegister(
+        byte[] frame,
+        ushort expectedTransactionId,
+        byte expectedStation,
+        ushort? expectedAddress = null,
+        short? expectedValue = null)
     {
         ValidateHeaderAndException(frame, expectedTransactionId, expectedStation, WriteSingleRegisterFunctionCode);
-        if (frame.Length < WriteResponseFrameLength)
+        if (frame.Length != WriteResponseFrameLength)
         {
             throw new RobotException(
                 RobotErrorKind.InvalidResponse,
-                $"Modbus 단일 쓰기 응답 길이가 너무 짧습니다. ({frame.Length} 바이트)",
+                $"Modbus 단일 쓰기 응답 길이가 규격({WriteResponseFrameLength} 바이트)과 일치하지 않습니다. (실제: {frame.Length} 바이트)",
+                frame);
+        }
+
+        ushort echoedAddress = RobotBinaryBuffer.ReadUInt16BigEndian(frame, WriteResponseAddressOffset);
+        if (expectedAddress.HasValue && echoedAddress != expectedAddress.Value)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"Modbus 단일 쓰기 응답 주소({echoedAddress})가 요청 주소({expectedAddress.Value})와 일치하지 않습니다.",
+                frame);
+        }
+
+        short echoedValue = RobotBinaryBuffer.ReadInt16BigEndian(frame, WriteResponseValueOrQuantityOffset);
+        if (expectedValue.HasValue && echoedValue != expectedValue.Value)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"Modbus 단일 쓰기 응답 값({echoedValue})이 요청 값({expectedValue.Value})과 일치하지 않습니다.",
                 frame);
         }
     }
 
-    /// <summary>다중 레지스터 쓰기(<c>FC 0x10</c>) 응답을 검증합니다.</summary>
-    public static void ValidateWriteMultipleRegisters(byte[] frame, ushort expectedTransactionId, byte expectedStation)
+    /// <summary>다중 레지스터 쓰기(<c>FC 0x10</c>) 응답의 길이와 에코 시작 주소·개수를 검증합니다.</summary>
+    public static void ValidateWriteMultipleRegisters(
+        byte[] frame,
+        ushort expectedTransactionId,
+        byte expectedStation,
+        ushort? expectedStartAddress = null,
+        ushort? expectedQuantity = null)
     {
         ValidateHeaderAndException(frame, expectedTransactionId, expectedStation, WriteMultipleRegistersFunctionCode);
-        if (frame.Length < WriteResponseFrameLength)
+        if (frame.Length != WriteResponseFrameLength)
         {
             throw new RobotException(
                 RobotErrorKind.InvalidResponse,
-                $"Modbus 다중 쓰기 응답 길이가 너무 짧습니다. ({frame.Length} 바이트)",
+                $"Modbus 다중 쓰기 응답 길이가 규격({WriteResponseFrameLength} 바이트)과 일치하지 않습니다. (실제: {frame.Length} 바이트)",
+                frame);
+        }
+
+        ushort echoedAddress = RobotBinaryBuffer.ReadUInt16BigEndian(frame, WriteResponseAddressOffset);
+        if (expectedStartAddress.HasValue && echoedAddress != expectedStartAddress.Value)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"Modbus 다중 쓰기 응답 시작 주소({echoedAddress})가 요청 주소({expectedStartAddress.Value})와 일치하지 않습니다.",
+                frame);
+        }
+
+        ushort echoedQuantity = RobotBinaryBuffer.ReadUInt16BigEndian(frame, WriteResponseValueOrQuantityOffset);
+        if (expectedQuantity.HasValue && echoedQuantity != expectedQuantity.Value)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"Modbus 다중 쓰기 응답 개수({echoedQuantity})가 요청 개수({expectedQuantity.Value})와 일치하지 않습니다.",
                 frame);
         }
     }

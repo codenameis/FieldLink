@@ -28,13 +28,13 @@ public sealed class KukaVarProxyFrameDecoder : IFrameDecoder
     /// <inheritdoc />
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
-        if (received.Count < HeaderLength)
+        if (received.Count < HeaderLength || received.Array is not byte[] buffer)
         {
             frameLength = 0;
             return false;
         }
 
-        ushort bodyLength = RobotBinaryBuffer.ReadUInt16BigEndian(received.Array!, received.Offset + BodyLengthOffset);
+        ushort bodyLength = RobotBinaryBuffer.ReadUInt16BigEndian(buffer, received.Offset + BodyLengthOffset);
         int totalLength = HeaderLength + bodyLength;
         if (totalLength > _maximumFrameLength)
         {

@@ -3,12 +3,6 @@ namespace FieldLink.Robot.Protocols.Efort.ER7BC10;
 /// <summary>EFORT v2(현행 4바이트 정렬) 패킷 레이아웃 전략입니다.</summary>
 internal sealed class EfortV2AlignedLayout : IEfortPacketLayout
 {
-    public static readonly EfortV2AlignedLayout Instance = new();
-
-    private EfortV2AlignedLayout()
-    {
-    }
-
     public int HeaderLength => 18;
 
     public int LengthFieldOffset => 16;

@@ -110,4 +110,21 @@ public sealed class RobotConversionTests
         Assert.False(transportTimeout.IsSuccess);
         Assert.Equal(RobotErrorKind.Timeout, transportTimeout.Error.Kind);
     }
+
+    [Fact]
+    public void BinaryBufferAndBitPacking_GuardBoundsAndPreventOverflow()
+    {
+        Assert.Throws<ArgumentNullException>(() => RobotBinaryBuffer.ReverseByWord(null!, 0, 2));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RobotBinaryBuffer.ReverseByWord(new byte[4], 0, -2));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RobotBinaryBuffer.ReverseByWord(new byte[4], 0, 3));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RobotBinaryBuffer.ReverseByWord(new byte[4], -1, 2));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RobotBinaryBuffer.ReverseByWord(new byte[4], 2, 4));
+        Assert.Equal(new byte[] { 0x34, 0x12 }, RobotBinaryBuffer.ReverseByWord(new byte[] { 0x00, 0x12, 0x34, 0x56 }, 1, 2));
+
+        Assert.Equal(0, RobotBitPacking.GetPackedByteCount(0));
+        Assert.Equal(268_435_456, RobotBitPacking.GetPackedByteCount(int.MaxValue));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RobotBitPacking.GetPackedByteCount(-1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RobotBitPacking.Unpack(new byte[2], int.MaxValue, 8));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RobotBitPacking.Unpack(new byte[2], 0, -1));
+    }
 }

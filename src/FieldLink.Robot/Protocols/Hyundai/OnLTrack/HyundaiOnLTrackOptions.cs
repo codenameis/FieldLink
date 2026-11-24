@@ -6,8 +6,11 @@ namespace FieldLink.Robot.Protocols.Hyundai.OnLTrack;
 /// <summary>Hyundai Online Tracking UDP 수신 서버의 불변 설정입니다.</summary>
 public sealed class HyundaiOnLTrackOptions
 {
+    private const int MinimumPort = 0;
+    private const int MaximumPort = 65535;
     private const int DefaultPort = 7127;
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
+    private const int DefaultTimeoutSeconds = 5;
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
 
     private readonly int _localPort = DefaultPort;
     private readonly IPAddress _localAddress = IPAddress.Any;
@@ -19,9 +22,9 @@ public sealed class HyundaiOnLTrackOptions
         get => _localPort;
         init
         {
-            if (value is < 0 or > 65535)
+            if (value is < MinimumPort or > MaximumPort)
             {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "로컬 포트 번호는 0에서 65535 사이여야 합니다.");
+                throw new ArgumentOutOfRangeException(nameof(value), value, $"로컬 포트 번호는 {MinimumPort}에서 {MaximumPort} 사이여야 합니다.");
             }
 
             _localPort = value;

@@ -10,14 +10,15 @@ using FieldLink.Transport.Http;
 namespace FieldLink.Robot.Protocols.Abb.Rws;
 
 /// <summary>ABB Robot Web Services(RWS) HTTP/HTTPS REST API 클라이언트입니다.</summary>
-public sealed class AbbRwsClient : IRobotClient
+public sealed partial class AbbRwsClient : IRobotClient
 {
     private const int HttpStatusUnauthorized = 401;
+    private const string UrlPrefix = "url=";
 
     private readonly IHttpTransport _transport;
     private readonly AbbRwsOptions _options;
-    private bool _isOpen;
-    private bool _isDisposed;
+    private int _isOpen;
+    private int _isDisposed;
 
     /// <summary>설정 정보로부터 내부 HTTP 전송을 생성해 ABB RWS 클라이언트를 초기화합니다.</summary>
     /// <param name="options">ABB RWS 연결 및 인증 설정입니다.</param>
@@ -36,19 +37,25 @@ public sealed class AbbRwsClient : IRobotClient
     }
 
     /// <inheritdoc />
-    public bool IsOpen => !_isDisposed && _isOpen;
+    public bool IsOpen => Volatile.Read(ref _isDisposed) == 0 && Volatile.Read(ref _isOpen) != 0;
 
     /// <inheritdoc />
     public Task<RobotResult> OpenAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        if (_isOpen)
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (Interlocked.CompareExchange(ref _isOpen, 1, 0) != 0)
         {
             throw new InvalidOperationException("ABB RWS 클라이언트가 이미 열려 있습니다.");
         }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        _isOpen = true;
+        if (Volatile.Read(ref _isDisposed) != 0)
+        {
+            Volatile.Write(ref _isOpen, 0);
+            throw new ObjectDisposedException(nameof(AbbRwsClient));
+        }
+
         return Task.FromResult(RobotResult.Success());
     }
 
@@ -56,7 +63,7 @@ public sealed class AbbRwsClient : IRobotClient
     public Task<RobotResult> CloseAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        _isOpen = false;
+        Volatile.Write(ref _isOpen, 0);
         return Task.FromResult(RobotResult.Success());
     }
 
@@ -85,6 +92,16 @@ public sealed class AbbRwsClient : IRobotClient
     /// <inheritdoc />
     public Task<RobotResult> WriteRawAsync(string address, byte[] data, CancellationToken cancellationToken = default)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소는 비어 있을 수 없습니다.", nameof(address));
+        }
+
         if (data is null)
         {
             throw new ArgumentNullException(nameof(data));
@@ -92,19 +109,31 @@ public sealed class AbbRwsClient : IRobotClient
 
         ThrowIfDisposed();
         EnsureOpen();
-        AbbRwsAddress parsed = AbbRwsAddress.Parse(address);
-        if (!parsed.IsRawUrl)
+
+        if (!address.TrimStart().StartsWith(UrlPrefix, StringComparison.OrdinalIgnoreCase))
         {
             return Task.FromResult(RobotResult.Failure(
-                new RobotError(RobotErrorKind.Unsupported, "ABB RWS 단축 주소에는 쓰기를 지원하지 않습니다. 'url=' 접두사를 사용하세요.")));
+                new RobotError(RobotErrorKind.Unsupported, "ABB RWS 쓰기는 'url=' 접두사 경로만 지원합니다.")));
         }
 
-        return HttpPostBytesAsync(parsed.RawUrl!, data, customHeaders: null, cancellationToken);
+        AbbRwsAddress parsed = AbbRwsAddress.Parse(address);
+        if (parsed.RawUrl is not string rawUrl)
+        {
+            return Task.FromResult(RobotResult.Failure(
+                new RobotError(RobotErrorKind.Unsupported, "ABB RWS 쓰기는 'url=' 접두사 경로만 지원합니다.")));
+        }
+
+        return HttpPostBytesAsync(rawUrl, data, customHeaders: null, cancellationToken);
     }
 
     /// <inheritdoc />
     public Task<RobotResult> WriteStringAsync(string address, string value, CancellationToken cancellationToken = default)
     {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
         if (value is null)
         {
             throw new ArgumentNullException(nameof(value));
@@ -144,157 +173,15 @@ public sealed class AbbRwsClient : IRobotClient
         return ExecuteRequestAsync(request, responseBody => responseBody, cancellationToken);
     }
 
-    /// <summary>컨트롤러 상태(<c>CtrlState</c>)를 조회합니다.</summary>
-    public Task<RobotResult<string>> GetCtrlStateAsync(CancellationToken cancellationToken = default) =>
-        ReadStringAsync("CtrlState", cancellationToken);
-
-    /// <summary>모션 시스템 오류 상태(<c>ErrorState</c>)를 조회합니다.</summary>
-    public Task<RobotResult<string>> GetErrorStateAsync(CancellationToken cancellationToken = default) =>
-        ReadStringAsync("ErrorState", cancellationToken);
-
-    /// <summary>지정 기구 단위의 관절 목표 각도를 조회합니다.</summary>
-    public Task<RobotResult<double[]>> GetJointTargetAsync(string mechunit = "ROB_1", CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildJointTargetRequest(mechunit),
-            AbbRwsResponseParser.ParseJointTarget,
-            cancellationToken);
-    }
-
-    /// <summary>지정 기구 단위의 직교 목표 좌표를 조회합니다.</summary>
-    public Task<RobotResult<IReadOnlyDictionary<string, string>>> GetRobotTargetAsync(
-        string mechunit = "ROB_1",
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildRobotTargetRequest(mechunit),
-            body => AbbRwsResponseParser.ParseObjectByClass(body, "ms-robtargets"),
-            cancellationToken);
-    }
-
-    /// <summary>속도 비율(%)을 조회합니다.</summary>
-    public Task<RobotResult<string>> GetSpeedRatioAsync(CancellationToken cancellationToken = default) =>
-        ReadStringAsync("SpeedRatio", cancellationToken);
-
-    /// <summary>운전 모드를 조회합니다.</summary>
-    public Task<RobotResult<string>> GetOperationModeAsync(CancellationToken cancellationToken = default) =>
-        ReadStringAsync("OperationMode", cancellationToken);
-
-    /// <summary>지정 IO 장치의 입력 또는 출력 값을 조회합니다.</summary>
-    public Task<RobotResult<string>> GetDeviceIoAsync(
-        string deviceName,
-        bool isOutput = false,
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        string className = isOutput ? "outdata" : "indata";
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildDeviceIoRequest(deviceName),
-            body => AbbRwsResponseParser.ParseSpanByClass(body, className),
-            cancellationToken);
-    }
-
-    /// <summary>지정 IO 신호의 상세 상태를 조회합니다.</summary>
-    public Task<RobotResult<IReadOnlyDictionary<string, string>>> GetIoSignalAsync(
-        string network,
-        string unit,
-        string signal,
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildIoSignalRequest(network, unit, signal),
-            body => AbbRwsResponseParser.ParseObjectByClass(body, "ios-signal"),
-            cancellationToken);
-    }
-
-    /// <summary>서보 활성화 신호 상태를 조회합니다.</summary>
-    public Task<RobotResult<IReadOnlyDictionary<string, string>>> GetServoEnableAsync(CancellationToken cancellationToken = default) =>
-        GetIoSignalAsync("Local", "DRV_1", "DRV1K1", cancellationToken);
-
-    /// <summary>RAPID 프로그램 실행 상태를 조회합니다.</summary>
-    public Task<RobotResult<IReadOnlyDictionary<string, string>>> GetRapidExecutionAsync(CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildRequest(AbbRwsAddress.Parse("RapidExecution")),
-            body => AbbRwsResponseParser.ParseObjectByClass(body, "rap-execution"),
-            cancellationToken);
-    }
-
-    /// <summary>RAPID 태스크 목록을 조회합니다.</summary>
-    public Task<RobotResult<IReadOnlyList<IReadOnlyDictionary<string, string>>>> GetRapidTasksAsync(
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildRequest(AbbRwsAddress.Parse("RapidTasks")),
-            body => AbbRwsResponseParser.ParseArrayByClass(body, "rap-task-li", int.MaxValue),
-            cancellationToken);
-    }
-
-    /// <summary>컨트롤러 이벤트 로그 목록을 조회합니다.</summary>
-    public Task<RobotResult<IReadOnlyList<IReadOnlyDictionary<string, string>>>> GetEventLogsAsync(
-        int maxCount = 10,
-        string? language = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (maxCount < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxCount), maxCount, "최대 개수는 0 이상이어야 합니다.");
-        }
-
-        ThrowIfDisposed();
-        EnsureOpen();
-        string effectiveLanguage = language ?? _options.EventLogLanguage;
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildEventLogsRequest(effectiveLanguage),
-            body => AbbRwsResponseParser.ParseArrayByClass(body, "elog-message-li", maxCount),
-            cancellationToken);
-    }
-
-    /// <summary>컨트롤러 시스템 정보를 조회합니다.</summary>
-    public Task<RobotResult<IReadOnlyDictionary<string, string>>> GetSystemInfoAsync(CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildRequest(AbbRwsAddress.Parse("system")),
-            body => AbbRwsResponseParser.ParseObjectByClass(body, "sys-system-li"),
-            cancellationToken);
-    }
-
-    /// <summary>RAPID 사용자 변수 실수 배열을 조회합니다.</summary>
-    public Task<RobotResult<double[]>> GetRapidUserValuesAsync(
-        string symbolNameOrUrl,
-        CancellationToken cancellationToken = default)
-    {
-        ThrowIfDisposed();
-        EnsureOpen();
-        return ExecuteRequestAsync(
-            AbbRwsRequestBuilder.BuildRapidUserValuesRequest(symbolNameOrUrl),
-            body => AbbRwsResponseParser.ParseDoubleListSpanByClass(body, "value"),
-            cancellationToken);
-    }
-
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_isDisposed)
+        if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
         {
             return;
         }
 
-        _isDisposed = true;
-        _isOpen = false;
+        Volatile.Write(ref _isOpen, 0);
         _transport.Dispose();
     }
 
@@ -370,7 +257,7 @@ public sealed class AbbRwsClient : IRobotClient
 
     private void ThrowIfDisposed()
     {
-        if (_isDisposed)
+        if (Volatile.Read(ref _isDisposed) != 0)
         {
             throw new ObjectDisposedException(nameof(AbbRwsClient));
         }

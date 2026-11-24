@@ -5,21 +5,26 @@ using FieldLink.Robot.Conversion;
 namespace FieldLink.Robot.Protocols.Yaskawa.HighSpeedEthernet;
 
 /// <summary>YASKAWA <c>YERC</c> UDP 응답 헤더를 검증하고 각 명령별 페이로드를 해석하는 순수 정적 파서입니다.</summary>
-public static class YercResponseParser
+public static partial class YercResponseParser
 {
     private const int HeaderLength = 32;
     private const byte MagicByte0 = (byte)'Y';
     private const byte MagicByte1 = (byte)'E';
     private const byte MagicByte2 = (byte)'R';
     private const byte MagicByte3 = (byte)'C';
+    private const int HeaderSizeOffset = 4;
+    private const int DataLengthOffset = 6;
+    private const int AckFlagOffset = 10;
     private const int RequestIdOffset = 11;
+    private const int ResponseServiceOffset = 24;
     private const int StatusOffset = 25;
     private const int AddedStatusSizeOffset = 26;
     private const int AddedStatusOffset = 28;
+    private const byte ResponseAckFlag = 0x01;
+    private const byte ResponseServiceBit = 0x80;
     private const byte SingleByteAddedStatusSize = 0x01;
     private const byte SuccessStatus = 0x00;
     private const byte ExtendedErrorStatus = 0x1F;
-    private const int StringVariableLength = 16;
     private const int AlarmHeaderLength = 32;
     private const int AlarmTimeOffset = 16;
     private const int AlarmTimeLength = 16;
@@ -35,39 +40,20 @@ public static class YercResponseParser
     private const int ModelNameLength = 16;
     private const int ParameterVersionOffset = 40;
     private const int ParameterVersionLength = 8;
-    private const int BatchCountHeaderLength = 4;
-    private const int Int16ByteSize = sizeof(short);
     private const int Int32ByteSize = sizeof(int);
-    private const int SingleByteSize = sizeof(float);
 
     /// <summary>32바이트 <c>YERC</c> 응답 헤더와 상태 코드를 검증한 뒤 가변 페이로드 바이트를 추출합니다.</summary>
-    public static byte[] ExtractPayload(byte[] response, byte? expectedRequestId = null)
+    public static byte[] ExtractPayload(
+        byte[] response,
+        byte? expectedRequestId = null,
+        byte? expectedRequestService = null)
     {
         if (response is null)
         {
             throw new ArgumentNullException(nameof(response));
         }
 
-        if (response.Length < HeaderLength)
-        {
-            throw new RobotException(
-                RobotErrorKind.InvalidResponse,
-                $"YERC 응답 길이가 헤더 크기({HeaderLength}바이트)보다 짧습니다. (실제: {response.Length}바이트)",
-                response);
-        }
-
-        if (response[0] != MagicByte0 || response[1] != MagicByte1 || response[2] != MagicByte2 || response[3] != MagicByte3)
-        {
-            throw new RobotException(RobotErrorKind.InvalidResponse, "YERC 응답 매직 헤더가 일치하지 않습니다.", response);
-        }
-
-        if (expectedRequestId.HasValue && response[RequestIdOffset] != expectedRequestId.Value)
-        {
-            throw new RobotException(
-                RobotErrorKind.InvalidResponse,
-                $"YERC RequestID가 일치하지 않습니다. (기대: {expectedRequestId.Value}, 수신: {response[RequestIdOffset]})",
-                response);
-        }
+        ValidateResponseHeader(response, expectedRequestId, expectedRequestService);
 
         byte status = response[StatusOffset];
         if (status != SuccessStatus)
@@ -219,125 +205,81 @@ public static class YercResponseParser
         };
     }
 
-    internal static byte ParseSingleBytePayload(byte[] payload)
+    private static void ValidateResponseHeader(byte[] response, byte? expectedRequestId, byte? expectedRequestService)
     {
-        EnsureMinimumPayloadLength(payload, sizeof(byte));
-        return payload[0];
-    }
-
-    internal static ushort ParseUInt16Payload(byte[] payload)
-    {
-        EnsureMinimumPayloadLength(payload, Int16ByteSize);
-        return RobotBinaryBuffer.ReadUInt16LittleEndian(payload, 0);
-    }
-
-    internal static short ParseInt16Payload(byte[] payload)
-    {
-        EnsureMinimumPayloadLength(payload, Int16ByteSize);
-        return RobotBinaryBuffer.ReadInt16LittleEndian(payload, 0);
-    }
-
-    internal static int ParseInt32Payload(byte[] payload)
-    {
-        EnsureMinimumPayloadLength(payload, Int32ByteSize);
-        return RobotBinaryBuffer.ReadInt32LittleEndian(payload, 0);
-    }
-
-    internal static float ParseSinglePayload(byte[] payload)
-    {
-        EnsureMinimumPayloadLength(payload, SingleByteSize);
-        return RobotBinaryBuffer.ReadSingleLittleEndian(payload, 0);
-    }
-
-    internal static ushort[] ParseRegisterBatch(byte[] payload, int count, bool hasCountHeader)
-    {
-        int offset = GetBatchDataOffset(payload, checked(count * Int16ByteSize), hasCountHeader);
-        ushort[] result = new ushort[count];
-        for (int i = 0; i < count; i++)
-        {
-            result[i] = RobotBinaryBuffer.ReadUInt16LittleEndian(payload, offset + (i * Int16ByteSize));
-        }
-
-        return result;
-    }
-
-    internal static short[] ParseInt16Batch(byte[] payload, int count, bool hasCountHeader)
-    {
-        int offset = GetBatchDataOffset(payload, checked(count * Int16ByteSize), hasCountHeader);
-        short[] result = new short[count];
-        for (int i = 0; i < count; i++)
-        {
-            result[i] = RobotBinaryBuffer.ReadInt16LittleEndian(payload, offset + (i * Int16ByteSize));
-        }
-
-        return result;
-    }
-
-    internal static int[] ParseInt32Batch(byte[] payload, int count, bool hasCountHeader)
-    {
-        int offset = GetBatchDataOffset(payload, checked(count * Int32ByteSize), hasCountHeader);
-        return ReadInt32Array(payload, offset, count);
-    }
-
-    internal static float[] ParseSingleBatch(byte[] payload, int count, bool hasCountHeader)
-    {
-        int offset = GetBatchDataOffset(payload, checked(count * SingleByteSize), hasCountHeader);
-        float[] result = new float[count];
-        for (int i = 0; i < count; i++)
-        {
-            result[i] = RobotBinaryBuffer.ReadSingleLittleEndian(payload, offset + (i * SingleByteSize));
-        }
-
-        return result;
-    }
-
-    internal static byte[] ParseByteBatch(byte[] payload, int count, bool hasCountHeader)
-    {
-        int offset = GetBatchDataOffset(payload, count, hasCountHeader);
-        byte[] result = new byte[count];
-        Array.Copy(payload, offset, result, 0, count);
-        return result;
-    }
-
-    internal static string[] ParseStringBatch(byte[] payload, int count, bool hasCountHeader, Encoding encoding)
-    {
-        int offset = GetBatchDataOffset(payload, checked(count * StringVariableLength), hasCountHeader);
-        string[] result = new string[count];
-        for (int i = 0; i < count; i++)
-        {
-            result[i] = RobotBinaryBuffer.ReadNullTrimmedString(payload, offset + (i * StringVariableLength), StringVariableLength, encoding);
-        }
-
-        return result;
-    }
-
-    internal static int GetBatchDataOffset(byte[] payload, int expectedBodyBytes, bool hasCountHeader)
-    {
-        if (expectedBodyBytes < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(expectedBodyBytes), expectedBodyBytes, "기대 본문 바이트 수는 0 이상이어야 합니다.");
-        }
-
-        int offset = hasCountHeader ? BatchCountHeaderLength : 0;
-        if (payload.Length - offset < expectedBodyBytes)
+        if (response.Length < HeaderLength)
         {
             throw new RobotException(
                 RobotErrorKind.InvalidResponse,
-                $"YERC 배치 응답 길이({payload.Length})가 기대 크기({offset + expectedBodyBytes})보다 짧습니다.",
-                payload);
+                $"YERC 응답 길이가 헤더 크기({HeaderLength}바이트)보다 짧습니다. (실제: {response.Length}바이트)",
+                response);
         }
 
-        return offset;
-    }
+        if (response[0] != MagicByte0 || response[1] != MagicByte1 || response[2] != MagicByte2 || response[3] != MagicByte3)
+        {
+            throw new RobotException(RobotErrorKind.InvalidResponse, "YERC 응답 매직 헤더가 일치하지 않습니다.", response);
+        }
 
-    private static void EnsureMinimumPayloadLength(byte[] payload, int minimumBytes)
-    {
-        if (payload.Length < minimumBytes)
+        ushort headerSize = RobotBinaryBuffer.ReadUInt16LittleEndian(response, HeaderSizeOffset);
+        if (headerSize != HeaderLength)
         {
             throw new RobotException(
                 RobotErrorKind.InvalidResponse,
-                $"YERC 응답 페이로드 길이({payload.Length}바이트)가 기대 최소 크기({minimumBytes}바이트)보다 짧습니다.",
-                payload);
+                $"YERC 응답 헤더 크기({headerSize}바이트)가 규격({HeaderLength}바이트)과 일치하지 않습니다.",
+                response);
+        }
+
+        ushort dataLength = RobotBinaryBuffer.ReadUInt16LittleEndian(response, DataLengthOffset);
+        if (dataLength != response.Length - HeaderLength)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"YERC 응답 데이터 길이({dataLength})가 실제 페이로드 길이({response.Length - HeaderLength})와 일치하지 않습니다.",
+                response);
+        }
+
+        if (response[AckFlagOffset] != ResponseAckFlag)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"YERC 응답 ACK 플래그가 0x{ResponseAckFlag:X2}가 아닙니다. (수신: 0x{response[AckFlagOffset]:X2})",
+                response);
+        }
+
+        if (expectedRequestId.HasValue && response[RequestIdOffset] != expectedRequestId.Value)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"YERC RequestID가 일치하지 않습니다. (기대: {expectedRequestId.Value}, 수신: {response[RequestIdOffset]})",
+                response);
+        }
+
+        ValidateResponseService(response, expectedRequestService);
+    }
+
+    private static void ValidateResponseService(byte[] response, byte? expectedRequestService)
+    {
+        byte actualService = response[ResponseServiceOffset];
+        if (expectedRequestService.HasValue)
+        {
+            byte expectedService = (byte)(expectedRequestService.Value | ResponseServiceBit);
+            if (actualService != expectedService)
+            {
+                throw new RobotException(
+                    RobotErrorKind.InvalidResponse,
+                    $"YERC 응답 Service가 일치하지 않습니다. (기대: 0x{expectedService:X2}, 수신: 0x{actualService:X2})",
+                    response);
+            }
+
+            return;
+        }
+
+        if ((actualService & ResponseServiceBit) == 0)
+        {
+            throw new RobotException(
+                RobotErrorKind.InvalidResponse,
+                $"YERC 응답 Service 비트(0x{ResponseServiceBit:X2})가 설정되어 있지 않습니다. (수신: 0x{actualService:X2})",
+                response);
         }
     }
 

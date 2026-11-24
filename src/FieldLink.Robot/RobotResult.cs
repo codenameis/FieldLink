@@ -39,27 +39,9 @@ public class RobotResult
     /// <typeparam name="T">성공 시 기대했던 값 형식입니다.</typeparam>
     /// <param name="error">실패 원인 정보입니다.</param>
     public static RobotResult<T> Failure<T>(RobotError error) =>
+        // 실패 결과이므로 성공 여부를 확인하지 않고 Value에 접근할 수 없도록 기본값으로 채운다.
         new(default!, error ?? throw new ArgumentNullException(nameof(error)));
 
     /// <inheritdoc />
     public override string ToString() => IsSuccess ? "Success" : Error.ToString();
-}
-
-/// <summary>결과 값을 포함하는 로봇 통신 작업 결과입니다.</summary>
-/// <typeparam name="T">작업 결과 값의 형식입니다.</typeparam>
-public sealed class RobotResult<T> : RobotResult
-{
-    private readonly T _value;
-
-    internal RobotResult(T value, RobotError? error)
-        : base(error)
-    {
-        _value = value;
-    }
-
-    /// <summary>성공한 작업의 결과 값입니다.</summary>
-    /// <exception cref="InvalidOperationException">실패한 결과에서 값을 읽으려 할 때.</exception>
-    public T Value => IsSuccess
-        ? _value
-        : throw new InvalidOperationException($"실패한 결과에는 값이 없습니다. {Error}");
 }

@@ -11,6 +11,10 @@ public static class YrcEthernetRequestBuilder
     private const string ConnectCommand = "CONNECT Robot_access KeepAlive:-1\r\n";
     private const int DisplayMessageMaxBytes = 30;
     private const int BitsPerIoGroup = 8;
+    private const byte CarriageReturn = 0x0D;
+    private const byte LineFeed = 0x0A;
+
+    private static readonly char[] DisallowedControlCharacters = { '\r', '\n', '\0' };
 
     /// <summary>초기 연결 핸드셰이크(<c>CONNECT</c>) 프레임을 생성합니다.</summary>
     public static byte[] BuildConnectRequest(Encoding? encoding = null) =>
@@ -29,6 +33,11 @@ public static class YrcEthernetRequestBuilder
             throw new ArgumentException("명령 이름은 비어 있을 수 없습니다.", nameof(command));
         }
 
+        if (command.IndexOfAny(DisallowedControlCharacters) >= 0)
+        {
+            throw new ArgumentException("명령 이름에 개행 또는 제어 문자를 포함할 수 없습니다.", nameof(command));
+        }
+
         // 사양서 08 §3 & §8.1: Phase 2 본문 끝에 \r(1B)만 추가되므로 DATA_LEN은 len + 1
         int dataLength = commandDataBytes is { Length: > 0 } ? commandDataBytes.Length + 1 : 0;
         string header = $"HOSTCTRL_REQUEST {command} {dataLength.ToString(CultureInfo.InvariantCulture)}\r\n";
@@ -43,14 +52,27 @@ public static class YrcEthernetRequestBuilder
             throw new ArgumentNullException(nameof(commandDataBytes));
         }
 
+        for (int i = 0; i < commandDataBytes.Length; i++)
+        {
+            if (commandDataBytes[i] == CarriageReturn || commandDataBytes[i] == LineFeed)
+            {
+                throw new ArgumentException("YRC Phase 2 데이터에는 CR(\\r) 또는 LF(\\n) 문자를 포함할 수 없습니다.", nameof(commandDataBytes));
+            }
+        }
+
         byte[] payload = new byte[commandDataBytes.Length + 1];
         Array.Copy(commandDataBytes, 0, payload, 0, commandDataBytes.Length);
-        payload[commandDataBytes.Length] = 0x0D;
+        payload[commandDataBytes.Length] = CarriageReturn;
         return payload;
     }
 
     internal static string BuildIoReadData(int startAddress, int pointCount)
     {
+        if (startAddress <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startAddress), startAddress, "I/O 시작 주소는 1 이상이어야 합니다.");
+        }
+
         if (pointCount <= 0 || pointCount % BitsPerIoGroup != 0)
         {
             throw new ArgumentOutOfRangeException(nameof(pointCount), pointCount, $"IOREAD 점수는 {BitsPerIoGroup}의 배수여야 합니다.");
@@ -61,6 +83,11 @@ public static class YrcEthernetRequestBuilder
 
     internal static string BuildIoWriteData(int startAddress, bool[] values)
     {
+        if (startAddress <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(startAddress), startAddress, "I/O 시작 주소는 1 이상이어야 합니다.");
+        }
+
         if (values is null)
         {
             throw new ArgumentNullException(nameof(values));
@@ -92,6 +119,11 @@ public static class YrcEthernetRequestBuilder
             throw new ArgumentNullException(nameof(message));
         }
 
+        if (message.IndexOfAny(DisallowedControlCharacters) >= 0)
+        {
+            throw new ArgumentException("펜던트 표시 메시지(MDSP)에 개행 또는 제어 문자를 포함할 수 없습니다.", nameof(message));
+        }
+
         int byteCount = encoding.GetByteCount(message);
         if (byteCount > DisplayMessageMaxBytes)
         {
@@ -102,5 +134,13 @@ public static class YrcEthernetRequestBuilder
         }
 
         return message;
+    }
+
+    internal static void ValidateNoLineBreaks(string value, string parameterName)
+    {
+        if (value.IndexOfAny(DisallowedControlCharacters) >= 0)
+        {
+            throw new ArgumentException("명령 또는 인자에 개행 또는 제어 문자를 포함할 수 없습니다.", parameterName);
+        }
     }
 }

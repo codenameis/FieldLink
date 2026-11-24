@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading.Tasks;
 using FieldLink.Robot.Conversion;
@@ -189,6 +190,142 @@ public sealed class EstunTests
         Assert.False(result.IsSuccess);
         Assert.Equal(RobotErrorKind.DeviceError, result.Error.Kind);
         Assert.Equal(0x02, result.Error.DeviceErrorCode);
+    }
+
+    [Fact]
+    public async Task Client_WhenSnapshotContainsNaN_ReadStringReturnsParseErrorAndToJsonIncludesAllFields()
+    {
+        byte[] snapshotBytes = new byte[200];
+        // AO[0] (offset 38, Reg 19) = float.NaN in Estun CDAB byte order (0x7FC00000 -> [0x00, 0x00, 0x7F, 0xC0])
+        snapshotBytes[38] = 0x00;
+        snapshotBytes[39] = 0x00;
+        snapshotBytes[40] = 0x7F;
+        snapshotBytes[41] = 0xC0;
+
+        var transport = new FakeTransport();
+        transport.AutoResponder = frame =>
+        {
+            ushort txId = RobotBinaryBuffer.ReadUInt16BigEndian(frame, 0);
+            byte[] response = new byte[9 + snapshotBytes.Length];
+            RobotBinaryBuffer.WriteUInt16BigEndian(response, 0, txId);
+            RobotBinaryBuffer.WriteUInt16BigEndian(response, 4, (ushort)(3 + snapshotBytes.Length));
+            response[6] = frame[6];
+            response[7] = 0x03;
+            response[8] = (byte)snapshotBytes.Length;
+            Array.Copy(snapshotBytes, 0, response, 9, snapshotBytes.Length);
+            return response;
+        };
+
+        using var client = new EstunClient(transport, new EstunOptions { KeepAliveInterval = TimeSpan.Zero });
+        await client.OpenAsync();
+
+        RobotResult<string> jsonResult = await client.ReadStringAsync(string.Empty);
+        Assert.False(jsonResult.IsSuccess);
+        Assert.Equal(RobotErrorKind.ParseError, jsonResult.Error.Kind);
+
+        byte[] cleanBytes = new byte[200];
+        EstunRobotSnapshot cleanSnapshot = EstunSnapshotParser.ParseSnapshot(cleanBytes);
+        string cleanJson = cleanSnapshot.ToJson();
+        Assert.Contains("\"IsManualMode\":", cleanJson, StringComparison.Ordinal);
+        Assert.Contains("\"DigitalOutputs\":", cleanJson, StringComparison.Ordinal);
+        Assert.Contains("\"AnalogOutputs\":", cleanJson, StringComparison.Ordinal);
+        Assert.Contains("\"ReadWriteFlag\":", cleanJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Client_HandshakeStep3Or4Failure_ReleasesAuthorityAndSkipsFinalPollDelay()
+    {
+        var releasedWrites = new List<(ushort Address, short Value)>();
+        var step3TimeoutTransport = new FakeTransport();
+        step3TimeoutTransport.AutoResponder = frame =>
+        {
+            ushort txId = RobotBinaryBuffer.ReadUInt16BigEndian(frame, 0);
+            if (frame[7] == 0x03)
+            {
+                return BuildReadRegisterResponse(txId, 0x01, 0x0000);
+            }
+
+            if (frame[7] == 0x06)
+            {
+                ushort addr = RobotBinaryBuffer.ReadUInt16BigEndian(frame, 8);
+                short val = RobotBinaryBuffer.ReadInt16BigEndian(frame, 10);
+                releasedWrites.Add((addr, val));
+            }
+
+            return BuildWriteEchoResponse(txId, 0x01, frame);
+        };
+
+        using var singlePollClient = new EstunClient(step3TimeoutTransport, new EstunOptions
+        {
+            Timeout = TimeSpan.FromSeconds(5),
+            KeepAliveInterval = TimeSpan.Zero,
+            HandshakePollInterval = TimeSpan.FromSeconds(10),
+            MaxAuthorityPollAttempts = 1
+        });
+        await singlePollClient.OpenAsync();
+
+        RobotResult pollTimeout = await singlePollClient.StartProgramAsync();
+        Assert.False(pollTimeout.IsSuccess);
+        Assert.Equal(RobotErrorKind.Timeout, pollTimeout.Error.Kind);
+        Assert.Contains("1회 시도", pollTimeout.Error.Message, StringComparison.Ordinal);
+        Assert.Contains(((ushort)99, (short)0x0011), releasedWrites);
+        Assert.Contains(((ushort)99, (short)0), releasedWrites);
+        Assert.Contains(((ushort)51, (short)0), releasedWrites);
+
+        var step4FaultWrites = new List<(ushort Address, short Value)>();
+        var step4FaultTransport = new FakeTransport();
+        step4FaultTransport.AutoResponder = frame =>
+        {
+            ushort txId = RobotBinaryBuffer.ReadUInt16BigEndian(frame, 0);
+            if (frame[7] == 0x03)
+            {
+                ushort addr = RobotBinaryBuffer.ReadUInt16BigEndian(frame, 8);
+                return BuildReadRegisterResponse(txId, 0x01, addr == 18 ? (ushort)0x0801 : (ushort)0x0000);
+            }
+
+            ushort writeAddr = RobotBinaryBuffer.ReadUInt16BigEndian(frame, 8);
+            short writeVal = RobotBinaryBuffer.ReadInt16BigEndian(frame, 10);
+            step4FaultWrites.Add((writeAddr, writeVal));
+            if (writeAddr == 51 && writeVal != 0)
+            {
+                return new byte[] { frame[0], frame[1], 0x00, 0x00, 0x00, 0x03, frame[6], (byte)(frame[7] | 0x80), 0x04 };
+            }
+
+            return BuildWriteEchoResponse(txId, 0x01, frame);
+        };
+
+        using var step4Client = new EstunClient(step4FaultTransport, new EstunOptions
+        {
+            KeepAliveInterval = TimeSpan.Zero,
+            HandshakePollInterval = TimeSpan.FromMilliseconds(1),
+            MaxAuthorityPollAttempts = 2
+        });
+        await step4Client.OpenAsync();
+
+        RobotResult step4Result = await step4Client.StartProgramAsync();
+        Assert.False(step4Result.IsSuccess);
+        Assert.Equal(RobotErrorKind.DeviceError, step4Result.Error.Kind);
+        Assert.Contains(((ushort)99, (short)0), step4FaultWrites);
+        Assert.Contains(((ushort)51, (short)0), step4FaultWrites);
+    }
+
+    [Fact]
+    public void RequestAndResponseValidation_RejectsInvalidProjectNameAndEchoMismatches()
+    {
+        Assert.Throws<ArgumentException>(() => EstunModbusRequestBuilder.BuildProjectNamePayload("   ", swapWords: false));
+        Assert.Throws<ArgumentException>(() => EstunModbusRequestBuilder.BuildProjectNamePayload("JOB\n1", swapWords: false));
+        Assert.Throws<ArgumentException>(() => EstunModbusRequestBuilder.BuildProjectNamePayload("프로젝트", swapWords: false));
+        Assert.Throws<ArgumentOutOfRangeException>(() => EstunModbusRequestBuilder.BuildProjectNamePayload(new string('A', 21), swapWords: false));
+
+        byte[] badAddressEcho = BuildWriteEchoResponse(1, 0x01, EstunModbusRequestBuilder.BuildWriteSingleRegister(1, 0x01, 52, 10));
+        RobotException addrError = Assert.Throws<RobotException>(
+            () => EstunModbusResponseParser.ValidateWriteSingleRegister(badAddressEcho, 1, 0x01, expectedAddress: 99, expectedValue: 10));
+        Assert.Equal(RobotErrorKind.InvalidResponse, addrError.Kind);
+
+        byte[] badValueEcho = BuildWriteEchoResponse(1, 0x01, EstunModbusRequestBuilder.BuildWriteSingleRegister(1, 0x01, 99, 99));
+        RobotException valueError = Assert.Throws<RobotException>(
+            () => EstunModbusResponseParser.ValidateWriteSingleRegister(badValueEcho, 1, 0x01, expectedAddress: 99, expectedValue: 0x0011));
+        Assert.Equal(RobotErrorKind.InvalidResponse, valueError.Kind);
     }
 
     private static byte[] BuildReadRegisterResponse(ushort txId, byte station, ushort value)

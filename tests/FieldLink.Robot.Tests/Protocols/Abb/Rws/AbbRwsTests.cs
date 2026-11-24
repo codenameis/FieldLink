@@ -165,4 +165,41 @@ public sealed class AbbRwsTests
         Assert.Equal(RobotErrorKind.DeviceError, serverFail.Error.Kind);
         Assert.Equal(500, serverFail.Error.DeviceErrorCode);
     }
+
+    [Fact]
+    public async Task Client_WriteOnNonUrlAddresses_ReturnsUnsupportedWithoutFormatException()
+    {
+        var http = new FakeHttpTransport();
+        using var client = new AbbRwsClient(http);
+        await client.OpenAsync();
+
+        RobotResult rapidShortcut = await client.WriteStringAsync("rapid/symbol/data/RAPID/T_ROB1/Module1/nCount", "5");
+        Assert.False(rapidShortcut.IsSuccess);
+        Assert.Equal(RobotErrorKind.Unsupported, rapidShortcut.Error.Kind);
+
+        RobotResult rawPathWithoutPrefix = await client.WriteRawAsync("/rw/panel/ctrlstate", new byte[] { 0x41 });
+        Assert.False(rawPathWithoutPrefix.IsSuccess);
+        Assert.Equal(RobotErrorKind.Unsupported, rawPathWithoutPrefix.Error.Kind);
+
+        await Assert.ThrowsAsync<FormatException>(() => client.WriteStringAsync("url=   ", "val"));
+        Assert.Empty(http.SentRequests);
+    }
+
+    [Fact]
+    public void ResponseParser_DecodesXmlEntitiesAndIncludesRawFrameOnMissingElement()
+    {
+        string spanHtml = "<span class=\"ctrlstate\">A &amp; B &lt;1&gt;</span>";
+        Assert.Equal("A & B <1>", AbbRwsResponseParser.ParseSpanByClass(spanHtml, "ctrlstate"));
+
+        string xml = "<li class=\"elog-message-li\"><span class=\"title\">A &amp; B &lt;1&gt;</span></li>";
+        IReadOnlyList<IReadOnlyDictionary<string, string>> logs = AbbRwsResponseParser.ParseArrayByClass(xml, "elog-message-li", maxCount: 10);
+        Assert.Single(logs);
+        Assert.Equal("A & B <1>", logs[0]["title"]);
+
+        string missingSpanHtml = "<div>empty</div>";
+        RobotException missing = Assert.Throws<RobotException>(
+            () => AbbRwsResponseParser.ParseSpanByClass(missingSpanHtml, "ctrlstate"));
+        Assert.Equal(RobotErrorKind.ParseError, missing.Kind);
+        Assert.Equal(Encoding.UTF8.GetBytes(missingSpanHtml), missing.GetRawFrame());
+    }
 }

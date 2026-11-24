@@ -60,26 +60,42 @@ public sealed class EstunRobotSnapshot
     /// <summary>읽기/쓰기 권한 플래그(<c>Reg 99</c>)입니다.</summary>
     public short ReadWriteFlag { get; init; }
 
-    /// <summary>스냅샷 상태를 JSON 문자열로 직렬화합니다.</summary>
+    /// <summary>스냅샷의 모든 상태·입출력·아날로그 필드를 JSON 문자열로 직렬화합니다.</summary>
     public string ToJson()
     {
         var builder = new StringBuilder();
         builder.Append("{\"GlobalSpeedValue\":");
         builder.Append(GlobalSpeedValue.ToString(CultureInfo.InvariantCulture));
-        builder.Append(",\"ProjectName\":");
-        RobotJsonWriter.AppendQuotedString(builder, ProjectName);
+        builder.Append(",\"IsManualMode\":");
+        builder.Append(IsManualMode ? "true" : "false");
+        builder.Append(",\"IsAutoMode\":");
+        builder.Append(IsAutoMode ? "true" : "false");
+        builder.Append(",\"IsRemoteMode\":");
+        builder.Append(IsRemoteMode ? "true" : "false");
         builder.Append(",\"IsServoEnabled\":");
         builder.Append(IsServoEnabled ? "true" : "false");
+        builder.Append(",\"IsRunning\":");
+        builder.Append(IsRunning ? "true" : "false");
         builder.Append(",\"HasError\":");
         builder.Append(HasError ? "true" : "false");
         builder.Append(",\"IsProgramRunning\":");
         builder.Append(IsProgramRunning ? "true" : "false");
+        builder.Append(",\"IsMoving\":");
+        builder.Append(IsMoving ? "true" : "false");
+        builder.Append(",\"ProjectName\":");
+        RobotJsonWriter.AppendQuotedString(builder, ProjectName);
+        builder.Append(",\"DigitalOutputs\":");
+        RobotJsonWriter.AppendBooleanArray(builder, DigitalOutputs);
+        builder.Append(",\"DigitalInputs\":");
+        RobotJsonWriter.AppendBooleanArray(builder, DigitalInputs);
         builder.Append(",\"RobotCommandStatus\":");
         builder.Append(RobotCommandStatus.ToString(CultureInfo.InvariantCulture));
         builder.Append(",\"AnalogOutputs\":");
         RobotJsonWriter.AppendSingleArray(builder, AnalogOutputs);
         builder.Append(",\"AnalogInputs\":");
         RobotJsonWriter.AppendSingleArray(builder, AnalogInputs);
+        builder.Append(",\"ReadWriteFlag\":");
+        builder.Append(ReadWriteFlag.ToString(CultureInfo.InvariantCulture));
         builder.Append('}');
         return builder.ToString();
     }

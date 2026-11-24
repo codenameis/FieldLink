@@ -1,3 +1,4 @@
+using System;
 using System.Text;
 using System.Threading.Tasks;
 using FieldLink.Robot.Protocols.Yamaha.Rcx;
@@ -69,5 +70,27 @@ public sealed class YamahaRcxTests
         Assert.False(result.IsSuccess);
         Assert.Equal(RobotErrorKind.DeviceError, result.Error.Kind);
         Assert.Equal("NG 2101 Syntax error", result.Error.Message);
+    }
+
+    [Fact]
+    public async Task RequestBuilderResponseParserAndReadString_HandleInjectionNgPartAndJogXyTwoLines()
+    {
+        Assert.Throws<ArgumentException>(() => YamahaRcxRequestBuilder.BuildCommand("@ RESET \r\n@ RUN "));
+        Assert.Throws<ArgumentException>(() => YamahaRcxRequestBuilder.BuildLoad("MAIN\nDROP", 1));
+        Assert.Throws<ArgumentException>(() => YamahaRcxRequestBuilder.BuildCommand("CMD\0EXTRA"));
+
+        Assert.False(YamahaRcxResponseParser.IsErrorLine("NG_PART"));
+        Assert.True(YamahaRcxResponseParser.IsErrorLine("NG 2101 Syntax error"));
+        Assert.True(YamahaRcxResponseParser.IsErrorLine("NG:100"));
+
+        var transport = new FakeTransport();
+        transport.EnqueueIncomingAscii("12.345\r\nOK\r\n");
+
+        using var client = new YamahaRcxClient(transport);
+        await client.OpenAsync();
+
+        RobotResult<string> jogResult = await client.ReadStringAsync("@ JOGXY 1+");
+        Assert.True(jogResult.IsSuccess);
+        Assert.Equal("12.345\r\nOK", jogResult.Value);
     }
 }

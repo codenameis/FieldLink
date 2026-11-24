@@ -16,13 +16,13 @@ public sealed class EstunModbusFrameDecoder : IFrameDecoder
     /// <inheritdoc />
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
-        if (received.Count < MbapPrefixLength)
+        if (received.Count < MbapPrefixLength || received.Array is not byte[] buffer)
         {
             frameLength = 0;
             return false;
         }
 
-        ushort remainingLength = RobotBinaryBuffer.ReadUInt16BigEndian(received.Array!, received.Offset + LengthFieldOffset);
+        ushort remainingLength = RobotBinaryBuffer.ReadUInt16BigEndian(buffer, received.Offset + LengthFieldOffset);
         if (remainingLength < MinimumRemainingBytes)
         {
             throw new TransportException(
