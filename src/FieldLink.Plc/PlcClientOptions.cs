@@ -8,16 +8,29 @@ namespace FieldLink.Plc;
 public sealed class PlcClientOptions
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(3);
+    private readonly TimeSpan _timeout = DefaultTimeout;
 
     /// <summary>기본값으로 설정을 초기화합니다.</summary>
     public PlcClientOptions()
     {
-        Timeout = DefaultTimeout;
         StringEncoding = Encoding.ASCII;
     }
 
     /// <summary>요청 전체에 적용되는 기본 제한 시간입니다. 기본값은 3초입니다.</summary>
-    public TimeSpan Timeout { get; init; }
+    /// <exception cref="ArgumentOutOfRangeException">제한 시간이 0 이하이고 무한 제한 시간이 아닐 때.</exception>
+    public TimeSpan Timeout
+    {
+        get => _timeout;
+        init
+        {
+            if (value <= TimeSpan.Zero && value != System.Threading.Timeout.InfiniteTimeSpan)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "요청 제한 시간은 0보다 커야 합니다.");
+            }
+
+            _timeout = value;
+        }
+    }
 
     /// <summary>
     /// 숫자의 바이트 순서입니다.

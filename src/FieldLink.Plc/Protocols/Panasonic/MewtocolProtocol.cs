@@ -12,7 +12,12 @@ namespace FieldLink.Plc.Protocols.Panasonic;
 /// <summary>Panasonic MEWTOCOL-COM 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class MewtocolProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int BytesPerWord = 2;
+    private const byte StringPaddingByte = 0x00;
+    private const string CommandEchoWriteContact = "WC";
+    private const string CommandEchoWriteWords = "WD";
+
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: StringPaddingByte, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly MewtocolOptions _options;
@@ -45,36 +50,45 @@ public sealed class MewtocolProtocol : IPlcProtocol
         }
 
         var address = MewtocolAddress.Parse(request.Address);
-        if (request.DataType == PlcDataType.Boolean && request.Count == 1)
+        int elementSize = request.DataType.GetElementSize();
+        ValidateAddressAndDataType(address, request.DataType, elementSize);
+
+        if (address.IsBit)
         {
-            byte[] requestFrame = MewtocolRequestBuilder.BuildReadSingleBit(_options.Station, address);
-            byte bitVal = await _transport.RunExclusiveAsync<byte>(async session =>
+            byte[] bitResults = new byte[request.Count];
+            await _transport.RunExclusiveAsync<bool>(async session =>
             {
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                return MewtocolResponseParser.ParseReadSingleBit(responseFrame, _options.Station);
+                for (int i = 0; i < request.Count; i++)
+                {
+                    MewtocolAddress bitAddress = address.Offset(i);
+                    byte[] requestFrame = MewtocolRequestBuilder.BuildReadSingleBit(_options.Station, bitAddress);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    bitResults[i] = MewtocolResponseParser.ParseReadSingleBit(responseFrame, _options.Station);
+                }
+
+                return true;
             }, cancellationToken).ConfigureAwait(false);
 
-            return [bitVal];
+            return bitResults;
         }
 
-        int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, _options.MaxReadWords);
+        int wordsPerElement = elementSize / BytesPerWord;
+        int maxElements = RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
         byte[] combinedBuffer = new byte[request.ByteCount];
 
         await _transport.RunExclusiveAsync<bool>(async session =>
         {
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                MewtocolAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
+                MewtocolAddress chunkAddress = address.Offset(checked(chunk.ElementOffset * wordsPerElement));
+                ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
 
-                byte[] requestFrame = MewtocolRequestBuilder.BuildReadWords(_options.Station, chunkAddress, count);
+                byte[] requestFrame = MewtocolRequestBuilder.BuildReadWords(_options.Station, chunkAddress, wordCount);
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                byte[] chunkData = MewtocolResponseParser.ParseReadWords(responseFrame, _options.Station, count);
+                byte[] chunkData = MewtocolResponseParser.ParseReadWords(responseFrame, _options.Station, wordCount);
 
-                int destOffset = chunk.ElementOffset * 2;
+                int destOffset = checked(chunk.ElementOffset * elementSize);
                 Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
             }
 
@@ -93,38 +107,77 @@ public sealed class MewtocolProtocol : IPlcProtocol
         }
 
         var address = MewtocolAddress.Parse(request.Address);
-        if (request.DataType == PlcDataType.Boolean && request.Count == 1)
-        {
-            bool bitVal = request.GetData()[0] != 0;
-            byte[] requestFrame = MewtocolRequestBuilder.BuildWriteSingleBit(_options.Station, address, bitVal);
-            await _transport.RunExclusiveAsync<bool>(async session =>
-            {
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                MewtocolResponseParser.VerifyWriteResponse(responseFrame, _options.Station, "WC");
-                return true;
-            }, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
         int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, _options.MaxWriteWords);
+        ValidateAddressAndDataType(address, request.DataType, elementSize);
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        int completedElements = 0;
+
+        try
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            if (address.IsBit)
             {
-                MewtocolAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                byte[] chunkData = request.GetData(chunk.ElementOffset / wordsPerElement, chunk.ElementCount / wordsPerElement);
+                byte[] bitData = request.GetData();
+                await _transport.RunExclusiveAsync<bool>(async session =>
+                {
+                    for (int i = 0; i < request.Count; i++)
+                    {
+                        MewtocolAddress bitAddress = address.Offset(i);
+                        bool bitValue = bitData[i] != 0;
+                        byte[] requestFrame = MewtocolRequestBuilder.BuildWriteSingleBit(_options.Station, bitAddress, bitValue);
+                        byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                        MewtocolResponseParser.VerifyWriteResponse(responseFrame, _options.Station, CommandEchoWriteContact);
+                        completedElements++;
+                    }
 
-                byte[] requestFrame = MewtocolRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, count, chunkData);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                MewtocolResponseParser.VerifyWriteResponse(responseFrame, _options.Station, "WD");
+                    return true;
+                }, cancellationToken).ConfigureAwait(false);
+                return;
             }
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+            int wordsPerElement = elementSize / BytesPerWord;
+            int maxElements = RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
+            List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+
+            await _transport.RunExclusiveAsync<bool>(async session =>
+            {
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    MewtocolAddress chunkAddress = address.Offset(checked(chunk.ElementOffset * wordsPerElement));
+                    ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
+                    byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+
+                    byte[] requestFrame = MewtocolRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, wordCount, chunkData);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    MewtocolResponseParser.VerifyWriteResponse(responseFrame, _options.Station, CommandEchoWriteWords);
+                    completedElements += chunk.ElementCount;
+                }
+
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PlcDeviceException deviceException)
+        {
+            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
+        }
+        catch (PlcException exception)
+        {
+            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
+            {
+                CompletedCount = completedElements
+            };
+        }
+    }
+
+    private static void ValidateAddressAndDataType(MewtocolAddress address, PlcDataType dataType, int elementSize)
+    {
+        if (address.IsBit && dataType != PlcDataType.Boolean)
+        {
+            throw new ArgumentException($"비트 접점 '{address.Original}'에는 Boolean 자료형만 사용할 수 있습니다.", nameof(dataType));
+        }
+
+        if (!address.IsBit && elementSize % BytesPerWord != 0)
+        {
+            throw new ArgumentException($"워드 영역 '{address.Original}'에는 2바이트 배수 자료형만 사용할 수 있습니다.", nameof(dataType));
+        }
     }
 }

@@ -11,6 +11,25 @@ public static class ModbusResponseParser
     private const byte AsciiColon = 0x3A; // ':'
     private const byte AsciiCarriageReturn = 0x0D; // '\r'
     private const byte AsciiLineFeed = 0x0A; // '\n'
+    private const int MbapHeaderLength = 7;
+    private const int MbapLengthFieldAdjustment = 6;
+    private const ushort ModbusTcpProtocolId = 0x0000;
+    private const int RtuMinimumAduLength = 4;
+    private const int CrcLength = 2;
+    private const int RtuFramingOverhead = 3;
+    private const int AsciiMinimumAduLength = 9;
+    private const int AsciiEnvelopeLength = 3;
+    private const int AsciiTrailerLength = 2;
+    private const int LrcLength = 1;
+    private const int AsciiFramingOverhead = 2;
+    private const int ReadPduHeaderLength = 2;
+    private const int BytesPerRegister = 2;
+    private const int WriteSinglePduLength = 5;
+    private const int WriteMultiplePduLength = 5;
+    private const int MinimumPduLength = 2;
+    private const byte ExceptionResponseFlag = 0x80;
+    private const int ExceptionPduLength = 2;
+    private const int ByteShift = 8;
 
     /// <summary>TCP ADU 프레임의 헤더(MBAP)를 검증하고 PDU 바이트 배열을 추출합니다.</summary>
     public static byte[] UnwrapTcpAdu(byte[] adu, ushort expectedTransactionId, byte expectedUnitId)
@@ -20,12 +39,12 @@ public static class ModbusResponseParser
             throw new ArgumentNullException(nameof(adu));
         }
 
-        if (adu.Length < 7)
+        if (adu.Length < MbapHeaderLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"TCP ADU 길이가 너무 짧습니다. (길이: {adu.Length})");
         }
 
-        ushort transactionId = (ushort)((adu[0] << 8) | adu[1]);
+        ushort transactionId = (ushort)((adu[0] << ByteShift) | adu[1]);
         if (transactionId != expectedTransactionId)
         {
             throw new PlcException(
@@ -33,16 +52,16 @@ public static class ModbusResponseParser
                 $"트랜잭션 ID가 일치하지 않습니다. (기대값: 0x{expectedTransactionId:X4}, 수신값: 0x{transactionId:X4})");
         }
 
-        ushort protocolId = (ushort)((adu[2] << 8) | adu[3]);
-        if (protocolId != 0)
+        ushort protocolId = (ushort)((adu[2] << ByteShift) | adu[3]);
+        if (protocolId != ModbusTcpProtocolId)
         {
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
                 $"Modbus TCP 프로토콜 ID가 0이 아닙니다. (수신값: 0x{protocolId:X4})");
         }
 
-        int lengthField = (adu[4] << 8) | adu[5];
-        if (adu.Length != 6 + lengthField)
+        int lengthField = (adu[4] << ByteShift) | adu[5];
+        if (adu.Length != MbapLengthFieldAdjustment + lengthField)
         {
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
@@ -57,8 +76,8 @@ public static class ModbusResponseParser
                 $"유닛 ID가 일치하지 않습니다. (기대값: {expectedUnitId}, 수신값: {unitId})");
         }
 
-        byte[] pdu = new byte[adu.Length - 7];
-        Array.Copy(adu, 7, pdu, 0, pdu.Length);
+        byte[] pdu = new byte[adu.Length - MbapHeaderLength];
+        Array.Copy(adu, MbapHeaderLength, pdu, 0, pdu.Length);
         return pdu;
     }
 
@@ -70,13 +89,13 @@ public static class ModbusResponseParser
             throw new ArgumentNullException(nameof(adu));
         }
 
-        if (adu.Length < 4) // 국번 1 + 최소 PDU 1 + CRC 2
+        if (adu.Length < RtuMinimumAduLength) // 국번 1 + 최소 PDU 1 + CRC 2
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"RTU ADU 길이가 너무 짧습니다. (길이: {adu.Length})");
         }
 
-        byte[] calculatedCrc = Crc16Modbus.CalculateBytes(adu, 0, adu.Length - 2);
-        if (adu[adu.Length - 2] != calculatedCrc[0] || adu[adu.Length - 1] != calculatedCrc[1])
+        byte[] calculatedCrc = Crc16Modbus.CalculateBytes(adu, 0, adu.Length - CrcLength);
+        if (adu[adu.Length - CrcLength] != calculatedCrc[0] || adu[adu.Length - 1] != calculatedCrc[1])
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus RTU 응답의 CRC-16 체크섬이 일치하지 않습니다.");
         }
@@ -89,7 +108,7 @@ public static class ModbusResponseParser
                 $"국번이 일치하지 않습니다. (기대값: {expectedUnitId}, 수신값: {unitId})");
         }
 
-        byte[] pdu = new byte[adu.Length - 3];
+        byte[] pdu = new byte[adu.Length - RtuFramingOverhead];
         Array.Copy(adu, 1, pdu, 0, pdu.Length);
         return pdu;
     }
@@ -102,17 +121,17 @@ public static class ModbusResponseParser
             throw new ArgumentNullException(nameof(adu));
         }
 
-        if (adu.Length < 9) // ':' + 국번 2자 + FC 2자 + LRC 2자 + CRLF 2자 = 9자 이상
+        if (adu.Length < AsciiMinimumAduLength) // ':' + 국번 2자 + FC 2자 + LRC 2자 + CRLF 2자 = 9자 이상
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"ASCII ADU 길이가 너무 짧습니다. (길이: {adu.Length})");
         }
 
-        if (adu[0] != AsciiColon || adu[adu.Length - 2] != AsciiCarriageReturn || adu[adu.Length - 1] != AsciiLineFeed)
+        if (adu[0] != AsciiColon || adu[adu.Length - AsciiTrailerLength] != AsciiCarriageReturn || adu[adu.Length - 1] != AsciiLineFeed)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus ASCII 프레임의 시작 또는 종료 구분자가 올바르지 않습니다.");
         }
 
-        string hexString = Encoding.ASCII.GetString(adu, 1, adu.Length - 3);
+        string hexString = Encoding.ASCII.GetString(adu, 1, adu.Length - AsciiEnvelopeLength);
         byte[] rawBytes;
         try
         {
@@ -123,8 +142,8 @@ public static class ModbusResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus ASCII 프레임에 16진수가 아닌 문자가 포함되어 있습니다.", exception);
         }
 
-        byte calculatedLrc = LongitudinalRedundancyCheck.Calculate(rawBytes, 0, rawBytes.Length - 1);
-        if (rawBytes[rawBytes.Length - 1] != calculatedLrc)
+        byte calculatedLrc = LongitudinalRedundancyCheck.Calculate(rawBytes, 0, rawBytes.Length - LrcLength);
+        if (rawBytes[rawBytes.Length - LrcLength] != calculatedLrc)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus ASCII 응답의 LRC 체크섬이 일치하지 않습니다.");
         }
@@ -137,7 +156,7 @@ public static class ModbusResponseParser
                 $"국번이 일치하지 않습니다. (기대값: {expectedUnitId}, 수신값: {unitId})");
         }
 
-        byte[] pdu = new byte[rawBytes.Length - 2];
+        byte[] pdu = new byte[rawBytes.Length - AsciiFramingOverhead];
         Array.Copy(rawBytes, 1, pdu, 0, pdu.Length);
         return pdu;
     }
@@ -147,10 +166,10 @@ public static class ModbusResponseParser
     {
         ValidatePduHeader(pdu, expectedFunctionCode);
 
-        int expectedByteCount = expectedRegisterCount * 2;
+        int expectedByteCount = expectedRegisterCount * BytesPerRegister;
         byte byteCount = pdu[1];
 
-        if (byteCount != expectedByteCount || pdu.Length != 2 + expectedByteCount)
+        if (byteCount != expectedByteCount || pdu.Length != ReadPduHeaderLength + expectedByteCount)
         {
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
@@ -158,7 +177,7 @@ public static class ModbusResponseParser
         }
 
         byte[] registerBytes = new byte[expectedByteCount];
-        Array.Copy(pdu, 2, registerBytes, 0, expectedByteCount);
+        Array.Copy(pdu, ReadPduHeaderLength, registerBytes, 0, expectedByteCount);
         return registerBytes;
     }
 
@@ -170,14 +189,14 @@ public static class ModbusResponseParser
         int expectedByteCount = BitPacking.GetPackedByteCount(expectedBitCount);
         byte byteCount = pdu[1];
 
-        if (byteCount != expectedByteCount || pdu.Length != 2 + expectedByteCount)
+        if (byteCount != expectedByteCount || pdu.Length != ReadPduHeaderLength + expectedByteCount)
         {
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
                 $"비트 읽기 응답의 바이트 수({byteCount})가 기대 수({expectedByteCount})와 일치하지 않습니다.");
         }
 
-        bool[] bits = BitPacking.Unpack(pdu, offset: 2, bitCount: expectedBitCount);
+        bool[] bits = BitPacking.Unpack(pdu, offset: ReadPduHeaderLength, bitCount: expectedBitCount);
         byte[] result = new byte[expectedBitCount];
         for (int i = 0; i < expectedBitCount; i++)
         {
@@ -190,14 +209,24 @@ public static class ModbusResponseParser
     /// <summary>단일 쓰기 응답 PDU(FC 0x05, 0x06)가 요청 PDU와 동일한 에코인지 검증합니다.</summary>
     public static void ParseWriteSingleResponse(byte[] responsePdu, byte[] requestPdu)
     {
-        ValidatePduHeader(responsePdu, (ModbusFunctionCode)requestPdu[0]);
-
-        if (responsePdu.Length != 5 || requestPdu.Length != 5)
+        if (requestPdu is null)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "단일 쓰기 응답 길이가 5바이트가 아닙니다.");
+            throw new ArgumentNullException(nameof(requestPdu));
         }
 
-        for (int i = 0; i < 5; i++)
+        if (requestPdu.Length != WriteSinglePduLength)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"단일 쓰기 요청 길이가 {WriteSinglePduLength}바이트가 아닙니다.");
+        }
+
+        ValidatePduHeader(responsePdu, (ModbusFunctionCode)requestPdu[0]);
+
+        if (responsePdu.Length != WriteSinglePduLength)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"단일 쓰기 응답 길이가 {WriteSinglePduLength}바이트가 아닙니다.");
+        }
+
+        for (int i = 0; i < WriteSinglePduLength; i++)
         {
             if (responsePdu[i] != requestPdu[i])
             {
@@ -211,13 +240,13 @@ public static class ModbusResponseParser
     {
         ValidatePduHeader(responsePdu, expectedFunctionCode);
 
-        if (responsePdu.Length != 5)
+        if (responsePdu.Length != WriteMultiplePduLength)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "다중 쓰기 응답 길이가 5바이트가 아닙니다.");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"다중 쓰기 응답 길이가 {WriteMultiplePduLength}바이트가 아닙니다.");
         }
 
-        ushort startAddress = (ushort)((responsePdu[1] << 8) | responsePdu[2]);
-        ushort count = (ushort)((responsePdu[3] << 8) | responsePdu[4]);
+        ushort startAddress = (ushort)((responsePdu[1] << ByteShift) | responsePdu[2]);
+        ushort count = (ushort)((responsePdu[3] << ByteShift) | responsePdu[4]);
 
         if (startAddress != expectedStartAddress || count != expectedCount)
         {
@@ -234,7 +263,7 @@ public static class ModbusResponseParser
             throw new ArgumentNullException(nameof(pdu));
         }
 
-        if (pdu.Length < 2)
+        if (pdu.Length < MinimumPduLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"Modbus 응답 PDU 길이가 너무 짧습니다. (길이: {pdu.Length})");
         }
@@ -242,11 +271,11 @@ public static class ModbusResponseParser
         byte responseFc = pdu[0];
         byte expectedFc = (byte)expectedFunctionCode;
 
-        if (responseFc == (expectedFc | 0x80))
+        if (responseFc == (expectedFc | ExceptionResponseFlag))
         {
-            if (pdu.Length != 2)
+            if (pdu.Length != ExceptionPduLength)
             {
-                throw new PlcException(PlcErrorKind.InvalidResponse, "Modbus 예외 응답 길이가 2바이트가 아닙니다.");
+                throw new PlcException(PlcErrorKind.InvalidResponse, $"Modbus 예외 응답 길이가 {ExceptionPduLength}바이트가 아닙니다.");
             }
 
             var exceptionCode = (ModbusExceptionCode)pdu[1];

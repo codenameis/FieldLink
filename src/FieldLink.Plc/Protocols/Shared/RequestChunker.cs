@@ -59,7 +59,8 @@ public static class RequestChunker
             throw new ArgumentOutOfRangeException(nameof(maxElementsPerChunk), maxElementsPerChunk, "청크 한도는 1 이상이어야 합니다.");
         }
 
-        var chunks = new List<Chunk>((totalCount + maxElementsPerChunk - 1) / maxElementsPerChunk);
+        int chunkCapacity = ((totalCount - 1) / maxElementsPerChunk) + 1;
+        var chunks = new List<Chunk>(chunkCapacity);
         int currentOffset = 0;
 
         while (currentOffset < totalCount)

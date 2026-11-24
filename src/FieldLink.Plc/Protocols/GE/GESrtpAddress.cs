@@ -1,11 +1,19 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace FieldLink.Plc.Protocols.GE;
 
 /// <summary>GE Fanuc / Emerson SRTP 프로토콜의 주소 표현입니다. (사양서 §1.4)</summary>
 public sealed class GESrtpAddress
 {
+    private const byte MinBitTypeCode = 0x46;
+    private const byte RegisterTypeCode = 0x08;
+    private const byte AnalogInputTypeCode = 0x0A;
+    private const byte AnalogOutputTypeCode = 0x0C;
+    private const int TwoCharPrefixLength = 2;
+    private const int SingleCharPrefixLength = 1;
+
     private GESrtpAddress(string original, byte memoryTypeCode, ushort wireAddress, bool isBit, bool isWord)
     {
         Original = original;
@@ -33,6 +41,11 @@ public sealed class GESrtpAddress
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static GESrtpAddress Parse(string address, bool isBitAccess = false)
     {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+        }
+
         if (!TryParse(address, isBitAccess, out GESrtpAddress? result, out string? errorMessage))
         {
             throw new FormatException(errorMessage);
@@ -51,24 +64,25 @@ public sealed class GESrtpAddress
         result = null;
         errorMessage = null;
 
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null || string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+            errorMessage = "주소 문자열이 비어 있습니다.";
+            return false;
         }
 
-        string trimmed = address!.Trim().ToUpperInvariant();
+        string trimmed = address.Trim().ToUpperInvariant();
         if (trimmed.StartsWith("%", StringComparison.Ordinal))
         {
-            trimmed = trimmed.Substring(1);
+            trimmed = trimmed.Substring(SingleCharPrefixLength);
         }
 
-        if (!TryExtractPrefix(trimmed, isBitAccess, out byte typeCode, out bool isBit, out bool isWord, out string numberText))
+        if (trimmed.Length == 0 || !TryExtractPrefix(trimmed, isBitAccess, out byte typeCode, out bool isBit, out bool isWord, out string numberText))
         {
             errorMessage = $"지원하지 않는 GE SRTP 주소 접두사입니다: {address}";
             return false;
         }
 
-        if (!ushort.TryParse(numberText, out ushort userNum) || userNum == 0)
+        if (!ushort.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out ushort userNum) || userNum == 0)
         {
             errorMessage = $"GE 주소 번호는 1 이상이어야 합니다: {address}";
             return false;
@@ -98,14 +112,14 @@ public sealed class GESrtpAddress
         {
             if (trimmed.StartsWith(p2, StringComparison.Ordinal))
             {
-                numberText = trimmed.Substring(2);
+                numberText = trimmed.Substring(TwoCharPrefixLength);
                 return ResolveTypeCode(p2, isBitAccess, out typeCode, out isBit, out isWord);
             }
         }
 
         // 1글자 접두사
-        string p1 = trimmed.Substring(0, 1);
-        numberText = trimmed.Substring(1);
+        string p1 = trimmed.Substring(0, SingleCharPrefixLength);
+        numberText = trimmed.Substring(SingleCharPrefixLength);
         return ResolveTypeCode(p1, isBitAccess, out typeCode, out isBit, out isWord);
     }
 
@@ -129,9 +143,9 @@ public sealed class GESrtpAddress
             "SC" => (byte)(isBitAccess ? 0x52 : 0x1C),
             "S" => (byte)(isBitAccess ? 0x54 : 0x1E),
             "G" => (byte)(isBitAccess ? 0x56 : 0x38),
-            "R" => 0x08,
-            "AI" => 0x0A,
-            "AQ" => 0x0C,
+            "R" => RegisterTypeCode,
+            "AI" => AnalogInputTypeCode,
+            "AQ" => AnalogOutputTypeCode,
             _ => 0,
         };
 
@@ -140,14 +154,19 @@ public sealed class GESrtpAddress
             return false;
         }
 
-        isBit = isBitAccess && typeCode >= 0x46;
-        isWord = typeCode is 0x08 or 0x0A or 0x0C;
+        isBit = isBitAccess && typeCode >= MinBitTypeCode;
+        isWord = typeCode is RegisterTypeCode or AnalogInputTypeCode or AnalogOutputTypeCode;
         return true;
     }
 
     /// <summary>오프셋만큼 주소를 이동한 새 <see cref="GESrtpAddress"/>를 생성합니다.</summary>
     public GESrtpAddress Offset(int count)
     {
+        if (count < 0 || WireAddress + (long)count > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "SRTP 주소 오프셋이 16비트 범위를 초과합니다.");
+        }
+
         ushort newWire = (ushort)(WireAddress + count);
         return new GESrtpAddress($"{Original}+{count}", MemoryTypeCode, newWire, IsBit, IsWord);
     }

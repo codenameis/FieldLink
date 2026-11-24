@@ -7,6 +7,17 @@ namespace FieldLink.Plc.Protocols.FujiElectric;
 public static class FujiElectricSpbRequestBuilder
 {
     private const string CpuDirect = "FFFF";
+    private const int MinWordCount = 1;
+    private const int MaxWordCount = 64;
+    private const int BytesPerWord = 2;
+    private const int FixedWritePayloadBytes = 9;
+    private const int FixedHeaderChars = 18;
+    private const int AsciiCharsPerByte = 2;
+    private const int ByteMask = 0xFF;
+    private const string FixedLengthHex = "09";
+    private const string CommandReadWords = "0000";
+    private const string CommandWriteWords = "0100";
+    private const string CommandWriteBit = "0102";
 
     /// <summary>연속 워드 읽기(명령 00 00) 프레임을 빌드합니다.</summary>
     public static byte[] BuildReadWords(byte station, FujiElectricSpbAddress address, ushort wordCount, bool includeLrc = false)
@@ -16,13 +27,13 @@ public static class FujiElectricSpbRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (wordCount is < 1 or > 64)
+        if (wordCount is < MinWordCount or > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 읽기 개수는 1~64 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 읽기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
         }
 
         string swappedCount = FujiElectricSpbAddress.FormatSwapped4(wordCount);
-        string payload = $"{station:X2}09{CpuDirect}0000{address.WireWordAddress}{swappedCount}";
+        string payload = $"{station:X2}{FixedLengthHex}{CpuDirect}{CommandReadWords}{address.WireWordAddress}{swappedCount}";
         return EncodeFrame(payload, includeLrc);
     }
 
@@ -34,9 +45,9 @@ public static class FujiElectricSpbRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (wordCount is < 1 or > 64)
+        if (wordCount is < MinWordCount or > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 쓰기 개수는 1~64 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 쓰기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
         }
 
         if (wordData is null)
@@ -44,19 +55,19 @@ public static class FujiElectricSpbRequestBuilder
             throw new ArgumentNullException(nameof(wordData));
         }
 
-        if (wordData.Length != wordCount * 2)
+        if (wordData.Length != wordCount * BytesPerWord)
         {
             throw new ArgumentException("데이터 길이가 워드 개수와 일치하지 않습니다.", nameof(wordData));
         }
 
-        int bodyLen = 9 + (wordCount * 2);
+        int bodyLen = FixedWritePayloadBytes + (wordCount * BytesPerWord);
         string swappedCount = FujiElectricSpbAddress.FormatSwapped4(wordCount);
 
-        var sb = new StringBuilder(18 + (wordData.Length * 2));
+        var sb = new StringBuilder(FixedHeaderChars + (wordData.Length * AsciiCharsPerByte));
         sb.Append(station.ToString("X2"));
         sb.Append(bodyLen.ToString("X2"));
         sb.Append(CpuDirect);
-        sb.Append("0100");
+        sb.Append(CommandWriteWords);
         sb.Append(address.WireWordAddress);
         sb.Append(swappedCount);
 
@@ -78,7 +89,7 @@ public static class FujiElectricSpbRequestBuilder
 
         string bitAddr = address.BuildBitWriteAddress();
         string valStr = bitValue ? "01" : "00";
-        string payload = $"{station:X2}09{CpuDirect}0102{bitAddr}{valStr}";
+        string payload = $"{station:X2}{FixedLengthHex}{CpuDirect}{CommandWriteBit}{bitAddr}{valStr}";
         return EncodeFrame(payload, includeLrc);
     }
 
@@ -95,7 +106,7 @@ public static class FujiElectricSpbRequestBuilder
             sum += (byte)payload[i];
         }
 
-        byte lrc = (byte)((-sum) & 0xFF);
+        byte lrc = (byte)((-sum) & ByteMask);
         return Encoding.ASCII.GetBytes($":{payload}{lrc:X2}\r\n");
     }
 }

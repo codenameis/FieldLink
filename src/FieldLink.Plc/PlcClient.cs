@@ -68,6 +68,8 @@ public sealed partial class PlcClient : IDisposable
     /// <returns>작업 성공 여부입니다.</returns>
     public async Task<PlcResult> CloseAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
+
         if (!_isOpen)
         {
             return PlcResult.Success();
@@ -82,7 +84,7 @@ public sealed partial class PlcClient : IDisposable
             finally
             {
                 _isOpen = false;
-                await _transport.CloseAsync(token).ConfigureAwait(false);
+                await _transport.CloseAsync(CancellationToken.None).ConfigureAwait(false);
             }
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -140,39 +142,13 @@ public sealed partial class PlcClient : IDisposable
         Func<CancellationToken, Task> action,
         CancellationToken cancellationToken)
     {
-        using var timeoutCts = new CancellationTokenSource(_options.Timeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+        PlcResult<bool> result = await ExecuteWithResultAsync(async token =>
+        {
+            await action(token).ConfigureAwait(false);
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
 
-        try
-        {
-            await action(linkedCts.Token).ConfigureAwait(false);
-            return PlcResult.Success();
-        }
-        catch (OperationCanceledException exception) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            return PlcResult.Failure(new PlcError(PlcErrorKind.Timeout, "작업 제한 시간이 초과되었습니다.", exception: exception));
-        }
-        catch (TransportException exception)
-        {
-            return PlcResult.Failure(MapTransportError(exception));
-        }
-        catch (PlcDeviceException exception)
-        {
-            return PlcResult.Failure(new PlcError(
-                PlcErrorKind.DeviceError,
-                exception.Message,
-                deviceErrorCode: exception.DeviceErrorCode,
-                completedCount: exception.CompletedCount,
-                exception: exception));
-        }
-        catch (PlcException exception)
-        {
-            return PlcResult.Failure(new PlcError(
-                exception.Kind,
-                exception.Message,
-                completedCount: exception.CompletedCount,
-                exception: exception));
-        }
+        return result.IsSuccess ? PlcResult.Success() : PlcResult.Failure(result.Error);
     }
 
     private async Task<PlcResult<T>> ExecuteWithResultAsync<T>(

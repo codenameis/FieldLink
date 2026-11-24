@@ -7,6 +7,20 @@ namespace FieldLink.Plc.Protocols.Xinje;
 /// <summary>XINJE PLC 디바이스 주소 표현 및 Modbus/확장 매핑입니다. (사양서 Part A §A.1.4, Part B)</summary>
 public sealed class XinjeAddress
 {
+    private const int OctalRadix = 8;
+    private const int HighByteShift = 16;
+    private const int MidByteShift = 8;
+    private const int ByteMask = 0xFF;
+    private const char MinOctalDigit = '0';
+    private const char MaxOctalDigit = '7';
+    private const int XcHighAddressBoundary = 8000;
+    private const int XdBitIoBlock1Boundary = 0x1000;
+    private const int XdBitIoBlock2Boundary = 0x2000;
+    private const int XdBitIoBlock3Boundary = 0x3000;
+    private const int XdWordIoBlock1Boundary = 10000;
+    private const int XdWordIoBlock2Boundary = 20000;
+    private const int XdWordIoBlock3Boundary = 30000;
+
     private XinjeAddress(
         string original,
         string device,
@@ -46,9 +60,9 @@ public sealed class XinjeAddress
     {
         return
         [
-            (byte)((Number >> 16) & 0xFF),
-            (byte)((Number >> 8) & 0xFF),
-            (byte)(Number & 0xFF)
+            (byte)((Number >> HighByteShift) & ByteMask),
+            (byte)((Number >> MidByteShift) & ByteMask),
+            (byte)(Number & ByteMask)
         ];
     }
 
@@ -67,7 +81,7 @@ public sealed class XinjeAddress
                 "X" => (ushort)(0x4000 + Number),
                 "Y" => (ushort)(0x4800 + Number),
                 "S" => (ushort)(0x5000 + Number),
-                "M" => (ushort)(Number < 8000 ? Number : 0x6000 + (Number - 8000)),
+                "M" => (ushort)(Number < XcHighAddressBoundary ? Number : 0x6000 + (Number - XcHighAddressBoundary)),
                 "T" => (ushort)(0x6400 + Number),
                 "C" => (ushort)(0x6C00 + Number),
                 _ => (ushort)Number,
@@ -76,10 +90,10 @@ public sealed class XinjeAddress
 
         return Device switch
         {
-            "D" => (ushort)(Number < 8000 ? Number : 0x4000 + (Number - 8000)),
+            "D" => (ushort)(Number < XcHighAddressBoundary ? Number : 0x4000 + (Number - XcHighAddressBoundary)),
             "T" or "TD" => (ushort)(0x3000 + Number),
             "C" or "CD" => (ushort)(0x3800 + Number),
-            "F" or "FD" => (ushort)(Number < 8000 ? 0x4800 + Number : 0x6800 + (Number - 8000)),
+            "F" or "FD" => (ushort)(Number < XcHighAddressBoundary ? 0x4800 + Number : 0x6800 + (Number - XcHighAddressBoundary)),
             "E" or "ED" => (ushort)(0x7000 + Number),
             _ => (ushort)Number,
         };
@@ -132,47 +146,52 @@ public sealed class XinjeAddress
 
     private ushort CalculateXdIoBitAddress(ushort baseMain, ushort baseExt, ushort baseBd, ushort baseEd)
     {
-        if (Number < 0x1000)
+        if (Number < XdBitIoBlock1Boundary)
         {
             return (ushort)(baseMain + Number);
         }
 
-        if (Number < 0x2000)
+        if (Number < XdBitIoBlock2Boundary)
         {
-            return (ushort)(baseExt + (Number - 0x1000));
+            return (ushort)(baseExt + (Number - XdBitIoBlock1Boundary));
         }
 
-        if (Number < 0x3000)
+        if (Number < XdBitIoBlock3Boundary)
         {
-            return (ushort)(baseBd + (Number - 0x2000));
+            return (ushort)(baseBd + (Number - XdBitIoBlock2Boundary));
         }
 
-        return (ushort)(baseEd + (Number - 0x3000));
+        return (ushort)(baseEd + (Number - XdBitIoBlock3Boundary));
     }
 
     private ushort CalculateXdIoWordAddress(ushort baseMain, ushort baseExt, ushort baseBd, ushort baseEd)
     {
-        if (Number < 10000)
+        if (Number < XdWordIoBlock1Boundary)
         {
             return (ushort)(baseMain + Number);
         }
 
-        if (Number < 20000)
+        if (Number < XdWordIoBlock2Boundary)
         {
-            return (ushort)(baseExt + (Number - 10000));
+            return (ushort)(baseExt + (Number - XdWordIoBlock1Boundary));
         }
 
-        if (Number < 30000)
+        if (Number < XdWordIoBlock3Boundary)
         {
-            return (ushort)(baseBd + (Number - 20000));
+            return (ushort)(baseBd + (Number - XdWordIoBlock2Boundary));
         }
 
-        return (ushort)(baseEd + (Number - 30000));
+        return (ushort)(baseEd + (Number - XdWordIoBlock3Boundary));
     }
 
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static XinjeAddress Parse(string address, XinjeSeries series = XinjeSeries.XdXl, bool isBitAccess = false)
     {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+        }
+
         if (!TryParse(address, series, isBitAccess, out XinjeAddress? result, out string? errorMessage))
         {
             throw new FormatException(errorMessage);
@@ -192,12 +211,13 @@ public sealed class XinjeAddress
         result = null;
         errorMessage = null;
 
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null || string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+            errorMessage = "주소 문자열이 비어 있습니다.";
+            return false;
         }
 
-        string trimmed = address!.Trim().ToUpperInvariant();
+        string trimmed = address.Trim().ToUpperInvariant();
         if (!TryExtractDevice(trimmed, out string devicePrefix, out string numberText))
         {
             errorMessage = $"지원하지 않는 XINJE 디바이스 접두사입니다: {address}";
@@ -207,11 +227,7 @@ public sealed class XinjeAddress
         int number;
         if (devicePrefix is "X" or "Y")
         {
-            try
-            {
-                number = Convert.ToInt32(numberText, 8);
-            }
-            catch
+            if (!TryParseOctal(numberText, out number))
             {
                 errorMessage = $"유효하지 않은 8진수 XINJE 주소입니다: {address}";
                 return false;
@@ -227,6 +243,32 @@ public sealed class XinjeAddress
         }
 
         return TryResolveExtendedDevice(trimmed, devicePrefix, number, series, isBitAccess, out result, out errorMessage);
+    }
+
+    private static bool TryParseOctal(string numberText, out int number)
+    {
+        number = 0;
+        if (numberText.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (char digit in numberText)
+        {
+            if (digit < MinOctalDigit || digit > MaxOctalDigit)
+            {
+                return false;
+            }
+
+            if (number > (int.MaxValue - (digit - MinOctalDigit)) / OctalRadix)
+            {
+                return false;
+            }
+
+            number = (number * OctalRadix) + (digit - MinOctalDigit);
+        }
+
+        return true;
     }
 
     private static bool TryExtractDevice(string trimmed, out string devicePrefix, out string numberText)

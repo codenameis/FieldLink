@@ -14,6 +14,25 @@ public static class FEnetRequestBuilder
     private const ushort CommandRead = 0x0054;
     private const ushort CommandWrite = 0x0058;
     private const ushort DataTypeContinuous = 0x0014;
+    private const ushort ReservedZero = 0x0000;
+    private const ushort SingleBlockCount = 0x0001;
+    private const byte DefaultPosition = 0x00;
+
+    private const int HeaderLength = 20;
+    private const int CompanyIdLength = 8;
+    private const int CpuInfoOffset = 12;
+    private const int SourceOffset = 13;
+    private const int InvokeIdOffset = 14;
+    private const int InstructionLengthOffset = 16;
+    private const int FEnetPositionOffset = 18;
+    private const int HeaderChecksumOffset = 19;
+
+    private const int FixedInstructionHeaderLength = 12;
+    private const int DataTypeFieldOffset = 2;
+    private const int ReservedFieldOffset = 4;
+    private const int BlockCountFieldOffset = 6;
+    private const int VariableNameLengthFieldOffset = 8;
+    private const int VariableNameFieldOffset = 10;
 
     /// <summary>연속 읽기 요청 프레임 전체(20바이트 헤더 + 명령어)를 빌드합니다.</summary>
     /// <param name="invokeId">시퀀스 트랜잭션 번호입니다.</param>
@@ -33,19 +52,24 @@ public static class FEnetRequestBuilder
         }
 
         byte[] varBytes = Encoding.ASCII.GetBytes(variableName);
-        ushort instructionLength = (ushort)(12 + varBytes.Length);
-        byte[] frame = new byte[20 + instructionLength];
+        if (varBytes.Length > ushort.MaxValue - FixedInstructionHeaderLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(variableName), variableName.Length, "변수명 길이가 최대 FEnet 명령어 길이를 초과합니다.");
+        }
+
+        ushort instructionLength = (ushort)(FixedInstructionHeaderLength + varBytes.Length);
+        byte[] frame = new byte[HeaderLength + instructionLength];
 
         BuildHeader(frame, invokeId, instructionLength, cpuInfo);
 
-        int offset = 20;
+        int offset = HeaderLength;
         BinaryBuffer.WriteUInt16LE(frame, offset, CommandRead);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
-        BinaryBuffer.WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
-        BinaryBuffer.WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
-        Buffer.BlockCopy(varBytes, 0, frame, offset + 10, varBytes.Length);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 10 + varBytes.Length, byteCount);
+        BinaryBuffer.WriteUInt16LE(frame, offset + DataTypeFieldOffset, DataTypeContinuous);
+        BinaryBuffer.WriteUInt16LE(frame, offset + ReservedFieldOffset, ReservedZero);
+        BinaryBuffer.WriteUInt16LE(frame, offset + BlockCountFieldOffset, SingleBlockCount);
+        BinaryBuffer.WriteUInt16LE(frame, offset + VariableNameLengthFieldOffset, (ushort)varBytes.Length);
+        Buffer.BlockCopy(varBytes, 0, frame, offset + VariableNameFieldOffset, varBytes.Length);
+        BinaryBuffer.WriteUInt16LE(frame, offset + VariableNameFieldOffset + varBytes.Length, byteCount);
 
         return frame;
     }
@@ -68,40 +92,45 @@ public static class FEnetRequestBuilder
         }
 
         byte[] varBytes = Encoding.ASCII.GetBytes(variableName);
-        ushort instructionLength = (ushort)(12 + varBytes.Length + data.Length);
-        byte[] frame = new byte[20 + instructionLength];
+        if (FixedInstructionHeaderLength + (long)varBytes.Length + data.Length > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(data), data.Length, "쓰기 데이터 길이가 최대 FEnet 명령어 길이를 초과합니다.");
+        }
+
+        ushort instructionLength = (ushort)(FixedInstructionHeaderLength + varBytes.Length + data.Length);
+        byte[] frame = new byte[HeaderLength + instructionLength];
 
         BuildHeader(frame, invokeId, instructionLength, cpuInfo);
 
-        int offset = 20;
+        int offset = HeaderLength;
         BinaryBuffer.WriteUInt16LE(frame, offset, CommandWrite);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 2, DataTypeContinuous);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 4, 0x0000); // Reserved
-        BinaryBuffer.WriteUInt16LE(frame, offset + 6, 0x0001); // 1 block
-        BinaryBuffer.WriteUInt16LE(frame, offset + 8, (ushort)varBytes.Length);
-        Buffer.BlockCopy(varBytes, 0, frame, offset + 10, varBytes.Length);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 10 + varBytes.Length, (ushort)data.Length);
-        Buffer.BlockCopy(data, 0, frame, offset + 12 + varBytes.Length, data.Length);
+        BinaryBuffer.WriteUInt16LE(frame, offset + DataTypeFieldOffset, DataTypeContinuous);
+        BinaryBuffer.WriteUInt16LE(frame, offset + ReservedFieldOffset, ReservedZero);
+        BinaryBuffer.WriteUInt16LE(frame, offset + BlockCountFieldOffset, SingleBlockCount);
+        BinaryBuffer.WriteUInt16LE(frame, offset + VariableNameLengthFieldOffset, (ushort)varBytes.Length);
+        Buffer.BlockCopy(varBytes, 0, frame, offset + VariableNameFieldOffset, varBytes.Length);
+        BinaryBuffer.WriteUInt16LE(frame, offset + VariableNameFieldOffset + varBytes.Length, (ushort)data.Length);
+        Buffer.BlockCopy(data, 0, frame, offset + FixedInstructionHeaderLength + varBytes.Length, data.Length);
 
         return frame;
     }
 
     private static void BuildHeader(byte[] buffer, ushort invokeId, ushort instructionLength, byte cpuInfo)
     {
-        Buffer.BlockCopy(CompanyId, 0, buffer, 0, 8);
+        Buffer.BlockCopy(CompanyId, 0, buffer, 0, CompanyIdLength);
         // Offset 8~9: CompanyId Null Padding (0x0000), Offset 10~11: PLC Info (0x0000)
-        buffer[12] = cpuInfo;
-        buffer[13] = SourceClient;
-        BinaryBuffer.WriteUInt16LE(buffer, 14, invokeId);
-        BinaryBuffer.WriteUInt16LE(buffer, 16, instructionLength);
-        buffer[18] = 0x00; // FEnet Position
+        buffer[CpuInfoOffset] = cpuInfo;
+        buffer[SourceOffset] = SourceClient;
+        BinaryBuffer.WriteUInt16LE(buffer, InvokeIdOffset, invokeId);
+        BinaryBuffer.WriteUInt16LE(buffer, InstructionLengthOffset, instructionLength);
+        buffer[FEnetPositionOffset] = DefaultPosition;
 
         byte bcc = 0;
-        for (int i = 0; i < 19; i++)
+        for (int i = 0; i < HeaderChecksumOffset; i++)
         {
             bcc = (byte)(bcc + buffer[i]);
         }
 
-        buffer[19] = bcc;
+        buffer[HeaderChecksumOffset] = bcc;
     }
 }

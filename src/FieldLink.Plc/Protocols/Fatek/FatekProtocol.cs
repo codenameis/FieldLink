@@ -12,7 +12,10 @@ namespace FieldLink.Plc.Protocols.Fatek;
 /// <summary>FATEK FBs/B1 계열 PLC와 통신하는 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class FatekProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int BytesPerWord = 2;
+    private const string CommandWriteBits = "45";
+    private const string CommandWriteWords = "47";
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly FatekOptions _options;
@@ -46,7 +49,12 @@ public sealed class FatekProtocol : IPlcProtocol
 
         var address = FatekAddress.Parse(request.Address);
         int elementSize = request.DataType.GetElementSize();
-        int maxElements = address.IsBit ? _options.MaxReadBits : _options.MaxReadWords;
+        ValidateAddressAndDataType(address, request.DataType, elementSize);
+
+        int wordsPerElement = address.IsBit ? 1 : elementSize / BytesPerWord;
+        int maxElements = address.IsBit
+            ? _options.MaxReadBits
+            : RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
         byte[] combinedBuffer = new byte[request.ByteCount];
@@ -55,8 +63,9 @@ public sealed class FatekProtocol : IPlcProtocol
         {
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                FatekAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
+                int chunkOffsetUnits = address.IsBit ? chunk.ElementOffset : chunk.ElementOffset * wordsPerElement;
+                FatekAddress chunkAddress = address.Offset(chunkOffsetUnits);
+                ushort count = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
 
                 byte[] requestFrame = address.IsBit
                     ? FatekRequestBuilder.BuildReadBits(_options.Station, chunkAddress, count)
@@ -87,28 +96,64 @@ public sealed class FatekProtocol : IPlcProtocol
         }
 
         var address = FatekAddress.Parse(request.Address);
-        int maxElements = address.IsBit ? _options.MaxWriteBits : _options.MaxWriteWords;
+        int elementSize = request.DataType.GetElementSize();
+        ValidateAddressAndDataType(address, request.DataType, elementSize);
+
+        int wordsPerElement = address.IsBit ? 1 : elementSize / BytesPerWord;
+        int maxElements = address.IsBit
+            ? _options.MaxWriteBits
+            : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        int completedElements = 0;
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        try
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            await _transport.RunExclusiveAsync<bool>(async session =>
             {
-                FatekAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    int chunkOffsetUnits = address.IsBit ? chunk.ElementOffset : chunk.ElementOffset * wordsPerElement;
+                    FatekAddress chunkAddress = address.Offset(chunkOffsetUnits);
+                    ushort count = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
+                    byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
 
-                byte[] requestFrame = address.IsBit
-                    ? FatekRequestBuilder.BuildWriteBits(_options.Station, chunkAddress, count, chunkData)
-                    : FatekRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, count, chunkData);
+                    byte[] requestFrame = address.IsBit
+                        ? FatekRequestBuilder.BuildWriteBits(_options.Station, chunkAddress, count, chunkData)
+                        : FatekRequestBuilder.BuildWriteWords(_options.Station, chunkAddress, count, chunkData);
 
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
 
-                string expectedCmd = address.IsBit ? "45" : "47";
-                FatekResponseParser.VerifyWriteResponse(responseFrame, _options.Station, expectedCmd);
-            }
+                    string expectedCmd = address.IsBit ? CommandWriteBits : CommandWriteWords;
+                    FatekResponseParser.VerifyWriteResponse(responseFrame, _options.Station, expectedCmd);
+                    completedElements += chunk.ElementCount;
+                }
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PlcDeviceException deviceException)
+        {
+            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
+        }
+        catch (PlcException exception)
+        {
+            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
+            {
+                CompletedCount = completedElements
+            };
+        }
+    }
+
+    private static void ValidateAddressAndDataType(FatekAddress address, PlcDataType dataType, int elementSize)
+    {
+        if (address.IsBit && dataType != PlcDataType.Boolean)
+        {
+            throw new ArgumentException($"비트 접점 '{address.OriginalAddress}'에는 Boolean 자료형만 사용할 수 있습니다.", nameof(dataType));
+        }
+
+        if (!address.IsBit && elementSize % BytesPerWord != 0)
+        {
+            throw new ArgumentException($"워드 영역 '{address.OriginalAddress}'에는 2바이트 배수 자료형만 사용할 수 있습니다.", nameof(dataType));
+        }
     }
 }

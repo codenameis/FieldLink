@@ -1,4 +1,6 @@
 using System;
+using System.Globalization;
+using System.Text;
 using FieldLink.Plc.Conversion;
 
 namespace FieldLink.Plc.Protocols.Vigor;
@@ -9,11 +11,22 @@ public static class VigorResponseParser
     private const byte Dle = 0x10;
     private const byte Stx = 0x02;
     private const byte Etx = 0x03;
+    private const byte SuccessStatusCode = 0x00;
+    private const int MinimumFrameLength = 7;
+    private const int FrameHeaderLength = 2;
+    private const int FooterWithChecksumLength = 4;
+    private const int ChecksumHexLength = 2;
+    private const int BodyPrefixLength = 3;
+    private const int MinimumUnescapedLength = 4;
+    private const int StationOffset = 0;
+    private const int DeclaredLengthOffset = 1;
+    private const int StatusCodeOffset = 3;
+    private const int PayloadOffset = 4;
 
     /// <summary>VIGOR 응답 프레임을 파싱하여 데이터 바이트를 추출합니다.</summary>
     public static byte[] ParseResponse(byte[] frame, byte expectedStation)
     {
-        if (frame is null || frame.Length < 7)
+        if (frame is null || frame.Length < MinimumFrameLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 길이가 너무 짧습니다: {frame?.Length ?? 0}바이트");
         }
@@ -23,8 +36,55 @@ public static class VigorResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, "유효하지 않은 DLE STX 프레임 헤더입니다.");
         }
 
-        int etxIndex = -1;
-        for (int i = 2; i < frame.Length - 1; i++)
+        int etxIndex = FindEtxMarkerIndex(frame);
+        if (etxIndex < 0 || etxIndex + FooterWithChecksumLength != frame.Length)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, "프레임 끝 DLE ETX 또는 체크섬 경계가 올바르지 않습니다.");
+        }
+
+        byte[] unescaped = UnescapeBody(frame, FrameHeaderLength, etxIndex - FrameHeaderLength);
+        VerifyChecksum(unescaped, frame);
+
+        if (unescaped.Length < MinimumUnescapedLength)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, "언이스케이프된 응답 본문 길이가 너무 짧습니다.");
+        }
+
+        ushort declaredBodyLength = BinaryBuffer.ReadUInt16LE(unescaped, DeclaredLengthOffset);
+        int actualBodyLength = unescaped.Length - BodyPrefixLength;
+        if (declaredBodyLength != actualBodyLength)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"VIGOR 응답 길이 불일치: 헤더={declaredBodyLength}, 실제={actualBodyLength}");
+        }
+
+        byte station = unescaped[StationOffset];
+        if (station != expectedStation)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"국번 불일치: 요청={expectedStation}, 응답={station}");
+        }
+
+        byte statusCode = unescaped[StatusCodeOffset];
+        if (statusCode != SuccessStatusCode)
+        {
+            throw new PlcDeviceException(statusCode, FormatErrorMessage(statusCode));
+        }
+
+        int dataLen = unescaped.Length - PayloadOffset;
+        if (dataLen == 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        byte[] data = new byte[dataLen];
+        Buffer.BlockCopy(unescaped, PayloadOffset, data, 0, dataLen);
+        return data;
+    }
+
+    private static int FindEtxMarkerIndex(byte[] frame)
+    {
+        for (int i = FrameHeaderLength; i < frame.Length - 1; i++)
         {
             if (frame[i] == Dle)
             {
@@ -36,46 +96,12 @@ public static class VigorResponseParser
 
                 if (frame[i + 1] == Etx)
                 {
-                    etxIndex = i;
-                    break;
+                    return i;
                 }
             }
         }
 
-        if (etxIndex < 0 || etxIndex + 4 != frame.Length)
-        {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "프레임 끝 DLE ETX 또는 체크섬 경계가 올바르지 않습니다.");
-        }
-
-        byte[] unescaped = UnescapeBody(frame, 2, etxIndex - 2);
-        VerifyChecksum(unescaped, frame);
-
-        if (unescaped.Length < 4)
-        {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "언이스케이프된 응답 본문 길이가 너무 짧습니다.");
-        }
-
-        byte station = unescaped[0];
-        if (station != expectedStation)
-        {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"국번 불일치: 요청={expectedStation}, 응답={station}");
-        }
-
-        byte statusCode = unescaped[3];
-        if (statusCode != 0x00)
-        {
-            throw new PlcDeviceException(statusCode, FormatErrorMessage(statusCode));
-        }
-
-        int dataLen = unescaped.Length - 4;
-        if (dataLen == 0)
-        {
-            return Array.Empty<byte>();
-        }
-
-        byte[] data = new byte[dataLen];
-        Buffer.BlockCopy(unescaped, 4, data, 0, dataLen);
-        return data;
+        return -1;
     }
 
     private static byte[] UnescapeBody(byte[] buffer, int offset, int length)
@@ -115,7 +141,12 @@ public static class VigorResponseParser
             sum = (byte)(sum + unescaped[i]);
         }
 
-        byte actualSum = (byte)BinaryBuffer.ReadAsciiHex(frame, frame.Length - 2, 2);
+        string hexText = Encoding.ASCII.GetString(frame, frame.Length - ChecksumHexLength, ChecksumHexLength);
+        if (!byte.TryParse(hexText, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out byte actualSum))
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"VIGOR 체크섬 16진수 파싱 실패: '{hexText}'");
+        }
+
         if (sum != actualSum)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"VIGOR 체크섬 오류: 계산값={sum:X2}, 수신값={actualSum:X2}");

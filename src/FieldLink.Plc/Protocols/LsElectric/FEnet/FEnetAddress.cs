@@ -26,18 +26,34 @@ public sealed class FEnetAddress
     /// <summary>시작 주소 오프셋입니다.</summary>
     public int Offset { get; }
 
+    private const int BitUnitByteSize = 1;
+    private const int ByteUnitSize = 1;
+    private const int WordUnitByteSize = 2;
+    private const int DWordUnitByteSize = 4;
+    private const int LWordUnitByteSize = 8;
+    private const int MinimumIecLength = 4;
+    private const int IecOffsetIndex = 3;
+    private const int MinimumLegacyLength = 2;
+    private const int LegacyOffsetIndex = 1;
+    private const char BitSizeCode = 'X';
+    private const char ByteSizeCode = 'B';
+    private const char WordSizeCode = 'W';
+    private const char DWordSizeCode = 'D';
+    private const char LWordSizeCode = 'L';
+    private const string IecPrefix = "%";
+
     /// <summary>비트 단위 변수인지 여부입니다.</summary>
-    public bool IsBit => Size == 'X';
+    public bool IsBit => Size == BitSizeCode;
 
     /// <summary>원소당 바이트 크기를 반환합니다.</summary>
     public int ElementByteSize => Size switch
     {
-        'X' => 1, // 비트 데이터 전송 시 바이트 단위
-        'B' => 1,
-        'W' => 2,
-        'D' => 4,
-        'L' => 8,
-        _ => 2
+        BitSizeCode => BitUnitByteSize, // 비트 데이터 전송 시 바이트 단위
+        ByteSizeCode => ByteUnitSize,
+        WordSizeCode => WordUnitByteSize,
+        DWordSizeCode => DWordUnitByteSize,
+        LWordSizeCode => LWordUnitByteSize,
+        _ => WordUnitByteSize
     };
 
     /// <summary>오프셋이 증가된 새 주소 인스턴스를 생성합니다.</summary>
@@ -49,9 +65,26 @@ public sealed class FEnetAddress
             return this;
         }
 
-        int newOffset = Offset + additionalElements;
+        int newOffset = checked(Offset + additionalElements);
         string newName = $"%{Area}{Size}{newOffset}";
         return new FEnetAddress(newName, Area, Size, newOffset);
+    }
+
+    internal FEnetAddress WithByteOffset(long additionalBytes)
+    {
+        if (additionalBytes == 0)
+        {
+            return this;
+        }
+
+        if (additionalBytes % ElementByteSize == 0)
+        {
+            return WithOffset(checked((int)(additionalBytes / ElementByteSize)));
+        }
+
+        int newByteOffset = checked((int)(((long)Offset * ElementByteSize) + additionalBytes));
+        string newName = $"%{Area}{ByteSizeCode}{newByteOffset}";
+        return new FEnetAddress(newName, Area, ByteSizeCode, newByteOffset);
     }
 
     /// <summary>주소 문자열을 파싱합니다.</summary>
@@ -83,7 +116,7 @@ public sealed class FEnetAddress
         }
 
         string trimmed = address.Trim().ToUpperInvariant();
-        if (trimmed.StartsWith("%", StringComparison.Ordinal))
+        if (trimmed.StartsWith(IecPrefix, StringComparison.Ordinal))
         {
             return TryParseIec(trimmed, out result);
         }
@@ -95,7 +128,7 @@ public sealed class FEnetAddress
     {
         result = null;
         // 최소 길이 4: "%" + Area(1) + Size(1) + Offset(1자리 이상)
-        if (input.Length < 4)
+        if (input.Length < MinimumIecLength)
         {
             return false;
         }
@@ -112,7 +145,7 @@ public sealed class FEnetAddress
             return false;
         }
 
-        string offsetPart = input.Substring(3);
+        string offsetPart = input.Substring(IecOffsetIndex);
         if (!int.TryParse(offsetPart, NumberStyles.None, CultureInfo.InvariantCulture, out int offset) || offset < 0)
         {
             return false;
@@ -125,7 +158,7 @@ public sealed class FEnetAddress
     private static bool TryParseLegacy(string input, out FEnetAddress? result)
     {
         result = null;
-        if (input.Length < 2)
+        if (input.Length < MinimumLegacyLength)
         {
             return false;
         }
@@ -136,14 +169,14 @@ public sealed class FEnetAddress
             return false;
         }
 
-        string offsetPart = input.Substring(1);
+        string offsetPart = input.Substring(LegacyOffsetIndex);
         if (!int.TryParse(offsetPart, NumberStyles.None, CultureInfo.InvariantCulture, out int offset) || offset < 0)
         {
             return false;
         }
 
         // 레거시 XGK 기본은 워드(W) 단위 매핑
-        char size = 'W';
+        char size = WordSizeCode;
         string normalizedName = $"%{area}{size}{offset}";
         result = new FEnetAddress(normalizedName, area, size, offset);
         return true;
@@ -156,7 +189,7 @@ public sealed class FEnetAddress
 
     private static bool IsValidSize(char size)
     {
-        return size is 'X' or 'B' or 'W' or 'D' or 'L';
+        return size is BitSizeCode or ByteSizeCode or WordSizeCode or DWordSizeCode or LWordSizeCode;
     }
 
     /// <inheritdoc />

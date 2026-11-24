@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using FieldLink.Plc.Protocols.Modbus;
 
 namespace FieldLink.Plc.Protocols.Megmeet;
@@ -7,6 +8,39 @@ namespace FieldLink.Plc.Protocols.Megmeet;
 /// <summary>Megmeet PLC 디바이스 주소를 Modbus PDU 주소로 변환한 값 객체입니다. (사양서 §1)</summary>
 public sealed class MegmeetAddress
 {
+    private const int OctalRadix = 8;
+    private const int BytesPerWord = 2;
+    private const int TwoCharPrefixLength = 2;
+    private const int SingleCharPrefixLength = 1;
+    private const char MinOctalDigit = '0';
+    private const char MaxOctalDigit = '7';
+
+    private const int MBoundary = 2048;
+    private const int MLowBase = 2000;
+    private const int MHighBase = 12000;
+    private const int SmBoundary = 256;
+    private const int SmLowBase = 4400;
+    private const int SmHighBase = 30000;
+    private const int SBoundary = 1024;
+    private const int SLowBase = 6000;
+    private const int SHighBase = 31000;
+    private const int SdBoundary = 256;
+    private const int SdLowBase = 8000;
+    private const int SdHighBase = 12000;
+    private const int ZBase = 8500;
+    private const int RBase = 13000;
+    private const int TBoundary = 256;
+    private const int TBitLowBase = 8000;
+    private const int TWordLowBase = 9000;
+    private const int THighBase = 11000;
+    private const int CBitBoundary = 256;
+    private const int CBitLowBase = 9200;
+    private const int CHighBase = 10000;
+    private const int CWordSingleBoundary = 200;
+    private const int CWordDoubleBoundary = 256;
+    private const int CWordLowBase = 9500;
+    private const int CWordMidBase = 9700;
+
     private MegmeetAddress(string originalAddress, string device, int number, ModbusArea area, ushort pduAddress, bool isBit)
     {
         OriginalAddress = originalAddress;
@@ -38,6 +72,11 @@ public sealed class MegmeetAddress
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static MegmeetAddress Parse(string address, bool isBitAccess = false)
     {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+        }
+
         if (!TryParse(address, isBitAccess, out MegmeetAddress? result, out string? errorMessage))
         {
             throw new FormatException(errorMessage);
@@ -56,12 +95,13 @@ public sealed class MegmeetAddress
         result = null;
         errorMessage = null;
 
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null || string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+            errorMessage = "주소 문자열이 비어 있습니다.";
+            return false;
         }
 
-        string trimmed = address!.Trim().ToUpperInvariant();
+        string trimmed = address.Trim().ToUpperInvariant();
         if (!TryExtractDevice(trimmed, out string devicePrefix, out string numberText))
         {
             errorMessage = $"지원하지 않는 Megmeet 디바이스 접두사입니다: {address}";
@@ -84,14 +124,14 @@ public sealed class MegmeetAddress
             if (trimmed.StartsWith(d, StringComparison.Ordinal))
             {
                 devicePrefix = d;
-                numberText = trimmed.Substring(2);
+                numberText = trimmed.Substring(TwoCharPrefixLength);
                 return true;
             }
         }
 
         char p1 = trimmed[0];
         devicePrefix = p1.ToString();
-        numberText = trimmed.Substring(1);
+        numberText = trimmed.Substring(SingleCharPrefixLength);
         return p1 is 'X' or 'Y' or 'M' or 'S' or 'T' or 'C' or 'D' or 'Z' or 'R';
     }
 
@@ -100,27 +140,34 @@ public sealed class MegmeetAddress
         result = null;
         errorMessage = null;
 
+        if (numberText.Length == 0)
+        {
+            errorMessage = $"8진수 주소 번호가 비어 있습니다: {original}";
+            return false;
+        }
+
+        int value = 0;
         foreach (char c in numberText)
         {
-            if (c is < '0' or > '7')
+            if (c < MinOctalDigit || c > MaxOctalDigit)
             {
                 errorMessage = $"8진수 주소 파싱 실패: {original}";
                 return false;
             }
+
+            if (value > (ushort.MaxValue - (c - MinOctalDigit)) / OctalRadix)
+            {
+                errorMessage = $"8진수 주소가 16비트 범위를 초과했습니다: {original}";
+                return false;
+            }
+
+            value = (value * OctalRadix) + (c - MinOctalDigit);
         }
 
-        try
-        {
-            ushort octVal = Convert.ToUInt16(numberText, 8);
-            ModbusArea area = devicePrefix == "X" ? ModbusArea.DiscreteInput : ModbusArea.Coil;
-            result = new MegmeetAddress(original, devicePrefix, octVal, area, octVal, isBit: true);
-            return true;
-        }
-        catch
-        {
-            errorMessage = $"8진수 변환 실패: {original}";
-            return false;
-        }
+        ushort octVal = (ushort)value;
+        ModbusArea area = devicePrefix == "X" ? ModbusArea.DiscreteInput : ModbusArea.Coil;
+        result = new MegmeetAddress(original, devicePrefix, octVal, area, octVal, isBit: true);
+        return true;
     }
 
     private static bool TryParseDecimal(
@@ -134,7 +181,7 @@ public sealed class MegmeetAddress
         result = null;
         errorMessage = null;
 
-        if (!int.TryParse(numberText, out int parsedNumber) || parsedNumber < 0)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber) || parsedNumber < 0)
         {
             errorMessage = $"유효하지 않은 Megmeet 디바이스 번호: {original}";
             return false;
@@ -142,46 +189,70 @@ public sealed class MegmeetAddress
 
         bool isBit = isBitAccess || devicePrefix is "M" or "SM" or "S";
         ModbusArea area = isBit ? ModbusArea.Coil : ModbusArea.HoldingRegister;
-        ushort pdu = CalculatePdu(devicePrefix, parsedNumber, isBit);
+        if (!TryCalculatePdu(devicePrefix, parsedNumber, isBit, out ushort pdu))
+        {
+            errorMessage = $"Megmeet {devicePrefix} 주소가 Modbus 16비트 범위를 초과했습니다: {original}";
+            return false;
+        }
 
         result = new MegmeetAddress(original, devicePrefix, parsedNumber, area, pdu, isBit);
         return true;
     }
 
-    private static ushort CalculatePdu(string devicePrefix, int n, bool isBit) => devicePrefix switch
+    private static bool TryCalculatePdu(string devicePrefix, int n, bool isBit, out ushort pdu)
     {
-        "M" => (ushort)(n < 2048 ? n + 2000 : (n - 2048) + 12000),
-        "SM" => (ushort)(n < 256 ? n + 4400 : (n - 256) + 30000),
-        "S" => (ushort)(n < 1024 ? n + 6000 : (n - 1024) + 31000),
-        "D" => (ushort)n,
-        "SD" => (ushort)(n < 256 ? n + 8000 : (n - 256) + 12000),
-        "Z" => (ushort)(n + 8500),
-        "R" => (ushort)(n + 13000),
-        "T" => isBit ? (ushort)(n < 256 ? n + 8000 : (n - 256) + 11000) : (ushort)(n < 256 ? n + 9000 : (n - 256) + 11000),
-        "C" => isBit ? (ushort)(n < 256 ? n + 9200 : (n - 256) + 10000) : CalculateCounterWordPdu(n),
-        _ => throw new InvalidOperationException($"미지원 디바이스: {devicePrefix}"),
-    };
-
-    private static ushort CalculateCounterWordPdu(int n)
-    {
-        if (n < 200)
+        long calculated = devicePrefix switch
         {
-            return (ushort)(n + 9500);
+            "M" => n < MBoundary ? n + MLowBase : (n - MBoundary) + MHighBase,
+            "SM" => n < SmBoundary ? n + SmLowBase : (n - SmBoundary) + SmHighBase,
+            "S" => n < SBoundary ? n + SLowBase : (n - SBoundary) + SHighBase,
+            "D" => n,
+            "SD" => n < SdBoundary ? n + SdLowBase : (n - SdBoundary) + SdHighBase,
+            "Z" => (long)n + ZBase,
+            "R" => (long)n + RBase,
+            "T" => isBit
+                ? (n < TBoundary ? n + TBitLowBase : (n - TBoundary) + THighBase)
+                : (n < TBoundary ? n + TWordLowBase : (n - TBoundary) + THighBase),
+            "C" => isBit
+                ? (n < CBitBoundary ? n + CBitLowBase : (n - CBitBoundary) + CHighBase)
+                : CalculateCounterWordPdu(n),
+            _ => -1,
+        };
+
+        if (calculated < 0 || calculated > ushort.MaxValue)
+        {
+            pdu = 0;
+            return false;
         }
 
-        if (n < 256)
+        pdu = (ushort)calculated;
+        return true;
+    }
+
+    private static long CalculateCounterWordPdu(int n)
+    {
+        if (n < CWordSingleBoundary)
         {
-            return (ushort)(((n - 200) * 2) + 9700);
+            return n + CWordLowBase;
         }
 
-        return (ushort)(((n - 256) * 2) + 10000);
+        if (n < CWordDoubleBoundary)
+        {
+            return ((long)(n - CWordSingleBoundary) * BytesPerWord) + CWordMidBase;
+        }
+
+        return ((long)(n - CWordDoubleBoundary) * BytesPerWord) + CHighBase;
     }
 
     /// <summary>오프셋만큼 주소를 이동한 새 <see cref="MegmeetAddress"/>를 반환합니다.</summary>
     public MegmeetAddress Offset(int count)
     {
-        int newNum = Number + count;
-        ushort newPdu = CalculatePdu(Device, newNum, IsBit);
+        int newNum = checked(Number + count);
+        if (!TryCalculatePdu(Device, newNum, IsBit, out ushort newPdu))
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "이동한 주소가 Modbus 16비트 주소 범위를 초과합니다.");
+        }
+
         return new MegmeetAddress($"{OriginalAddress}+{count}", Device, newNum, Area, newPdu, IsBit);
     }
 }

@@ -11,10 +11,12 @@ internal sealed class StreamTransportSession : ITransportSession
 {
     private const int DefaultInitialBufferSize = 8192;
     private const int MaximumBufferSize = 65536;
+    private const int BufferGrowthFactor = 2;
 
     private readonly Stream _stream;
     private byte[] _buffer;
     private int _bufferedCount;
+    private bool _hasSent;
 
     public StreamTransportSession(
         long connectionId,
@@ -25,7 +27,8 @@ internal sealed class StreamTransportSession : ITransportSession
         ConnectionId = connectionId;
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         CancellationToken = cancellationToken;
-        _buffer = new byte[Math.Max(initialBufferSize, DefaultInitialBufferSize)];
+        int clampedBufferSize = Math.Min(Math.Max(initialBufferSize, DefaultInitialBufferSize), MaximumBufferSize);
+        _buffer = new byte[clampedBufferSize];
         _bufferedCount = 0;
     }
 
@@ -49,6 +52,7 @@ internal sealed class StreamTransportSession : ITransportSession
         {
             await _stream.WriteAsync(frame, 0, frame.Length, CancellationToken).ConfigureAwait(false);
             await _stream.FlushAsync(CancellationToken).ConfigureAwait(false);
+            _hasSent = true;
         }
         catch (OperationCanceledException)
         {
@@ -83,43 +87,64 @@ internal sealed class StreamTransportSession : ITransportSession
             }
 
             EnsureCapacity();
-
-            int bytesRead;
-            try
-            {
-                bytesRead = await _stream.ReadAsync(
-                    _buffer,
-                    _bufferedCount,
-                    _buffer.Length - _bufferedCount,
-                    CancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                throw new TransportException(
-                    TransportFailure.ReceiveFailed,
-                    "프레임을 수신하는 중 입출력 오류가 발생했습니다.",
-                    isRequestSent: true,
-                    innerException: exception);
-            }
-
-            if (bytesRead == 0)
-            {
-                throw new TransportException(
-                    TransportFailure.ConnectionClosed,
-                    "원격 호스트에서 연결이 닫혔습니다.",
-                    isRequestSent: true);
-            }
-
+            int bytesRead = await ReadNextChunkAsync().ConfigureAwait(false);
             _bufferedCount += bytesRead;
         }
     }
 
+    private async Task<int> ReadNextChunkAsync()
+    {
+        int bytesRead;
+        try
+        {
+            bytesRead = await _stream.ReadAsync(
+                _buffer,
+                _bufferedCount,
+                _buffer.Length - _bufferedCount,
+                CancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (ObjectDisposedException exception)
+        {
+            throw new TransportException(
+                TransportFailure.ConnectionClosed,
+                "전송 연결이 닫혀 프레임을 수신할 수 없습니다.",
+                isRequestSent: _hasSent,
+                innerException: exception);
+        }
+        catch (Exception exception)
+        {
+            throw new TransportException(
+                TransportFailure.ReceiveFailed,
+                "프레임을 수신하는 중 입출력 오류가 발생했습니다.",
+                isRequestSent: _hasSent,
+                innerException: exception);
+        }
+
+        if (bytesRead == 0)
+        {
+            throw new TransportException(
+                TransportFailure.ConnectionClosed,
+                "원격 호스트에서 연결이 닫혔습니다.",
+                isRequestSent: _hasSent);
+        }
+
+        return bytesRead;
+    }
+
     private byte[] ExtractFrame(int frameLength)
     {
+        if (frameLength <= 0 || frameLength > _bufferedCount)
+        {
+            throw new TransportException(
+                TransportFailure.InvalidFrame,
+                $"디코더가 유효하지 않은 프레임 길이({frameLength})를 반환했습니다. (버퍼 바이트: {_bufferedCount})",
+                isRequestSent: _hasSent);
+        }
+
         byte[] frame = new byte[frameLength];
         Array.Copy(_buffer, 0, frame, 0, frameLength);
 
@@ -144,10 +169,11 @@ internal sealed class StreamTransportSession : ITransportSession
         {
             throw new TransportException(
                 TransportFailure.InvalidFrame,
-                $"수신 버퍼 최대 크기({MaximumBufferSize} 바이트)에 도달할 때까지 완성된 프레임을 감지하지 못했습니다.");
+                $"수신 버퍼 최대 크기({MaximumBufferSize} 바이트)에 도달할 때까지 완성된 프레임을 감지하지 못했습니다.",
+                isRequestSent: _hasSent);
         }
 
-        int newCapacity = Math.Min(_buffer.Length * 2, MaximumBufferSize);
+        int newCapacity = Math.Min(_buffer.Length * BufferGrowthFactor, MaximumBufferSize);
         byte[] expandedBuffer = new byte[newCapacity];
         Array.Copy(_buffer, 0, expandedBuffer, 0, _bufferedCount);
         _buffer = expandedBuffer;

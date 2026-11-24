@@ -1,11 +1,45 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace FieldLink.Plc.Protocols.Keyence;
 
 /// <summary>Keyence KV 상위 링크(Host Link) 프로토콜의 디바이스 주소 표현입니다. (사양서 Part A §A.1)</summary>
 public sealed class KeyenceHostLinkAddress
 {
+    private const int BitsPerChannel = 16;
+    private const int MaxBitOffset = BitsPerChannel - 1;
+    private const int ChannelDecimalMultiplier = 100;
+    private const char BitSeparator = '.';
+
+    private static readonly (string Prefix, bool IsBit, bool IsHex)[] DeviceDefinitions =
+    [
+        ("CTH", false, false),
+        ("CTC", false, false),
+        ("MR", true, false),
+        ("LR", true, false),
+        ("CR", true, false),
+        ("VB", true, true),
+        ("DM", false, false),
+        ("EM", false, false),
+        ("FM", false, false),
+        ("ZF", false, false),
+        ("TM", false, false),
+        ("CM", false, false),
+        ("VM", false, false),
+        ("AT", false, false),
+        ("TC", false, false),
+        ("TS", false, false),
+        ("CC", false, false),
+        ("CS", false, false),
+        ("R", true, false),
+        ("B", true, true),
+        ("W", false, true),
+        ("Z", false, false),
+        ("T", false, false),
+        ("C", false, false),
+    ];
+
     private KeyenceHostLinkAddress(string original, string device, int channel, byte bit, bool isBit, bool isHex, string wireString)
     {
         Original = original;
@@ -60,7 +94,8 @@ public sealed class KeyenceHostLinkAddress
 
         if (string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+            errorMessage = "주소 문자열은 필수입니다.";
+            return false;
         }
 
         string trimmed = address!.Trim().ToUpperInvariant();
@@ -87,29 +122,15 @@ public sealed class KeyenceHostLinkAddress
         isHex = false;
         numberText = string.Empty;
 
-        string[] twoCharPrefixes = ["CTH", "CTC", "MR", "LR", "CR", "VB", "DM", "EM", "FM", "ZF", "TM", "CM", "VM", "AT", "TC", "TS", "CC", "CS"];
-        foreach (string d in twoCharPrefixes)
+        foreach ((string prefix, bool prefixIsBit, bool prefixIsHex) in DeviceDefinitions)
         {
-            if (trimmed.StartsWith(d, StringComparison.Ordinal))
+            if (trimmed.StartsWith(prefix, StringComparison.Ordinal))
             {
-                devicePrefix = d;
-                numberText = trimmed.Substring(d.Length);
-                isBit = d is "MR" or "LR" or "CR" or "VB";
-                isHex = d is "VB";
-                return true;
-            }
-        }
-
-        string[] dev1 = ["R", "B", "W", "Z", "T", "C"];
-        foreach (string d in dev1)
-        {
-            if (trimmed.StartsWith(d, StringComparison.Ordinal))
-            {
-                devicePrefix = d;
-                numberText = trimmed.Substring(1);
-                isBit = d is "R" or "B";
-                isHex = d is "B" or "W";
-                return true;
+                devicePrefix = prefix;
+                numberText = trimmed.Substring(prefix.Length);
+                isBit = prefixIsBit;
+                isHex = prefixIsHex;
+                return numberText.Length > 0;
             }
         }
 
@@ -127,7 +148,7 @@ public sealed class KeyenceHostLinkAddress
         result = null;
         errorMessage = null;
 
-        int dot = numberText.IndexOf('.');
+        int dot = numberText.IndexOf(BitSeparator);
         if (dot >= 0)
         {
             return TryParseDotBit(original, devicePrefix, isHex, numberText, dot, out result, out errorMessage);
@@ -135,7 +156,7 @@ public sealed class KeyenceHostLinkAddress
 
         if (isHex)
         {
-            if (!int.TryParse(numberText, System.Globalization.NumberStyles.HexNumber, null, out int hexVal))
+            if (!int.TryParse(numberText, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out int hexVal))
             {
                 errorMessage = $"16진 비트 주소 파싱 실패: {original}";
                 return false;
@@ -146,16 +167,23 @@ public sealed class KeyenceHostLinkAddress
             return true;
         }
 
-        if (!int.TryParse(numberText, out int decVal))
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int decVal))
         {
             errorMessage = $"10진 비트 주소 파싱 실패: {original}";
             return false;
         }
 
-        int ch = decVal < 16 ? 0 : decVal / 100;
-        byte bit = (byte)(decVal < 16 ? decVal : decVal % 100);
-        string wireDec = decVal < 16 ? $"{devicePrefix}{decVal}" : $"{devicePrefix}{ch}{bit:D2}";
-        result = new KeyenceHostLinkAddress(original, devicePrefix, ch, bit, isBit: true, isHex: false, wireDec);
+        int channel = decVal < BitsPerChannel ? 0 : decVal / ChannelDecimalMultiplier;
+        int bitValue = decVal < BitsPerChannel ? decVal : decVal % ChannelDecimalMultiplier;
+        if (bitValue > MaxBitOffset)
+        {
+            errorMessage = $"비트 오프셋(0~{MaxBitOffset}) 오류: {original}";
+            return false;
+        }
+
+        byte bit = (byte)bitValue;
+        string wireDec = decVal < BitsPerChannel ? $"{devicePrefix}{decVal}" : $"{devicePrefix}{channel}{bit:D2}";
+        result = new KeyenceHostLinkAddress(original, devicePrefix, channel, bit, isBit: true, isHex: false, wireDec);
         return true;
     }
 
@@ -177,25 +205,25 @@ public sealed class KeyenceHostLinkAddress
         int ch;
         if (isHex)
         {
-            if (!int.TryParse(chStr, System.Globalization.NumberStyles.HexNumber, null, out ch))
+            if (!int.TryParse(chStr, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out ch))
             {
                 errorMessage = $"16진 채널 번호 오류: {original}";
                 return false;
             }
         }
-        else if (!int.TryParse(chStr, out ch))
+        else if (!int.TryParse(chStr, NumberStyles.None, CultureInfo.InvariantCulture, out ch))
         {
             errorMessage = $"10진 채널 번호 오류: {original}";
             return false;
         }
 
-        if (!byte.TryParse(bitStr, out byte bit) || bit > 15)
+        if (!byte.TryParse(bitStr, NumberStyles.None, CultureInfo.InvariantCulture, out byte bit) || bit > MaxBitOffset)
         {
-            errorMessage = $"비트 오프셋(0~15) 오류: {original}";
+            errorMessage = $"비트 오프셋(0~{MaxBitOffset}) 오류: {original}";
             return false;
         }
 
-        string wire = isHex ? $"{devicePrefix}{ch:X}.{bit}" : $"{devicePrefix}{ch}{bit:D2}";
+        string wire = isHex ? $"{devicePrefix}{ch:X}{BitSeparator}{bit}" : $"{devicePrefix}{ch}{bit:D2}";
         result = new KeyenceHostLinkAddress(original, devicePrefix, ch, bit, isBit: true, isHex, wire);
         return true;
     }
@@ -214,13 +242,13 @@ public sealed class KeyenceHostLinkAddress
         int parsedNumber;
         if (isHex)
         {
-            if (!int.TryParse(numberText, System.Globalization.NumberStyles.HexNumber, null, out parsedNumber))
+            if (!int.TryParse(numberText, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out parsedNumber))
             {
                 errorMessage = $"16진 워드 주소 파싱 실패: {original}";
                 return false;
             }
         }
-        else if (!int.TryParse(numberText, out parsedNumber))
+        else if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out parsedNumber))
         {
             errorMessage = $"10진 워드 주소 파싱 실패: {original}";
             return false;
@@ -234,16 +262,21 @@ public sealed class KeyenceHostLinkAddress
     /// <summary>오프셋만큼 주소를 이동한 새 <see cref="KeyenceHostLinkAddress"/>를 반환합니다.</summary>
     public KeyenceHostLinkAddress Offset(int count)
     {
-        if (IsBit && !IsHex)
+        if (count < 0)
         {
-            int totalBit = (Channel * 16) + Bit + count;
-            int newCh = totalBit / 16;
-            byte newBit = (byte)(totalBit % 16);
-            string wire = totalBit < 16 ? $"{Device}{totalBit}" : $"{Device}{newCh}{newBit:D2}";
-            return new KeyenceHostLinkAddress($"{Original}+{count}", Device, newCh, newBit, true, false, wire);
+            throw new ArgumentOutOfRangeException(nameof(count), count, "오프셋은 0 이상이어야 합니다.");
         }
 
-        int newNum = Channel + count;
+        if (IsBit && !IsHex)
+        {
+            int totalBit = checked((Channel * BitsPerChannel) + Bit + count);
+            int newCh = totalBit / BitsPerChannel;
+            byte newBit = (byte)(totalBit % BitsPerChannel);
+            string wire = totalBit < BitsPerChannel ? $"{Device}{totalBit}" : $"{Device}{newCh}{newBit:D2}";
+            return new KeyenceHostLinkAddress($"{Original}+{count}", Device, newCh, newBit, isBit: true, isHex: false, wire);
+        }
+
+        int newNum = checked(Channel + count);
         string newWire = IsHex ? $"{Device}{newNum:X}" : $"{Device}{newNum}";
         return new KeyenceHostLinkAddress($"{Original}+{count}", Device, newNum, 0, IsBit, IsHex, newWire);
     }

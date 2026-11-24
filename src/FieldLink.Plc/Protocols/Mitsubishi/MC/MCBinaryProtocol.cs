@@ -12,7 +12,9 @@ namespace FieldLink.Plc.Protocols.Mitsubishi.MC;
 /// <summary>TCP·UDP 위에서 실행되는 MC 프로토콜 바이너리 클라이언트입니다. 3E·4E 프레임, QL·iQ-R 시리즈를 지원합니다. (사양서 §1, §3)</summary>
 public sealed class MCBinaryProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int BytesPerWord = 2;
+    private const ushort InitialSerialNumber = 1;
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly MCOptions _options;
@@ -128,12 +130,12 @@ public sealed class MCBinaryProtocol : IPlcProtocol
         }
 
         int elementSize = dataType.GetElementSize();
-        if (elementSize < 2 || elementSize % 2 != 0)
+        if (elementSize < BytesPerWord || elementSize % BytesPerWord != 0)
         {
-            throw new ArgumentException($"워드 디바이스 '{address}'는 2바이트 배수 자료형만 읽고 쓸 수 있습니다. ({dataType})", nameof(dataType));
+            throw new ArgumentException($"워드 디바이스 '{address}'는 {BytesPerWord}바이트 배수 자료형만 읽고 쓸 수 있습니다. ({dataType})", nameof(dataType));
         }
 
-        return elementSize / 2;
+        return elementSize / BytesPerWord;
     }
 
     private List<RequestChunker.Chunk> PlanChunks(MCAddress address, int wordsPerElement, int elementCount)
@@ -187,7 +189,7 @@ public sealed class MCBinaryProtocol : IPlcProtocol
     {
         lock (_serialNumberLock)
         {
-            _serialNumber = (ushort)(_serialNumber == ushort.MaxValue ? 1 : _serialNumber + 1);
+            _serialNumber = (ushort)(_serialNumber == ushort.MaxValue ? InitialSerialNumber : _serialNumber + 1);
             return _serialNumber;
         }
     }

@@ -1,0 +1,145 @@
+T: FieldLink.OpcUa.Discovery.OpcUaDiscovery
+  M: System.Threading.Tasks.Task`1[System.Collections.Generic.IReadOnlyList`1[Opc.Ua.EndpointDescription]] GetEndpointsAsync(System.Uri, System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+T: FieldLink.OpcUa.IOpcUaClient
+  P: OpcUaClientOptions Options
+  P: OpcUaClientState State
+  M: System.Threading.Tasks.Task CloseAsync(System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task OpenAsync(System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[FieldLink.OpcUa.Subscriptions.OpcUaSubscription] SubscribeAsync(FieldLink.OpcUa.Subscriptions.OpcUaSubscriptionOptions, System.Collections.Generic.IReadOnlyList`1[FieldLink.OpcUa.Subscriptions.OpcUaMonitoredItemOptions], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[Opc.Ua.CallMethodResult] CallAsync(Opc.Ua.ExpandedNodeId, Opc.Ua.ExpandedNodeId, System.Collections.Generic.IReadOnlyList`1[Opc.Ua.Variant], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[Opc.Ua.DataValue] ReadValueAsync(Opc.Ua.ExpandedNodeId, System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[Opc.Ua.StatusCode] WriteValueAsync(FieldLink.OpcUa.Services.OpcUaWriteRequest, System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[System.Collections.Generic.IReadOnlyList`1[Opc.Ua.DataValue]] ReadValuesAsync(System.Collections.Generic.IReadOnlyList`1[Opc.Ua.ExpandedNodeId], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[System.Collections.Generic.IReadOnlyList`1[Opc.Ua.ReferenceDescription]] BrowseAsync(Opc.Ua.ExpandedNodeId, FieldLink.OpcUa.Services.OpcUaBrowseOptions, System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[System.Collections.Generic.IReadOnlyList`1[Opc.Ua.StatusCode]] WriteValuesAsync(System.Collections.Generic.IReadOnlyList`1[FieldLink.OpcUa.Services.OpcUaWriteRequest], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+T: FieldLink.OpcUa.OpcUaClient
+  C: Void .ctor(FieldLink.OpcUa.OpcUaClientOptions)
+  P: OpcUaClientOptions Options
+  P: OpcUaClientState State
+  M: System.Threading.Tasks.Task CloseAsync(System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task OpenAsync(System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[FieldLink.OpcUa.Subscriptions.OpcUaSubscription] SubscribeAsync(FieldLink.OpcUa.Subscriptions.OpcUaSubscriptionOptions, System.Collections.Generic.IReadOnlyList`1[FieldLink.OpcUa.Subscriptions.OpcUaMonitoredItemOptions], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[Opc.Ua.CallMethodResult] CallAsync(Opc.Ua.ExpandedNodeId, Opc.Ua.ExpandedNodeId, System.Collections.Generic.IReadOnlyList`1[Opc.Ua.Variant], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[Opc.Ua.DataValue] ReadValueAsync(Opc.Ua.ExpandedNodeId, System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[Opc.Ua.StatusCode] WriteValueAsync(FieldLink.OpcUa.Services.OpcUaWriteRequest, System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[System.Collections.Generic.IReadOnlyList`1[Opc.Ua.DataValue]] ReadValuesAsync(System.Collections.Generic.IReadOnlyList`1[Opc.Ua.ExpandedNodeId], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[System.Collections.Generic.IReadOnlyList`1[Opc.Ua.ReferenceDescription]] BrowseAsync(Opc.Ua.ExpandedNodeId, FieldLink.OpcUa.Services.OpcUaBrowseOptions, System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[System.Collections.Generic.IReadOnlyList`1[Opc.Ua.StatusCode]] WriteValuesAsync(System.Collections.Generic.IReadOnlyList`1[FieldLink.OpcUa.Services.OpcUaWriteRequest], System.Nullable`1[System.TimeSpan], System.Threading.CancellationToken)
+  M: System.Threading.Tasks.ValueTask DisposeAsync()
+  M: Void Dispose()
+T: FieldLink.OpcUa.OpcUaClientOptions
+  C: Void .ctor()
+  P: Boolean AllowInsecureUserNameOverUnencryptedChannel
+  P: IReadOnlyList`1 AllowedSecurityPolicies
+  P: String ApplicationName
+  P: String ApplicationUri
+  P: OpcUaCertificateOptions Certificates
+  P: TimeSpan CloseTimeout
+  P: TimeSpan ConnectTimeout
+  P: TimeSpan DefaultOperationTimeout
+  P: Uri EndpointUrl
+  P: Int32 KeepAliveIntervalMilliseconds
+  P: Int32 MaxConcurrentOperations
+  P: Int32 MaxKeepAliveFailuresBeforeFault
+  P: MessageSecurityMode MessageSecurityMode
+  P: UInt32 SessionTimeoutMilliseconds
+  P: Boolean UpdateEndpointUrlOnConnect
+  P: OpcUaUserIdentity UserIdentity
+  M: System.String ToString()
+T: FieldLink.OpcUa.OpcUaClientState
+  E: Closed
+  E: Opening
+  E: Open
+  E: Closing
+  E: Faulted
+  E: Disposed
+T: FieldLink.OpcUa.OpcUaUserIdentity
+  P: OpcUaUserIdentityType IdentityType
+  P: String Username
+  M: FieldLink.OpcUa.OpcUaUserIdentity CreateAnonymous()
+  M: FieldLink.OpcUa.OpcUaUserIdentity CreateUserName(System.String, System.String)
+  M: System.String ToString()
+T: FieldLink.OpcUa.OpcUaUserIdentityType
+  E: Anonymous
+  E: UserName
+T: FieldLink.OpcUa.Security.OpcUaCertificateOptions
+  C: Void .ctor()
+  P: String ApplicationCertificateStorePath
+  P: String ApplicationCertificateSubjectName
+  P: String ApplicationCertificateThumbprint
+  P: Boolean RejectSha1SignedCertificates
+  P: String RejectedCertificateStorePath
+  P: OpcUaCertificateStoreType StoreType
+  P: String TrustedIssuerCertificatesStorePath
+  P: String TrustedPeerCertificatesStorePath
+T: FieldLink.OpcUa.Security.OpcUaCertificateStoreType
+  E: Directory
+  E: X509Store
+T: FieldLink.OpcUa.Services.OpcUaBrowseOptions
+  C: Void .ctor()
+  P: BrowseDirection BrowseDirection
+  P: Boolean IncludeSubtypes
+  P: UInt32 MaxReferencesPerPage
+  P: Int32 MaxTotalReferences
+  P: UInt32 NodeClassMask
+  P: NodeId ReferenceTypeId
+  P: Nullable`1 Timeout
+T: FieldLink.OpcUa.Services.OpcUaWriteRequest
+  C: Void .ctor(Opc.Ua.ExpandedNodeId, Opc.Ua.Variant)
+  P: ExpandedNodeId NodeId
+  P: Variant Value
+  M: Boolean Equals(FieldLink.OpcUa.Services.OpcUaWriteRequest)
+  M: Boolean Equals(System.Object)
+  M: FieldLink.OpcUa.Services.OpcUaWriteRequest <Clone>$()
+  M: Int32 GetHashCode()
+  M: System.String ToString()
+T: FieldLink.OpcUa.Subscriptions.OpcUaDataChangeBatch
+  P: IReadOnlyList`1 Items
+  P: DateTimeOffset PublishTime
+  P: UInt32 SequenceNumber
+T: FieldLink.OpcUa.Subscriptions.OpcUaDataChangeItem
+  P: String ClientItemKey
+  P: NodeId NodeId
+  P: Boolean ServerOverflow
+  P: DataValue Value
+T: FieldLink.OpcUa.Subscriptions.OpcUaMonitoredItemOptions
+  C: Void .ctor()
+  P: String ClientItemKey
+  P: Boolean DiscardOldest
+  P: ExpandedNodeId NodeId
+  P: UInt32 QueueSize
+  P: Int32 SamplingIntervalMilliseconds
+T: FieldLink.OpcUa.Subscriptions.OpcUaMonitoredItemResult
+  P: String ClientItemKey
+  P: Boolean IsSuccess
+  P: NodeId ResolvedNodeId
+  P: UInt32 RevisedQueueSize
+  P: Double RevisedSamplingInterval
+  P: StatusCode StatusCode
+T: FieldLink.OpcUa.Subscriptions.OpcUaSubscription
+  P: IReadOnlyList`1 ItemResults
+  P: UInt32 RevisedKeepAliveCount
+  P: UInt32 RevisedLifetimeCount
+  P: Double RevisedPublishingInterval
+  P: UInt32 SubscriptionId
+  P: Exception TerminationException
+  P: OpcUaSubscriptionTerminationReason TerminationReason
+  M: System.Threading.Tasks.Task CloseAsync(System.Threading.CancellationToken)
+  M: System.Threading.Tasks.Task`1[FieldLink.OpcUa.Subscriptions.OpcUaDataChangeBatch] ReadNextAsync(System.Threading.CancellationToken)
+  M: System.Threading.Tasks.ValueTask DisposeAsync()
+  M: Void Dispose()
+T: FieldLink.OpcUa.Subscriptions.OpcUaSubscriptionOptions
+  C: Void .ctor()
+  P: UInt32 KeepAliveCount
+  P: UInt32 LifetimeCount
+  P: UInt32 MaxNotificationsPerPublish
+  P: Int32 MaxQueuedBatches
+  P: Int64 MaxQueuedBytes
+  P: Int32 PublishingIntervalMilliseconds
+T: FieldLink.OpcUa.Subscriptions.OpcUaSubscriptionTerminationReason
+  E: None
+  E: Closed
+  E: QueueOverflow
+  E: ParentClosed
+  E: ParentFaulted
+  E: Disposed

@@ -8,24 +8,27 @@ namespace FieldLink.Plc.Protocols.Modbus;
 public sealed class ModbusRtuFrameDecoder : IFrameDecoder
 {
     private const int MaximumModbusRtuLength = 256;
+    private const int MinimumHeaderLength = 2;
+    private const int ReadByteCountHeaderLength = 3;
+    private const int ReadFrameOverheadLength = 5;
+    private const byte ExceptionFunctionMask = 0x80;
     private const int ExceptionFrameLength = 5;
     private const int WriteResponseFrameLength = 8;
 
     /// <inheritdoc />
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
-        if (received.Count < 2)
+        if (received.Count < MinimumHeaderLength || received.Array is not { } buffer)
         {
             frameLength = 0;
             return false;
         }
 
-        byte[] buffer = received.Array!;
         int offset = received.Offset;
         byte functionCode = buffer[offset + 1];
 
         // 1. 예외 응답 (FC 최상위 비트 1): 국번 1 + FC 1 + 예외코드 1 + CRC 2 = 5바이트
-        if ((functionCode & 0x80) != 0)
+        if ((functionCode & ExceptionFunctionMask) != 0)
         {
             return CheckLength(received.Count, ExceptionFrameLength, out frameLength);
         }
@@ -45,14 +48,14 @@ public sealed class ModbusRtuFrameDecoder : IFrameDecoder
             or (byte)ModbusFunctionCode.ReadHoldingRegisters
             or (byte)ModbusFunctionCode.ReadInputRegisters)
         {
-            if (received.Count < 3)
+            if (received.Count < ReadByteCountHeaderLength)
             {
                 frameLength = 0;
                 return false;
             }
 
             byte byteCount = buffer[offset + 2];
-            int expectedLength = 5 + byteCount;
+            int expectedLength = ReadFrameOverheadLength + byteCount;
 
             if (expectedLength > MaximumModbusRtuLength)
             {

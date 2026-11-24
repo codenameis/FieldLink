@@ -10,6 +10,8 @@ namespace FieldLink.Plc.Conversion;
 /// </remarks>
 public sealed class PaddedStringFormat : IPlcStringFormat
 {
+    private const byte NullPaddingByte = 0x00;
+    private const int DefaultWordSize = 2;
     private readonly byte _paddingByte;
     private readonly int _wordSize;
 
@@ -17,7 +19,7 @@ public sealed class PaddedStringFormat : IPlcStringFormat
     /// <param name="paddingByte">빈 공간을 채울 바이트 값입니다. 기본값은 0x00(널)입니다.</param>
     /// <param name="wordSize">저장소 정렬 단위(바이트 수)입니다. 기본값은 2(워드 단위)입니다.</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="wordSize"/>가 1 미만일 때.</exception>
-    public PaddedStringFormat(byte paddingByte = 0x00, int wordSize = 2)
+    public PaddedStringFormat(byte paddingByte = NullPaddingByte, int wordSize = DefaultWordSize)
     {
         if (wordSize <= 0)
         {
@@ -37,7 +39,18 @@ public sealed class PaddedStringFormat : IPlcStringFormat
         }
 
         int remainder = characterCapacity % _wordSize;
-        return remainder == 0 ? characterCapacity : characterCapacity + (_wordSize - remainder);
+        if (remainder == 0)
+        {
+            return characterCapacity;
+        }
+
+        int paddingNeeded = _wordSize - remainder;
+        if (characterCapacity > int.MaxValue - paddingNeeded)
+        {
+            throw new ArgumentOutOfRangeException(nameof(characterCapacity), characterCapacity, "정렬 후 저장 크기가 최대 허용 크기를 초과합니다.");
+        }
+
+        return characterCapacity + paddingNeeded;
     }
 
     /// <inheritdoc />

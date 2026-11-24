@@ -6,30 +6,41 @@ namespace FieldLink.Plc.Protocols.Jtekt;
 /// <summary>TOYOPUC Computer Link 2PORT-EFR 응답 프레임을 검증하고 데이터를 파싱합니다. (사양서 §2)</summary>
 public static class ToyopucResponseParser
 {
+    private const int HeaderLength = 4;
+    private const int CommandOffset = 4;
+    private const int WordPayloadOffset = 5;
+    private const int BitFrameMinimumLength = 6;
+    private const int BytesPerWord = 2;
+    private const byte ResponseFrameType = 0x80;
+    private const byte SuccessRc = 0x00;
+    private const byte ReadBitCommand = 0x20;
+    private const int RcOffset = 1;
+    private const int LengthFieldOffset = 2;
+
     /// <summary>단일 비트 읽기 응답을 검증하고 1바이트(0 또는 1)를 반환합니다.</summary>
     public static byte ParseReadBit(byte[] frame)
     {
-        ValidateResponseHeader(frame, expectedCommand: 0x20);
-        if (frame.Length < 6)
+        ValidateResponseHeader(frame, expectedCommand: ReadBitCommand);
+        if (frame.Length < BitFrameMinimumLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "비트 응답 데이터 길이가 부족합니다.");
         }
 
-        return (byte)(frame[5] != 0 ? 1 : 0);
+        return (byte)(frame[WordPayloadOffset] != 0 ? 1 : 0);
     }
 
     /// <summary>연속 워드 읽기 응답을 검증하고 리틀엔디언 바이트 배열을 반환합니다.</summary>
     public static byte[] ParseReadWords(byte[] frame, byte expectedCommand, ushort expectedWordCount)
     {
         ValidateResponseHeader(frame, expectedCommand);
-        int expectedBytes = expectedWordCount * 2;
-        if (frame.Length < 5 + expectedBytes)
+        int expectedBytes = expectedWordCount * BytesPerWord;
+        if (frame.Length < WordPayloadOffset + expectedBytes)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 응답 데이터 길이 부족: 필요 {5 + expectedBytes}, 수신 {frame.Length}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 응답 데이터 길이 부족: 필요 {WordPayloadOffset + expectedBytes}, 수신 {frame.Length}");
         }
 
         byte[] result = new byte[expectedBytes];
-        Buffer.BlockCopy(frame, 5, result, 0, expectedBytes);
+        Buffer.BlockCopy(frame, WordPayloadOffset, result, 0, expectedBytes);
         return result;
     }
 
@@ -41,33 +52,33 @@ public static class ToyopucResponseParser
 
     private static void ValidateResponseHeader(byte[] frame, byte expectedCommand)
     {
-        if (frame is null || frame.Length < 4)
+        if (frame is null || frame.Length < HeaderLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "TOYOPUC 응답 프레임 헤더 길이가 부족합니다.");
         }
 
-        if (frame[0] != 0x80)
+        if (frame[0] != ResponseFrameType)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"올바르지 않은 TOYOPUC 응답 프레임 타입: 0x{frame[0]:X2}");
         }
 
-        ushort declaredBodyLength = BinaryBuffer.ReadUInt16LE(frame, 2);
-        if (frame.Length - 4 < declaredBodyLength)
+        ushort declaredBodyLength = BinaryBuffer.ReadUInt16LE(frame, LengthFieldOffset);
+        if (frame.Length - HeaderLength < declaredBodyLength)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"TOYOPUC 프레임 본문 길이({frame.Length - 4})가 선언된 길이({declaredBodyLength})보다 작습니다.");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"TOYOPUC 프레임 본문 길이({frame.Length - HeaderLength})가 선언된 길이({declaredBodyLength})보다 작습니다.");
         }
 
-        byte rc = frame[1];
-        if (rc != 0x00)
+        byte rc = frame[RcOffset];
+        if (rc != SuccessRc)
         {
-            byte errCode = frame.Length >= 5 ? frame[4] : rc;
+            byte errCode = frame.Length >= WordPayloadOffset ? frame[CommandOffset] : rc;
             string message = GetErrorMessage(errCode);
             throw new PlcDeviceException(errCode, $"TOYOPUC 장치 오류 (코드 0x{errCode:X2}): {message}");
         }
 
-        if (frame.Length >= 5 && frame[4] != expectedCommand)
+        if (frame.Length >= WordPayloadOffset && frame[CommandOffset] != expectedCommand)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"명령 에코 불일치: 예상 0x{expectedCommand:X2}, 수신 0x{frame[4]:X2}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"명령 에코 불일치: 예상 0x{expectedCommand:X2}, 수신 0x{frame[CommandOffset]:X2}");
         }
     }
 

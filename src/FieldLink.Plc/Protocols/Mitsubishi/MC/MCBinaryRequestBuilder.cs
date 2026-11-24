@@ -8,6 +8,16 @@ public static class MCBinaryRequestBuilder
 {
     private const ushort Request3ESubheader = 0x0050;
     private const ushort Request4ESubheader = 0x0054;
+    private const int Header3ELength = 9;
+    private const int Header4ELength = 13;
+    private const int BytesPerWord = 2;
+    private const int FixedCommandHeaderBytes = 6;
+    private const int PointCountByteSize = 2;
+    private const int FieldByteSize = 2;
+    private const int SerialBlockSize = 4;
+    private const ushort ReservedWordZero = 0x0000;
+    private const int BitsPerBytePacked = 2;
+    private const int BitsPerByteShift = 8;
     private const byte BitOnNibbleHigh = 0x10;
     private const byte BitOnNibbleLow = 0x01;
 
@@ -32,7 +42,7 @@ public static class MCBinaryRequestBuilder
             throw new ArgumentNullException(nameof(data));
         }
 
-        int expectedLength = address.IsBit ? pointCount : pointCount * 2;
+        int expectedLength = address.IsBit ? pointCount : pointCount * BytesPerWord;
         if (data.Length != expectedLength)
         {
             throw new ArgumentException($"쓰기 데이터는 {expectedLength}바이트여야 합니다. (실제: {data.Length})", nameof(data));
@@ -74,45 +84,45 @@ public static class MCBinaryRequestBuilder
         byte[] payload)
     {
         bool is4E = options.FrameType == MCFrameType.Frame4E;
-        int headerLength = is4E ? 13 : 9;
+        int headerLength = is4E ? Header4ELength : Header3ELength;
         int devNumBytes = options.Series.GetDeviceNumberByteCount();
         int devCodeBytes = options.Series.GetDeviceCodeByteCount();
-        int bodyLength = 6 + devNumBytes + devCodeBytes + 2 + payload.Length;
+        int bodyLength = FixedCommandHeaderBytes + devNumBytes + devCodeBytes + PointCountByteSize + payload.Length;
 
         byte[] frame = new byte[headerLength + bodyLength];
         int offset = 0;
 
         // 1. 서브헤더 (3E: 50 00, 4E: 54 00 + Serial + Reserved)
         BinaryBuffer.WriteUInt16LE(frame, offset, is4E ? Request4ESubheader : Request3ESubheader);
-        offset += 2;
+        offset += FieldByteSize;
 
         if (is4E)
         {
             BinaryBuffer.WriteUInt16LE(frame, offset, serialNumber);
-            BinaryBuffer.WriteUInt16LE(frame, offset + 2, 0x0000);
-            offset += 4;
+            BinaryBuffer.WriteUInt16LE(frame, offset + FieldByteSize, ReservedWordZero);
+            offset += SerialBlockSize;
         }
 
         // 2. 액세스 경로 (5 Bytes) 및 요청 데이터 길이 (2 Bytes)
         frame[offset++] = options.NetworkNumber;
         frame[offset++] = options.PcNumber;
         BinaryBuffer.WriteUInt16LE(frame, offset, options.ModuleIoNumber);
-        offset += 2;
+        offset += FieldByteSize;
         frame[offset++] = options.ModuleStationNumber;
         BinaryBuffer.WriteUInt16LE(frame, offset, (ushort)bodyLength);
-        offset += 2;
+        offset += FieldByteSize;
 
         // 3. 감시 타이머, 커맨드, 서브커맨드 (6 Bytes)
         BinaryBuffer.WriteUInt16LE(frame, offset, options.MonitoringTimer);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 2, (ushort)command);
-        BinaryBuffer.WriteUInt16LE(frame, offset + 4, (ushort)options.Series.GetSubcommand(address.IsBit));
-        offset += 6;
+        BinaryBuffer.WriteUInt16LE(frame, offset + FieldByteSize, (ushort)command);
+        BinaryBuffer.WriteUInt16LE(frame, offset + (FieldByteSize * 2), (ushort)options.Series.GetSubcommand(address.IsBit));
+        offset += FixedCommandHeaderBytes;
 
         // 4. 선두 디바이스 번호, 디바이스 코드, 디바이스 점수
         WriteLittleEndian(frame, ref offset, address.DeviceNumber, devNumBytes);
         WriteLittleEndian(frame, ref offset, address.Device.Code, devCodeBytes);
         BinaryBuffer.WriteUInt16LE(frame, offset, pointCount);
-        offset += 2;
+        offset += PointCountByteSize;
 
         // 5. 쓰기 데이터 페이로드
         if (payload.Length > 0)
@@ -125,12 +135,12 @@ public static class MCBinaryRequestBuilder
 
     private static byte[] PackBitNibbles(byte[] bitValues)
     {
-        var packed = new byte[(bitValues.Length + 1) / 2];
+        var packed = new byte[(bitValues.Length + 1) / BitsPerBytePacked];
         for (int bitIndex = 0; bitIndex < bitValues.Length; bitIndex++)
         {
             if (bitValues[bitIndex] != 0)
             {
-                packed[bitIndex / 2] |= bitIndex % 2 == 0 ? BitOnNibbleHigh : BitOnNibbleLow;
+                packed[bitIndex / BitsPerBytePacked] |= bitIndex % BitsPerBytePacked == 0 ? BitOnNibbleHigh : BitOnNibbleLow;
             }
         }
 
@@ -141,7 +151,7 @@ public static class MCBinaryRequestBuilder
     {
         for (int byteIndex = 0; byteIndex < byteCount; byteIndex++)
         {
-            buffer[offset++] = (byte)(value >> (8 * byteIndex));
+            buffer[offset++] = (byte)(value >> (BitsPerByteShift * byteIndex));
         }
     }
 }

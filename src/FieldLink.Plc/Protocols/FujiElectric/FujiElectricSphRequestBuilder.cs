@@ -8,6 +8,18 @@ public static class FujiElectricSphRequestBuilder
 {
     private const byte FrameHeader = 0xFB;
     private const byte FrameType = 0x7B;
+    private const int MinWordCount = 1;
+    private const int MaxWordCount = 230;
+    private const int BytesPerWord = 2;
+    private const int HeaderLength = 20;
+    private const int DescriptorLength = 6;
+    private const int ReadFrameLength = HeaderLength + DescriptorLength;
+    private const int LengthFieldOffset = 18;
+    private const byte CommandReadWords = 0x00;
+    private const byte CommandWriteWords = 0x01;
+    private const byte ByteMask = 0xFF;
+    private const int MidByteShift = 8;
+    private const int HighByteShift = 16;
 
     /// <summary>연속 워드 읽기 요청 프레임을 조립합니다.</summary>
     public static byte[] BuildReadWords(byte connectionId, FujiElectricSphAddress address, ushort wordCount)
@@ -17,13 +29,13 @@ public static class FujiElectricSphRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (wordCount is < 1 or > 230)
+        if (wordCount is < MinWordCount or > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 읽기 개수는 1~230 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 읽기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
         }
 
-        byte[] frame = new byte[26];
-        FillHeader(frame, connectionId, command: 0x00, payloadLength: 6);
+        byte[] frame = new byte[ReadFrameLength];
+        FillHeader(frame, connectionId, command: CommandReadWords, payloadLength: DescriptorLength);
         FillDescriptor(frame, address, wordCount);
         return frame;
     }
@@ -36,9 +48,9 @@ public static class FujiElectricSphRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (wordCount is < 1 or > 230)
+        if (wordCount is < MinWordCount or > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 쓰기 개수는 1~230 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 쓰기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
         }
 
         if (wordData is null)
@@ -46,17 +58,17 @@ public static class FujiElectricSphRequestBuilder
             throw new ArgumentNullException(nameof(wordData));
         }
 
-        if (wordData.Length != wordCount * 2)
+        if (wordData.Length != wordCount * BytesPerWord)
         {
             throw new ArgumentException("데이터 길이가 워드 개수와 일치하지 않습니다.", nameof(wordData));
         }
 
-        ushort payloadLen = (ushort)(6 + wordData.Length);
-        byte[] frame = new byte[20 + payloadLen];
+        ushort payloadLen = (ushort)(DescriptorLength + wordData.Length);
+        byte[] frame = new byte[HeaderLength + payloadLen];
 
-        FillHeader(frame, connectionId, command: 0x01, payloadLen);
+        FillHeader(frame, connectionId, command: CommandWriteWords, payloadLen);
         FillDescriptor(frame, address, wordCount);
-        Buffer.BlockCopy(wordData, 0, frame, 26, wordData.Length);
+        Buffer.BlockCopy(wordData, 0, frame, ReadFrameLength, wordData.Length);
         return frame;
     }
 
@@ -76,15 +88,15 @@ public static class FujiElectricSphRequestBuilder
         frame[15] = 0x00;
         frame[16] = 0x00;
         frame[17] = 0x01; // 1블록
-        BinaryBuffer.WriteUInt16LE(frame, 18, payloadLength);
+        BinaryBuffer.WriteUInt16LE(frame, LengthFieldOffset, payloadLength);
     }
 
     private static void FillDescriptor(byte[] frame, FujiElectricSphAddress address, ushort wordCount)
     {
-        frame[20] = address.AreaCode;
-        frame[21] = (byte)(address.WordAddress & 0xFF);
-        frame[22] = (byte)((address.WordAddress >> 8) & 0xFF);
-        frame[23] = (byte)((address.WordAddress >> 16) & 0xFF);
-        BinaryBuffer.WriteUInt16LE(frame, 24, wordCount);
+        frame[HeaderLength] = address.AreaCode;
+        frame[HeaderLength + 1] = (byte)(address.WordAddress & ByteMask);
+        frame[HeaderLength + 2] = (byte)((address.WordAddress >> MidByteShift) & ByteMask);
+        frame[HeaderLength + 3] = (byte)((address.WordAddress >> HighByteShift) & ByteMask);
+        BinaryBuffer.WriteUInt16LE(frame, HeaderLength + 4, wordCount);
     }
 }

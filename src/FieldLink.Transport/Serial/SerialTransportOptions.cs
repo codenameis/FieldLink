@@ -6,8 +6,18 @@ namespace FieldLink.Transport.Serial;
 /// <summary>시리얼 포트 전송의 통신 파라미터 및 시간 제한 설정입니다.</summary>
 public sealed class SerialTransportOptions
 {
-    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(3);
-    private static readonly TimeSpan DefaultSilenceInterval = TimeSpan.FromMilliseconds(2);
+    private const int DefaultBaudRate = 9600;
+    private const int SevenDataBits = 7;
+    private const int EightDataBits = 8;
+    private const int DefaultTimeoutSeconds = 3;
+    private const int DefaultSilenceMilliseconds = 2;
+
+    private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
+    private static readonly TimeSpan DefaultSilenceInterval = TimeSpan.FromMilliseconds(DefaultSilenceMilliseconds);
+
+    private readonly TimeSpan _readTimeout = DefaultTimeout;
+    private readonly TimeSpan _writeTimeout = DefaultTimeout;
+    private readonly TimeSpan _silenceInterval = DefaultSilenceInterval;
 
     /// <summary>포트 이름과 통신 속도로 시리얼 전송 설정을 초기화합니다.</summary>
     /// <param name="portName">시리얼 포트 이름입니다. (예: "COM1", "/devicePrefix/ttyUSB0")</param>
@@ -20,9 +30,9 @@ public sealed class SerialTransportOptions
     /// <exception cref="ArgumentOutOfRangeException">통신 속도 또는 데이터 비트가 유효하지 않을 때.</exception>
     public SerialTransportOptions(
         string portName,
-        int baudRate = 9600,
+        int baudRate = DefaultBaudRate,
         Parity parity = Parity.Even,
-        int dataBits = 8,
+        int dataBits = EightDataBits,
         StopBits stopBits = StopBits.One)
     {
         if (portName is null)
@@ -40,7 +50,7 @@ public sealed class SerialTransportOptions
             throw new ArgumentOutOfRangeException(nameof(baudRate), baudRate, "통신 속도는 1 이상이어야 합니다.");
         }
 
-        if (dataBits is not (7 or 8))
+        if (dataBits is not (SevenDataBits or EightDataBits))
         {
             throw new ArgumentOutOfRangeException(nameof(dataBits), dataBits, "데이터 비트는 7 또는 8이어야 합니다.");
         }
@@ -50,9 +60,6 @@ public sealed class SerialTransportOptions
         Parity = parity;
         DataBits = dataBits;
         StopBits = stopBits;
-        ReadTimeout = DefaultTimeout;
-        WriteTimeout = DefaultTimeout;
-        SilenceInterval = DefaultSilenceInterval;
     }
 
     /// <summary>시리얼 포트 이름입니다.</summary>
@@ -71,11 +78,47 @@ public sealed class SerialTransportOptions
     public StopBits StopBits { get; }
 
     /// <summary>읽기 제한 시간입니다. 기본값은 3초입니다.</summary>
-    public TimeSpan ReadTimeout { get; init; }
+    public TimeSpan ReadTimeout
+    {
+        get => _readTimeout;
+        init
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "읽기 제한 시간은 0보다 커야 합니다.");
+            }
+
+            _readTimeout = value;
+        }
+    }
 
     /// <summary>쓰기 제한 시간입니다. 기본값은 3초입니다.</summary>
-    public TimeSpan WriteTimeout { get; init; }
+    public TimeSpan WriteTimeout
+    {
+        get => _writeTimeout;
+        init
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "쓰기 제한 시간은 0보다 커야 합니다.");
+            }
+
+            _writeTimeout = value;
+        }
+    }
 
     /// <summary>프레임 간 무수신 대기 간격입니다. (Modbus RTU 3.5문자 시간 등)</summary>
-    public TimeSpan SilenceInterval { get; init; }
+    public TimeSpan SilenceInterval
+    {
+        get => _silenceInterval;
+        init
+        {
+            if (value < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "무수신 대기 간격은 0 이상이어야 합니다.");
+            }
+
+            _silenceInterval = value;
+        }
+    }
 }

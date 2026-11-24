@@ -46,48 +46,32 @@ public sealed class SerialTransport : ITransport
     /// <inheritdoc />
     public Task OpenAsync(CancellationToken cancellationToken = default)
     {
-        ThrowIfDisposed();
+        BeginOpen();
 
-        lock (_stateLock)
-        {
-            if (_state != TransportState.Closed)
-            {
-                throw new InvalidOperationException($"현재 상태({_state})에서는 포트를 열 수 없습니다.");
-            }
-
-            _state = TransportState.Opening;
-        }
-
+        SerialPort? port = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            var port = new SerialPort(
-                _options.PortName,
-                _options.BaudRate,
-                _options.Parity,
-                _options.DataBits,
-                _options.StopBits)
-            {
-                ReadTimeout = (int)_options.ReadTimeout.TotalMilliseconds,
-                WriteTimeout = (int)_options.WriteTimeout.TotalMilliseconds
-            };
-
-            port.Open();
-
-            _serialPort = port;
-            Interlocked.Increment(ref _connectionId);
-            State = TransportState.Open;
+            port = CreateAndOpenPort();
+            CompleteOpen(port);
+            port = null;
             return Task.CompletedTask;
         }
         catch (OperationCanceledException)
         {
-            State = TransportState.Closed;
+            DisposePortSafely(port);
+            ResetOpeningToClosed();
+            throw;
+        }
+        catch (ObjectDisposedException)
+        {
+            DisposePortSafely(port);
             throw;
         }
         catch (Exception exception)
         {
-            State = TransportState.Closed;
+            DisposePortSafely(port);
+            ResetOpeningToClosed();
             throw new TransportException(
                 TransportFailure.ConnectFailed,
                 $"시리얼 포트({_options.PortName})를 여는 데 실패했습니다.",
@@ -99,16 +83,20 @@ public sealed class SerialTransport : ITransport
     /// <inheritdoc />
     public Task CloseAsync(CancellationToken cancellationToken = default)
     {
+        SerialPort? port;
         lock (_stateLock)
         {
             if (_state is TransportState.Closed or TransportState.Disposed)
             {
                 return Task.CompletedTask;
             }
+
+            _state = TransportState.Closed;
+            port = _serialPort;
+            _serialPort = null;
         }
 
-        CleanupPort();
-        State = TransportState.Closed;
+        DisposePortSafely(port);
         return Task.CompletedTask;
     }
 
@@ -122,19 +110,24 @@ public sealed class SerialTransport : ITransport
             throw new ArgumentNullException(nameof(work));
         }
 
-        ThrowIfDisposed();
-        EnsureConnected();
+        _ = CaptureOpenPort();
 
         await _exclusiveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureConnected();
+            (long connectionId, SerialPort port) = CaptureOpenPort();
             var session = new StreamTransportSession(
-                _connectionId,
-                _serialPort!.BaseStream,
+                connectionId,
+                port.BaseStream,
                 cancellationToken);
 
-            return await work(session).ConfigureAwait(false);
+            TResult result = await work(session).ConfigureAwait(false);
+            if (_options.SilenceInterval > TimeSpan.Zero)
+            {
+                await Task.Delay(_options.SilenceInterval, cancellationToken).ConfigureAwait(false);
+            }
+
+            return result;
         }
         finally
         {
@@ -145,6 +138,7 @@ public sealed class SerialTransport : ITransport
     /// <inheritdoc />
     public void Dispose()
     {
+        SerialPort? port;
         lock (_stateLock)
         {
             if (_state == TransportState.Disposed)
@@ -153,43 +147,111 @@ public sealed class SerialTransport : ITransport
             }
 
             _state = TransportState.Disposed;
+            port = _serialPort;
+            _serialPort = null;
         }
 
-        CleanupPort();
-        _exclusiveLock.Dispose();
+        DisposePortSafely(port);
     }
 
-    private void EnsureConnected()
+    private void BeginOpen()
     {
-        if (State != TransportState.Open || _serialPort is null || !_serialPort.IsOpen)
+        lock (_stateLock)
         {
-            throw new InvalidOperationException("시리얼 포트 전송이 열려 있지 않습니다. OpenAsync를 먼저 호출하세요.");
+            if (_state == TransportState.Disposed)
+            {
+                throw new ObjectDisposedException(nameof(SerialTransport));
+            }
+
+            if (_state != TransportState.Closed)
+            {
+                throw new InvalidOperationException($"현재 상태({_state})에서는 포트를 열 수 없습니다.");
+            }
+
+            _state = TransportState.Opening;
         }
     }
 
-    private void CleanupPort()
+    private SerialPort CreateAndOpenPort()
+    {
+        var port = new SerialPort(
+            _options.PortName,
+            _options.BaudRate,
+            _options.Parity,
+            _options.DataBits,
+            _options.StopBits)
+        {
+            ReadTimeout = (int)_options.ReadTimeout.TotalMilliseconds,
+            WriteTimeout = (int)_options.WriteTimeout.TotalMilliseconds
+        };
+
+        port.Open();
+        return port;
+    }
+
+    private void CompleteOpen(SerialPort port)
+    {
+        lock (_stateLock)
+        {
+            if (_state == TransportState.Disposed)
+            {
+                throw new ObjectDisposedException(nameof(SerialTransport));
+            }
+
+            if (_state != TransportState.Opening)
+            {
+                throw new OperationCanceledException("포트 여는 중 전송이 닫혔습니다.");
+            }
+
+            _serialPort = port;
+            Interlocked.Increment(ref _connectionId);
+            _state = TransportState.Open;
+        }
+    }
+
+    private void ResetOpeningToClosed()
+    {
+        lock (_stateLock)
+        {
+            if (_state == TransportState.Opening)
+            {
+                _state = TransportState.Closed;
+            }
+        }
+    }
+
+    private (long ConnectionId, SerialPort Port) CaptureOpenPort()
+    {
+        lock (_stateLock)
+        {
+            if (_state == TransportState.Disposed)
+            {
+                throw new ObjectDisposedException(nameof(SerialTransport));
+            }
+
+            if (_state != TransportState.Open || _serialPort is null || !_serialPort.IsOpen)
+            {
+                throw new InvalidOperationException("시리얼 포트 전송이 열려 있지 않습니다. OpenAsync를 먼저 호출하세요.");
+            }
+
+            return (Interlocked.Read(ref _connectionId), _serialPort);
+        }
+    }
+
+    private static void DisposePortSafely(SerialPort? port)
     {
         try
         {
-            if (_serialPort is { IsOpen: true })
+            if (port is { IsOpen: true })
             {
-                _serialPort.Close();
+                port.Close();
             }
-            _serialPort?.Dispose();
+
+            port?.Dispose();
         }
         catch
         {
             // 리소스 정리 중 예외는 무시
-        }
-
-        _serialPort = null;
-    }
-
-    private void ThrowIfDisposed()
-    {
-        if (State == TransportState.Disposed)
-        {
-            throw new ObjectDisposedException(nameof(SerialTransport));
         }
     }
 }

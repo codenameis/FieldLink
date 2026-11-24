@@ -16,8 +16,11 @@ public sealed class S7CommProtocol : IPlcProtocol
     private const int ReadOverheadBytes = 18;
     private const int WriteOverheadBytes = 28;
     private const int MaxBytesPerRequest = 8191;
+    private const int SingleBitChunkCount = 1;
+    private const int WordSizeBytes = 2;
+    private const ushort InitialPduReference = 1;
 
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: WordSizeBytes);
 
     private readonly ITransport _transport;
     private readonly S7CommOptions _options;
@@ -153,11 +156,17 @@ public sealed class S7CommProtocol : IPlcProtocol
         if (address.IsBit)
         {
             // 사양서 §4: 비트 접근은 요청 하나에 비트 하나만 담는다.
-            return RequestChunker.Plan(elementCount, 1);
+            return RequestChunker.Plan(elementCount, SingleBitChunkCount);
         }
 
         int overhead = direction == WriteOrRead.Read ? ReadOverheadBytes : WriteOverheadBytes;
-        int maxBytes = Math.Min(_negotiatedPduLength - overhead, MaxBytesPerRequest);
+        int negotiatedPduLength;
+        lock (_sessionLock)
+        {
+            negotiatedPduLength = _negotiatedPduLength;
+        }
+
+        int maxBytes = Math.Min(negotiatedPduLength - overhead, MaxBytesPerRequest);
         return RequestChunker.Plan(byteCount, maxBytes);
     }
 
@@ -221,7 +230,7 @@ public sealed class S7CommProtocol : IPlcProtocol
     {
         lock (_sessionLock)
         {
-            _pduReference = (ushort)(_pduReference == ushort.MaxValue ? 1 : _pduReference + 1);
+            _pduReference = (ushort)(_pduReference == ushort.MaxValue ? InitialPduReference : _pduReference + 1);
             return _pduReference;
         }
     }
@@ -230,7 +239,7 @@ public sealed class S7CommProtocol : IPlcProtocol
     {
         lock (_sessionLock)
         {
-            _pduReference = 1;
+            _pduReference = InitialPduReference;
             return _pduReference;
         }
     }

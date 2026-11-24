@@ -12,7 +12,10 @@ namespace FieldLink.Plc.Protocols.FujiElectric;
 /// <summary>MICREX-SX SPH Ethernet 로더 프로토콜 드라이버입니다. (사양서 Part C)</summary>
 public sealed class FujiElectricSphProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int BytesPerWord = 2;
+    private const int BitsPerWord = 16;
+    private const int BitsPerByte = 8;
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly FujiElectricSphOptions _options;
@@ -50,17 +53,38 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
             return await ReadBitsAsync(address, request.Count, cancellationToken).ConfigureAwait(false);
         }
 
+        if (address.IsBit)
+        {
+            throw new ArgumentException($"비트 주소 '{address.Original}'에는 Boolean 자료형만 사용할 수 있습니다.", nameof(request));
+        }
+
         return await ReadWordsAsync(address, request, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<byte[]> ReadWordsAsync(FujiElectricSphAddress address, PlcReadRequest request, CancellationToken cancellationToken)
     {
         int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
+        if (elementSize % BytesPerWord != 0)
+        {
+            throw new ArgumentException($"워드 영역 '{address.Original}'에는 2바이트 배수 자료형만 사용할 수 있습니다.", nameof(request));
+        }
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, _options.MaxReadWords);
-        byte[] combinedBuffer = new byte[request.ByteCount];
+        int wordsPerElement = elementSize / BytesPerWord;
+        int totalWords = request.Count * wordsPerElement;
+        return await ReadWordSpanAsync(address, totalWords, request.ByteCount, wordsPerElement, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<byte[]> ReadWordSpanAsync(
+        FujiElectricSphAddress address,
+        int totalWords,
+        int totalBytes,
+        int wordsPerElement,
+        CancellationToken cancellationToken)
+    {
+        int maxElements = RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
+        int maxWordsPerChunk = maxElements * wordsPerElement;
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, maxWordsPerChunk);
+        byte[] combinedBuffer = new byte[totalBytes];
 
         await _transport.RunExclusiveAsync<bool>(async session =>
         {
@@ -73,7 +97,7 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
                 byte[] data = FujiElectricSphResponseParser.ParseReadWords(responseFrame, _options.ConnectionId, count);
 
-                int destOffset = chunk.ElementOffset * 2;
+                int destOffset = chunk.ElementOffset * BytesPerWord;
                 Array.Copy(data, 0, combinedBuffer, destOffset, data.Length);
             }
 
@@ -85,24 +109,23 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
 
     private async Task<byte[]> ReadBitsAsync(FujiElectricSphAddress address, int bitCount, CancellationToken cancellationToken)
     {
-        int startBit = (int)((address.WordAddress * 16) + address.BitOffset);
-        int endBit = startBit + bitCount - 1;
-        int startWord = startBit / 16;
-        int endWord = endBit / 16;
-        ushort totalWords = (ushort)(endWord - startWord + 1);
+        long startBit = ((long)address.WordAddress * BitsPerWord) + address.BitOffset;
+        long endBit = startBit + bitCount - 1;
+        long startWord = startBit / BitsPerWord;
+        long endWord = endBit / BitsPerWord;
+        int totalWords = (int)(endWord - startWord + 1);
 
-        FujiElectricSphAddress baseWordAddr = address.Offset(startWord - (int)address.WordAddress);
-        var wordRequest = new PlcReadRequest(baseWordAddr.Original, PlcDataType.UInt16, totalWords);
-        byte[] wordBytes = await ReadWordsAsync(baseWordAddr, wordRequest, cancellationToken).ConfigureAwait(false);
+        FujiElectricSphAddress baseWordAddr = address.Offset((int)(startWord - address.WordAddress));
+        byte[] wordBytes = await ReadWordSpanAsync(baseWordAddr, totalWords, totalWords * BytesPerWord, wordsPerElement: 1, cancellationToken).ConfigureAwait(false);
 
         byte[] bitResult = new byte[bitCount];
         for (int i = 0; i < bitCount; i++)
         {
-            int absoluteBit = startBit + i;
-            int wordIdx = (absoluteBit / 16) - startWord;
-            int bitInWord = absoluteBit % 16;
-            int byteOffset = (wordIdx * 2) + (bitInWord / 8);
-            int bitInByte = bitInWord % 8;
+            long absoluteBit = startBit + i;
+            int wordIdx = (int)((absoluteBit / BitsPerWord) - startWord);
+            int bitInWord = (int)(absoluteBit % BitsPerWord);
+            int byteOffset = (wordIdx * BytesPerWord) + (bitInWord / BitsPerByte);
+            int bitInByte = bitInWord % BitsPerByte;
 
             bool isSet = (wordBytes[byteOffset] & (1 << bitInByte)) != 0;
             bitResult[i] = (byte)(isSet ? 1 : 0);
@@ -120,25 +143,51 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
         }
 
         var address = FujiElectricSphAddress.Parse(request.Address);
-        int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, _options.MaxWriteWords);
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
+        if (request.DataType == PlcDataType.Boolean || address.IsBit)
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            throw new NotSupportedException("MICREX-SX SPH 프로토콜은 비트 쓰기를 지원하지 않습니다.");
+        }
+
+        int elementSize = request.DataType.GetElementSize();
+        if (elementSize % BytesPerWord != 0)
+        {
+            throw new ArgumentException($"워드 영역 '{address.Original}'에는 2바이트 배수 자료형만 사용할 수 있습니다.", nameof(request));
+        }
+
+        int wordsPerElement = elementSize / BytesPerWord;
+        int maxElements = RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        int completedElements = 0;
+
+        try
+        {
+            await _transport.RunExclusiveAsync<bool>(async session =>
             {
-                FujiElectricSphAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                byte[] chunkData = request.GetData(chunk.ElementOffset / wordsPerElement, chunk.ElementCount / wordsPerElement);
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    FujiElectricSphAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
+                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                    byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
 
-                byte[] requestFrame = FujiElectricSphRequestBuilder.BuildWriteWords(_options.ConnectionId, chunkAddress, count, chunkData);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                FujiElectricSphResponseParser.VerifyWriteResponse(responseFrame, _options.ConnectionId);
-            }
+                    byte[] requestFrame = FujiElectricSphRequestBuilder.BuildWriteWords(_options.ConnectionId, chunkAddress, wordCount, chunkData);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    FujiElectricSphResponseParser.VerifyWriteResponse(responseFrame, _options.ConnectionId);
+                    completedElements += chunk.ElementCount;
+                }
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PlcDeviceException deviceException)
+        {
+            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
+        }
+        catch (PlcException exception)
+        {
+            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
+            {
+                CompletedCount = completedElements
+            };
+        }
     }
 }

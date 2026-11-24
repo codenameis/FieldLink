@@ -1,11 +1,22 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace FieldLink.Plc.Protocols.FujiElectric;
 
 /// <summary>MICREX-SX SPH Ethernet 프로토콜의 주소 표현입니다. (사양서 Part C §C.1.2)</summary>
 public sealed class FujiElectricSphAddress
 {
+    private const byte IoAreaCode = 0x01;
+    private const byte M1AreaCode = 0x02;
+    private const byte M3AreaCode = 0x04;
+    private const byte M10AreaCode = 0x08;
+    private const int ThreeCharPrefixLength = 3;
+    private const int FourCharPrefixLength = 4;
+    private const int OneCharPrefixLength = 1;
+    private const uint MaxWordAddress = 0x00FFFFFF;
+    private const byte MaxBitOffsetInWord = 15;
+
     private FujiElectricSphAddress(string original, byte areaCode, uint wordAddress, byte bitOffset, bool isBit)
     {
         Original = original;
@@ -33,6 +44,11 @@ public sealed class FujiElectricSphAddress
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static FujiElectricSphAddress Parse(string address)
     {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+        }
+
         if (!TryParse(address, out FujiElectricSphAddress? result, out string? errorMessage))
         {
             throw new FormatException(errorMessage);
@@ -50,34 +66,35 @@ public sealed class FujiElectricSphAddress
         result = null;
         errorMessage = null;
 
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null || string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+            errorMessage = "주소 문자열이 비어 있습니다.";
+            return false;
         }
 
-        string trimmed = address!.Trim().ToUpperInvariant();
+        string trimmed = address.Trim().ToUpperInvariant();
         byte areaCode;
         string numberText;
 
         if (trimmed.StartsWith("M1.", StringComparison.Ordinal))
         {
-            areaCode = 0x02;
-            numberText = trimmed.Substring(3);
+            areaCode = M1AreaCode;
+            numberText = trimmed.Substring(ThreeCharPrefixLength);
         }
         else if (trimmed.StartsWith("M3.", StringComparison.Ordinal))
         {
-            areaCode = 0x04;
-            numberText = trimmed.Substring(3);
+            areaCode = M3AreaCode;
+            numberText = trimmed.Substring(ThreeCharPrefixLength);
         }
         else if (trimmed.StartsWith("M10.", StringComparison.Ordinal))
         {
-            areaCode = 0x08;
-            numberText = trimmed.Substring(4);
+            areaCode = M10AreaCode;
+            numberText = trimmed.Substring(FourCharPrefixLength);
         }
         else if (trimmed.StartsWith("I", StringComparison.Ordinal) || trimmed.StartsWith("Q", StringComparison.Ordinal))
         {
-            areaCode = 0x01;
-            numberText = trimmed.Substring(1);
+            areaCode = IoAreaCode;
+            numberText = trimmed.Substring(OneCharPrefixLength);
         }
         else
         {
@@ -91,13 +108,13 @@ public sealed class FujiElectricSphAddress
             string wordStr = numberText.Substring(0, dotIdx);
             string bitStr = numberText.Substring(dotIdx + 1);
 
-            if (!uint.TryParse(wordStr, out uint w) || w > 0x00FFFFFF)
+            if (!uint.TryParse(wordStr, NumberStyles.None, CultureInfo.InvariantCulture, out uint w) || w > MaxWordAddress)
             {
                 errorMessage = $"유효하지 않은 워드 주소입니다: {address}";
                 return false;
             }
 
-            if (!byte.TryParse(bitStr, System.Globalization.NumberStyles.HexNumber, null, out byte b) || b > 15)
+            if (!byte.TryParse(bitStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte b) || b > MaxBitOffsetInWord)
             {
                 errorMessage = $"유효하지 않은 비트 오프셋입니다: {address}";
                 return false;
@@ -107,7 +124,7 @@ public sealed class FujiElectricSphAddress
             return true;
         }
 
-        if (!uint.TryParse(numberText, out uint wordNum) || wordNum > 0x00FFFFFF)
+        if (!uint.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out uint wordNum) || wordNum > MaxWordAddress)
         {
             errorMessage = $"유효하지 않은 워드 주소입니다: {address}";
             return false;
@@ -120,7 +137,13 @@ public sealed class FujiElectricSphAddress
     /// <summary>워드 오프셋을 증가시킨 새 주소를 반환합니다.</summary>
     public FujiElectricSphAddress Offset(int wordCount)
     {
-        uint newWord = (uint)(WordAddress + wordCount);
+        long shifted = (long)WordAddress + wordCount;
+        if (shifted < 0 || shifted > MaxWordAddress)
+        {
+            throw new ArgumentOutOfRangeException(nameof(wordCount), wordCount, "워드 오프셋이 SPH 24비트 주소 범위를 초과합니다.");
+        }
+
+        uint newWord = (uint)shifted;
         return new FujiElectricSphAddress($"{AreaCode}.{newWord}", AreaCode, newWord, BitOffset, IsBit);
     }
 }

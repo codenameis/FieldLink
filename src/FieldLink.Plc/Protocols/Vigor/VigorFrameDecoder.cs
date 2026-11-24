@@ -10,18 +10,21 @@ public sealed class VigorFrameDecoder : IFrameDecoder
     private const byte Dle = 0x10;
     private const byte Stx = 0x02;
     private const byte Etx = 0x03;
+    private const int FrameHeaderLength = 2;
+    private const int FrameTrailerLength = 2;
+    private const int ChecksumHexLength = 2;
+    private const int TailAfterEtxMarkerLength = FrameTrailerLength + ChecksumHexLength;
     private const int MaximumFrameLength = 2048;
 
     /// <inheritdoc />
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
         frameLength = 0;
-        if (received.Array is null || received.Count < 2)
+        if (received.Array is not { } array || received.Count < FrameHeaderLength)
         {
             return false;
         }
 
-        byte[] array = received.Array;
         int offset = received.Offset;
         int count = received.Count;
 
@@ -30,7 +33,7 @@ public sealed class VigorFrameDecoder : IFrameDecoder
             throw new TransportException(TransportFailure.InvalidFrame, "VIGOR 프레임이 DLE STX(0x10 0x02)로 시작하지 않습니다.");
         }
 
-        int i = offset + 2;
+        int i = offset + FrameHeaderLength;
         int end = offset + count;
         while (i < end - 1)
         {
@@ -38,13 +41,13 @@ public sealed class VigorFrameDecoder : IFrameDecoder
             {
                 if (array[i + 1] == Dle)
                 {
-                    i += 2;
+                    i += FrameHeaderLength;
                     continue;
                 }
 
                 if (array[i + 1] == Etx)
                 {
-                    int totalLen = (i + 2 + 2) - offset;
+                    int totalLen = (i + TailAfterEtxMarkerLength) - offset;
                     if (count >= totalLen)
                     {
                         frameLength = totalLen;

@@ -8,6 +8,8 @@ namespace FieldLink.Plc.Conversion;
 /// </remarks>
 public static class BitPacking
 {
+    private const int BitsPerByte = 8;
+
     /// <summary>비트 수에 필요한 패킹 바이트 수를 구합니다.</summary>
     /// <param name="bitCount">비트 수입니다.</param>
     /// <returns>올림 계산된 바이트 수입니다.</returns>
@@ -19,7 +21,12 @@ public static class BitPacking
             throw new ArgumentOutOfRangeException(nameof(bitCount), bitCount, "비트 수는 0 이상이어야 합니다.");
         }
 
-        return (bitCount + 7) / 8;
+        if (bitCount == 0)
+        {
+            return 0;
+        }
+
+        return ((bitCount - 1) / BitsPerByte) + 1;
     }
 
     /// <summary>불리언 배열을 LSB 우선 바이트 배열로 패킹합니다.</summary>
@@ -40,8 +47,8 @@ public static class BitPacking
         {
             if (bits[i])
             {
-                int byteIndex = i / 8;
-                int bitOffset = i % 8;
+                int byteIndex = i / BitsPerByte;
+                int bitOffset = i % BitsPerByte;
                 bytes[byteIndex] |= (byte)(1 << bitOffset);
             }
         }
@@ -74,7 +81,7 @@ public static class BitPacking
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "오프셋은 0 이상이고 배열 크기 이하여야 합니다.");
         }
 
-        if (offset + requiredBytes > buffer.Length)
+        if (requiredBytes > buffer.Length - offset)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(bitCount),
@@ -85,8 +92,8 @@ public static class BitPacking
         bool[] result = new bool[bitCount];
         for (int i = 0; i < bitCount; i++)
         {
-            int byteIndex = offset + (i / 8);
-            int bitOffset = i % 8;
+            int byteIndex = offset + (i / BitsPerByte);
+            int bitOffset = i % BitsPerByte;
             result[i] = (buffer[byteIndex] & (1 << bitOffset)) != 0;
         }
 

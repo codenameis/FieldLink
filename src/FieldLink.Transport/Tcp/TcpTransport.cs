@@ -47,42 +47,31 @@ public sealed class TcpTransport : ITransport
     /// <inheritdoc />
     public async Task OpenAsync(CancellationToken cancellationToken = default)
     {
-        ThrowIfDisposed();
+        BeginOpen();
 
-        lock (_stateLock)
-        {
-            if (_state != TransportState.Closed)
-            {
-                throw new InvalidOperationException($"현재 상태({_state})에서는 연결을 열 수 없습니다.");
-            }
-
-            _state = TransportState.Opening;
-        }
-
+        TcpClient? client = null;
         try
         {
-            var client = new TcpClient
-            {
-                NoDelay = _options.NoDelay,
-                ReceiveBufferSize = _options.ReceiveBufferSize,
-                SendBufferSize = _options.SendBufferSize
-            };
-
+            client = CreateConfiguredClient();
             await ConnectWithTimeoutAsync(client, cancellationToken).ConfigureAwait(false);
-
-            _client = client;
-            _stream = client.GetStream();
-            Interlocked.Increment(ref _connectionId);
-            State = TransportState.Open;
+            CompleteOpen(client);
+            client = null;
         }
         catch (OperationCanceledException)
         {
-            State = TransportState.Closed;
+            DisposeClientSafely(client);
+            ResetOpeningToClosed();
+            throw;
+        }
+        catch (ObjectDisposedException)
+        {
+            DisposeClientSafely(client);
             throw;
         }
         catch (Exception exception)
         {
-            State = TransportState.Closed;
+            DisposeClientSafely(client);
+            ResetOpeningToClosed();
             throw new TransportException(
                 TransportFailure.ConnectFailed,
                 $"호스트 {_options.Host}:{_options.Port} 연결에 실패했습니다.",
@@ -94,16 +83,23 @@ public sealed class TcpTransport : ITransport
     /// <inheritdoc />
     public Task CloseAsync(CancellationToken cancellationToken = default)
     {
+        TcpClient? client;
+        NetworkStream? stream;
         lock (_stateLock)
         {
             if (_state is TransportState.Closed or TransportState.Disposed)
             {
                 return Task.CompletedTask;
             }
+
+            _state = TransportState.Closed;
+            client = _client;
+            stream = _stream;
+            _client = null;
+            _stream = null;
         }
 
-        CleanupSocket();
-        State = TransportState.Closed;
+        DisposeResourcesSafely(stream, client);
         return Task.CompletedTask;
     }
 
@@ -117,16 +113,15 @@ public sealed class TcpTransport : ITransport
             throw new ArgumentNullException(nameof(work));
         }
 
-        ThrowIfDisposed();
-        EnsureConnected();
+        _ = CaptureOpenSession();
 
         await _exclusiveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            EnsureConnected();
+            (long connectionId, NetworkStream stream) = CaptureOpenSession();
             var session = new StreamTransportSession(
-                _connectionId,
-                _stream!,
+                connectionId,
+                stream,
                 cancellationToken,
                 _options.ReceiveBufferSize);
 
@@ -141,6 +136,8 @@ public sealed class TcpTransport : ITransport
     /// <inheritdoc />
     public void Dispose()
     {
+        TcpClient? client;
+        NetworkStream? stream;
         lock (_stateLock)
         {
             if (_state == TransportState.Disposed)
@@ -149,10 +146,90 @@ public sealed class TcpTransport : ITransport
             }
 
             _state = TransportState.Disposed;
+            client = _client;
+            stream = _stream;
+            _client = null;
+            _stream = null;
         }
 
-        CleanupSocket();
-        _exclusiveLock.Dispose();
+        DisposeResourcesSafely(stream, client);
+    }
+
+    private void BeginOpen()
+    {
+        lock (_stateLock)
+        {
+            if (_state == TransportState.Disposed)
+            {
+                throw new ObjectDisposedException(nameof(TcpTransport));
+            }
+
+            if (_state != TransportState.Closed)
+            {
+                throw new InvalidOperationException($"현재 상태({_state})에서는 연결을 열 수 없습니다.");
+            }
+
+            _state = TransportState.Opening;
+        }
+    }
+
+    private TcpClient CreateConfiguredClient() =>
+        new()
+        {
+            NoDelay = _options.NoDelay,
+            ReceiveBufferSize = _options.ReceiveBufferSize,
+            SendBufferSize = _options.SendBufferSize
+        };
+
+    private void CompleteOpen(TcpClient client)
+    {
+        NetworkStream stream = client.GetStream();
+        lock (_stateLock)
+        {
+            if (_state == TransportState.Disposed)
+            {
+                throw new ObjectDisposedException(nameof(TcpTransport));
+            }
+
+            if (_state != TransportState.Opening)
+            {
+                throw new OperationCanceledException("연결 시도 중 전송이 닫혔습니다.");
+            }
+
+            _client = client;
+            _stream = stream;
+            Interlocked.Increment(ref _connectionId);
+            _state = TransportState.Open;
+        }
+    }
+
+    private void ResetOpeningToClosed()
+    {
+        lock (_stateLock)
+        {
+            if (_state == TransportState.Opening)
+            {
+                _state = TransportState.Closed;
+            }
+        }
+    }
+
+    private (long ConnectionId, NetworkStream Stream) CaptureOpenSession()
+    {
+        lock (_stateLock)
+        {
+            if (_state == TransportState.Disposed)
+            {
+                throw new ObjectDisposedException(nameof(TcpTransport));
+            }
+
+            if (_state != TransportState.Open || _stream is null)
+            {
+                throw new InvalidOperationException("TCP 전송이 열려 있지 않습니다. OpenAsync를 먼저 호출하세요.");
+            }
+
+            return (Interlocked.Read(ref _connectionId), _stream);
+        }
     }
 
     private async Task ConnectWithTimeoutAsync(TcpClient client, CancellationToken cancellationToken)
@@ -161,20 +238,22 @@ public sealed class TcpTransport : ITransport
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         Task connectTask = client.ConnectAsync(_options.Host, _options.Port);
-        var tcs = new TaskCompletionSource<bool>();
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using (linkedCts.Token.Register(state => ((TaskCompletionSource<bool>)state!).TrySetResult(true), tcs))
+        using (linkedCts.Token.Register(
+            static state => ((TaskCompletionSource<bool>)state!).TrySetResult(true),
+            tcs))
         {
             Task completedTask = await Task.WhenAny(connectTask, tcs.Task).ConfigureAwait(false);
-
             if (completedTask != connectTask)
             {
+                _ = connectTask.ContinueWith(
+                    static faulted => _ = faulted.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted,
+                    TaskScheduler.Default);
                 client.Close();
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                }
-
+                cancellationToken.ThrowIfCancellationRequested();
                 throw new TimeoutException($"TCP 연결 제한 시간({_options.ConnectTimeout.TotalMilliseconds}ms)이 초과되었습니다.");
             }
         }
@@ -182,19 +261,13 @@ public sealed class TcpTransport : ITransport
         await connectTask.ConfigureAwait(false);
     }
 
-    private void EnsureConnected()
-    {
-        if (State != TransportState.Open || _stream is null)
-        {
-            throw new InvalidOperationException("TCP 전송이 열려 있지 않습니다. OpenAsync를 먼저 호출하세요.");
-        }
-    }
+    private static void DisposeClientSafely(TcpClient? client) => DisposeResourcesSafely(null, client);
 
-    private void CleanupSocket()
+    private static void DisposeResourcesSafely(NetworkStream? stream, TcpClient? client)
     {
         try
         {
-            _stream?.Dispose();
+            stream?.Dispose();
         }
         catch
         {
@@ -203,22 +276,11 @@ public sealed class TcpTransport : ITransport
 
         try
         {
-            _client?.Close();
+            client?.Close();
         }
         catch
         {
             // 리소스 정리 중 예외는 무시
-        }
-
-        _stream = null;
-        _client = null;
-    }
-
-    private void ThrowIfDisposed()
-    {
-        if (State == TransportState.Disposed)
-        {
-            throw new ObjectDisposedException(nameof(TcpTransport));
         }
     }
 }

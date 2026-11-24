@@ -8,6 +8,14 @@ namespace FieldLink.Transport.Framing;
 /// </remarks>
 public sealed class HeaderLengthFrameDecoder : IFrameDecoder
 {
+    private const int DefaultMaximumFrameLength = 65536;
+    private const int OneByteLengthField = 1;
+    private const int TwoByteLengthField = 2;
+    private const int FourByteLengthField = 4;
+    private const int ByteShiftOne = 8;
+    private const int ByteShiftTwo = 16;
+    private const int ByteShiftThree = 24;
+
     private readonly int _headerLength;
     private readonly int _lengthFieldOffset;
     private readonly int _lengthFieldByteCount;
@@ -29,7 +37,7 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
         int lengthFieldByteCount,
         bool isBigEndian,
         int lengthAdjustment,
-        int maximumFrameLength = 65536)
+        int maximumFrameLength = DefaultMaximumFrameLength)
     {
         if (headerLength <= 0)
         {
@@ -41,7 +49,7 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
             throw new ArgumentOutOfRangeException(nameof(lengthFieldOffset), lengthFieldOffset, "길이 필드 오프셋은 0 이상이어야 합니다.");
         }
 
-        if (lengthFieldByteCount is not (1 or 2 or 4))
+        if (lengthFieldByteCount is not (OneByteLengthField or TwoByteLengthField or FourByteLengthField))
         {
             throw new ArgumentOutOfRangeException(nameof(lengthFieldByteCount), lengthFieldByteCount, "길이 필드 바이트 수는 1, 2, 4 중 하나여야 합니다.");
         }
@@ -79,8 +87,8 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
             return false;
         }
 
-        int rawLength = ReadLengthValue(received);
-        int expectedTotalLength = rawLength + _lengthAdjustment;
+        uint rawLength = ReadLengthValue(received);
+        long expectedTotalLength = rawLength + (long)_lengthAdjustment;
 
         if (expectedTotalLength < _headerLength || expectedTotalLength > _maximumFrameLength)
         {
@@ -89,30 +97,41 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
                 $"계산된 프레임 길이({expectedTotalLength} 바이트)가 유효 범위({_headerLength}~{_maximumFrameLength})를 벗어났습니다.");
         }
 
-        if (received.Count < expectedTotalLength)
+        int totalLength = (int)expectedTotalLength;
+        if (received.Count < totalLength)
         {
             frameLength = 0;
             return false;
         }
 
-        frameLength = expectedTotalLength;
+        frameLength = totalLength;
         return true;
     }
 
-    private int ReadLengthValue(ArraySegment<byte> received)
+    private uint ReadLengthValue(ArraySegment<byte> received)
     {
-        byte[] array = received.Array!;
+        if (received.Array is not { } array)
+        {
+            throw new TransportException(TransportFailure.InvalidFrame, "수신 세그먼트의 내부 배열이 비어 있습니다.");
+        }
+
         int offset = received.Offset + _lengthFieldOffset;
 
         return _lengthFieldByteCount switch
         {
-            1 => array[offset],
-            2 => _isBigEndian
-                ? (array[offset] << 8) | array[offset + 1]
-                : array[offset] | (array[offset + 1] << 8),
-            4 => _isBigEndian
-                ? (array[offset] << 24) | (array[offset + 1] << 16) | (array[offset + 2] << 8) | array[offset + 3]
-                : array[offset] | (array[offset + 1] << 8) | (array[offset + 2] << 16) | (array[offset + 3] << 24),
+            OneByteLengthField => array[offset],
+            TwoByteLengthField => _isBigEndian
+                ? (uint)((array[offset] << ByteShiftOne) | array[offset + 1])
+                : (uint)(array[offset] | (array[offset + 1] << ByteShiftOne)),
+            FourByteLengthField => _isBigEndian
+                ? ((uint)array[offset] << ByteShiftThree)
+                    | ((uint)array[offset + 1] << ByteShiftTwo)
+                    | ((uint)array[offset + 2] << ByteShiftOne)
+                    | array[offset + 3]
+                : array[offset]
+                    | ((uint)array[offset + 1] << ByteShiftOne)
+                    | ((uint)array[offset + 2] << ByteShiftTwo)
+                    | ((uint)array[offset + 3] << ByteShiftThree),
             _ => throw new InvalidOperationException("지원하지 않는 길이 필드 크기입니다.")
         };
     }

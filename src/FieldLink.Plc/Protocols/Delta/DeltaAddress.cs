@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using FieldLink.Plc.Protocols.Modbus;
 
 namespace FieldLink.Plc.Protocols.Delta;
@@ -7,6 +8,40 @@ namespace FieldLink.Plc.Protocols.Delta;
 /// <summary>Delta DVP 및 AS 시리즈의 디바이스 주소를 Modbus PDU 주소로 변환한 값 객체입니다. (사양서 §1)</summary>
 public sealed class DeltaAddress
 {
+    private const int OctalRadix = 8;
+    private const int SingleCharPrefixLength = 1;
+    private const int TwoCharPrefixLength = 2;
+    private const ushort DvpXBase = 0x0400;
+    private const ushort DvpYBase = 0x0500;
+    private const ushort DvpTBase = 0x0600;
+    private const ushort DvpMLowBase = 0x0800;
+    private const ushort DvpMHighBase = 0xB000;
+    private const int DvpMSplitBoundary = 1536;
+    private const int DvpMMaxIndex = 4095;
+    private const ushort DvpCBase = 0x0E00;
+    private const int DvpCMaxIndex = 255;
+    private const ushort DvpDLowBase = 0x1000;
+    private const ushort DvpDHighBase = 0x9000;
+    private const int DvpDSplitBoundary = 4096;
+    private const int DvpDMaxIndex = 11999;
+
+    private const ushort AsSmBase = 0x4000;
+    private const ushort AsSrBase = 0xC000;
+    private const ushort AsHcBase = 0xFC00;
+    private const ushort AsMBase = 0x0000;
+    private const ushort AsSBase = 0x5000;
+    private const ushort AsXBitBase = 0x6000;
+    private const ushort AsXWordBase = 0x8000;
+    private const ushort AsYBase = 0xA000;
+    private const ushort AsDBase = 0x0000;
+    private const ushort AsTBase = 0xE000;
+    private const ushort AsCBase = 0xF000;
+    private const ushort AsEBase = 0xFE00;
+    private const int BitsPerWord = 16;
+    private const int MaxBitIndexInWord = 15;
+    private const char MaxOctalDigit = '7';
+    private const char MinOctalDigit = '0';
+
     private DeltaAddress(
         string originalAddress,
         DeltaSeries series,
@@ -115,9 +150,21 @@ public sealed class DeltaAddress
         }
 
         char prefix = address[0];
-        string numberText = address.Substring(1);
+        string numberText = address.Substring(SingleCharPrefixLength);
 
-        if (!int.TryParse(numberText, out int number) || number < 0)
+        if (prefix is 'X' or 'Y')
+        {
+            return TryParseDvpOctal(
+                address,
+                prefix == 'X' ? "X" : "Y",
+                numberText,
+                prefix == 'X' ? DvpXBase : DvpYBase,
+                prefix == 'X' ? ModbusArea.DiscreteInput : ModbusArea.Coil,
+                out result,
+                out errorMessage);
+        }
+
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int number) || number < 0)
         {
             errorMessage = $"유효하지 않은 DVP 주소 번호입니다: {address}";
             return false;
@@ -125,10 +172,8 @@ public sealed class DeltaAddress
 
         return prefix switch
         {
-            'S' => BuildDvpAddress(address, "S", number, ModbusArea.Coil, (ushort)number, out result),
-            'X' => TryParseDvpOctal(address, "X", numberText, 0x0400, ModbusArea.DiscreteInput, out result, out errorMessage),
-            'Y' => TryParseDvpOctal(address, "Y", numberText, 0x0500, ModbusArea.Coil, out result, out errorMessage),
-            'T' => BuildDvpAddress(address, "T", number, ModbusArea.HoldingRegister, (ushort)(number + 0x0600), out result),
+            'S' => TryBuildDvpFixedAddress(address, "S", number, 0, ModbusArea.Coil, out result, out errorMessage),
+            'T' => TryBuildDvpFixedAddress(address, "T", number, DvpTBase, ModbusArea.HoldingRegister, out result, out errorMessage),
             'M' => TryBuildDvpM(address, number, out result, out errorMessage),
             'C' => TryBuildDvpC(address, number, out result, out errorMessage),
             'D' => TryBuildDvpD(address, number, out result, out errorMessage),
@@ -148,16 +193,37 @@ public sealed class DeltaAddress
         result = null;
         errorMessage = null;
 
+        if (numberText.Length == 0)
+        {
+            errorMessage = $"DVP {devicePrefix} 주소 번호가 비어 있습니다: {original}";
+            return false;
+        }
+
+        int dec = 0;
         for (int i = 0; i < numberText.Length; i++)
         {
-            if (numberText[i] is < '0' or > '7')
+            char digit = numberText[i];
+            if (digit < MinOctalDigit || digit > MaxOctalDigit)
             {
                 errorMessage = $"DVP {devicePrefix} 주소는 8진수여야 합니다: {original}";
                 return false;
             }
+
+            if (dec > (ushort.MaxValue - baseOffset) / OctalRadix)
+            {
+                errorMessage = $"DVP {devicePrefix} 주소가 16비트 범위를 초과했습니다: {original}";
+                return false;
+            }
+
+            dec = (dec * OctalRadix) + (digit - MinOctalDigit);
         }
 
-        int dec = Convert.ToInt32(numberText, 8);
+        if (baseOffset + dec > ushort.MaxValue)
+        {
+            errorMessage = $"DVP {devicePrefix} 주소가 16비트 범위를 초과했습니다: {original}";
+            return false;
+        }
+
         ushort pdu = (ushort)(baseOffset + dec);
         result = new DeltaAddress(original, DeltaSeries.Dvp, devicePrefix, dec, null, area, pdu);
         return true;
@@ -172,15 +238,15 @@ public sealed class DeltaAddress
         result = null;
         errorMessage = null;
 
-        if (number > 4095)
+        if (number > DvpMMaxIndex)
         {
-            errorMessage = $"DVP M 주소 범위(0~4095)를 초과했습니다: {original}";
+            errorMessage = $"DVP M 주소 범위(0~{DvpMMaxIndex})를 초과했습니다: {original}";
             return false;
         }
 
-        ushort pdu = number < 1536
-            ? (ushort)(number + 0x0800)
-            : (ushort)(number - 1536 + 0xB000);
+        ushort pdu = number < DvpMSplitBoundary
+            ? (ushort)(number + DvpMLowBase)
+            : (ushort)(number - DvpMSplitBoundary + DvpMHighBase);
 
         result = new DeltaAddress(original, DeltaSeries.Dvp, "M", number, null, ModbusArea.Coil, pdu);
         return true;
@@ -195,13 +261,13 @@ public sealed class DeltaAddress
         result = null;
         errorMessage = null;
 
-        if (number > 255)
+        if (number > DvpCMaxIndex)
         {
-            errorMessage = $"DVP C 주소 범위(0~255)를 초과했습니다: {original}";
+            errorMessage = $"DVP C 주소 범위(0~{DvpCMaxIndex})를 초과했습니다: {original}";
             return false;
         }
 
-        ushort pdu = (ushort)(number + 0x0E00);
+        ushort pdu = (ushort)(number + DvpCBase);
         result = new DeltaAddress(original, DeltaSeries.Dvp, "C", number, null, ModbusArea.HoldingRegister, pdu);
         return true;
     }
@@ -215,29 +281,39 @@ public sealed class DeltaAddress
         result = null;
         errorMessage = null;
 
-        if (number > 11999)
+        if (number > DvpDMaxIndex)
         {
-            errorMessage = $"DVP D 주소 범위(0~11999)를 초과했습니다: {original}";
+            errorMessage = $"DVP D 주소 범위(0~{DvpDMaxIndex})를 초과했습니다: {original}";
             return false;
         }
 
-        ushort pdu = number < 4096
-            ? (ushort)(number + 0x1000)
-            : (ushort)(number - 4096 + 0x9000);
+        ushort pdu = number < DvpDSplitBoundary
+            ? (ushort)(number + DvpDLowBase)
+            : (ushort)(number - DvpDSplitBoundary + DvpDHighBase);
 
         result = new DeltaAddress(original, DeltaSeries.Dvp, "D", number, null, ModbusArea.HoldingRegister, pdu);
         return true;
     }
 
-    private static bool BuildDvpAddress(
+    private static bool TryBuildDvpFixedAddress(
         string original,
         string devicePrefix,
         int number,
+        ushort baseOffset,
         ModbusArea area,
-        ushort pdu,
-        [NotNullWhen(true)] out DeltaAddress? result)
+        [NotNullWhen(true)] out DeltaAddress? result,
+        out string? errorMessage)
     {
-        result = new DeltaAddress(original, DeltaSeries.Dvp, devicePrefix, number, null, area, pdu);
+        result = null;
+        errorMessage = null;
+
+        if (baseOffset + (long)number > ushort.MaxValue)
+        {
+            errorMessage = $"DVP {devicePrefix} 주소가 16비트 범위를 초과했습니다: {original}";
+            return false;
+        }
+
+        result = new DeltaAddress(original, DeltaSeries.Dvp, devicePrefix, number, null, area, (ushort)(baseOffset + number));
         return true;
     }
 
@@ -257,32 +333,32 @@ public sealed class DeltaAddress
 
         if (address.StartsWith("SM", StringComparison.Ordinal))
         {
-            return TryParseAsSimple(address, "SM", 2, 0x4000, ModbusArea.Coil, out result, out errorMessage);
+            return TryParseAsSimple(address, "SM", TwoCharPrefixLength, AsSmBase, ModbusArea.Coil, out result, out errorMessage);
         }
 
         if (address.StartsWith("SR", StringComparison.Ordinal))
         {
-            return TryParseAsSimple(address, "SR", 2, 0xC000, ModbusArea.HoldingRegister, out result, out errorMessage);
+            return TryParseAsSimple(address, "SR", TwoCharPrefixLength, AsSrBase, ModbusArea.HoldingRegister, out result, out errorMessage);
         }
 
         if (address.StartsWith("HC", StringComparison.Ordinal))
         {
-            return TryParseAsSimple(address, "HC", 2, 0xFC00, ModbusArea.HoldingRegister, out result, out errorMessage);
+            return TryParseAsSimple(address, "HC", TwoCharPrefixLength, AsHcBase, ModbusArea.HoldingRegister, out result, out errorMessage);
         }
 
         char prefix = address[0];
-        string remainder = address.Substring(1);
+        string remainder = address.Substring(SingleCharPrefixLength);
 
         return prefix switch
         {
-            'M' => TryParseAsSimple(address, "M", 1, 0, ModbusArea.Coil, out result, out errorMessage),
-            'S' => TryParseAsSimple(address, "S", 1, 0x5000, ModbusArea.Coil, out result, out errorMessage),
-            'X' => TryParseAsIo(address, "X", remainder, 0x6000, 0x8000, isInput: true, out result, out errorMessage),
-            'Y' => TryParseAsIo(address, "Y", remainder, 0xA000, 0xA000, isInput: false, out result, out errorMessage),
-            'D' => TryParseAsSimple(address, "D", 1, 0, ModbusArea.HoldingRegister, out result, out errorMessage),
-            'T' => TryParseAsSimple(address, "T", 1, 0xE000, ModbusArea.HoldingRegister, out result, out errorMessage),
-            'C' => TryParseAsSimple(address, "C", 1, 0xF000, ModbusArea.HoldingRegister, out result, out errorMessage),
-            'E' => TryParseAsSimple(address, "E", 1, 0xFE00, ModbusArea.HoldingRegister, out result, out errorMessage),
+            'M' => TryParseAsSimple(address, "M", SingleCharPrefixLength, AsMBase, ModbusArea.Coil, out result, out errorMessage),
+            'S' => TryParseAsSimple(address, "S", SingleCharPrefixLength, AsSBase, ModbusArea.Coil, out result, out errorMessage),
+            'X' => TryParseAsIo(address, "X", remainder, AsXBitBase, AsXWordBase, isInput: true, out result, out errorMessage),
+            'Y' => TryParseAsIo(address, "Y", remainder, AsYBase, AsYBase, isInput: false, out result, out errorMessage),
+            'D' => TryParseAsSimple(address, "D", SingleCharPrefixLength, AsDBase, ModbusArea.HoldingRegister, out result, out errorMessage),
+            'T' => TryParseAsSimple(address, "T", SingleCharPrefixLength, AsTBase, ModbusArea.HoldingRegister, out result, out errorMessage),
+            'C' => TryParseAsSimple(address, "C", SingleCharPrefixLength, AsCBase, ModbusArea.HoldingRegister, out result, out errorMessage),
+            'E' => TryParseAsSimple(address, "E", SingleCharPrefixLength, AsEBase, ModbusArea.HoldingRegister, out result, out errorMessage),
             _ => FailAsPrefix(address, out errorMessage),
         };
     }
@@ -300,7 +376,9 @@ public sealed class DeltaAddress
         errorMessage = null;
 
         string numberText = original.Substring(prefixLen);
-        if (!int.TryParse(numberText, out int parsedNumber) || parsedNumber < 0)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber)
+            || parsedNumber < 0
+            || baseOffset + (long)parsedNumber > ushort.MaxValue)
         {
             errorMessage = $"유효하지 않은 AS {devicePrefix} 주소 번호입니다: {original}";
             return false;
@@ -330,20 +408,23 @@ public sealed class DeltaAddress
             string wordStr = remainder.Substring(0, dotIdx);
             string bitStr = remainder.Substring(dotIdx + 1);
 
-            if (!int.TryParse(wordStr, out int wordNum) || wordNum < 0 ||
-                !int.TryParse(bitStr, out int bitNum) || bitNum is < 0 or > 15)
+            if (!int.TryParse(wordStr, NumberStyles.None, CultureInfo.InvariantCulture, out int wordNum) || wordNum < 0 ||
+                !int.TryParse(bitStr, NumberStyles.None, CultureInfo.InvariantCulture, out int bitNum) || bitNum is < 0 or > MaxBitIndexInWord ||
+                bitBase + ((long)wordNum * BitsPerWord) + bitNum > ushort.MaxValue)
             {
-                errorMessage = $"AS {devicePrefix} 비트 주소 형식이 올바르지 않습니다(0~15): {original}";
+                errorMessage = $"AS {devicePrefix} 비트 주소 형식이 올바르지 않습니다(0~{MaxBitIndexInWord}): {original}";
                 return false;
             }
 
-            ushort pdu = (ushort)(bitBase + (wordNum * 16) + bitNum);
+            ushort pdu = (ushort)(bitBase + (wordNum * BitsPerWord) + bitNum);
             ModbusArea area = isInput ? ModbusArea.DiscreteInput : ModbusArea.Coil;
             result = new DeltaAddress(original, DeltaSeries.AS, devicePrefix, wordNum, bitNum, area, pdu);
             return true;
         }
 
-        if (!int.TryParse(remainder, out int parsedNumber) || parsedNumber < 0)
+        if (!int.TryParse(remainder, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber)
+            || parsedNumber < 0
+            || wordBase + (long)parsedNumber > ushort.MaxValue)
         {
             errorMessage = $"유효하지 않은 AS {devicePrefix} 워드 주소 번호입니다: {original}";
             return false;

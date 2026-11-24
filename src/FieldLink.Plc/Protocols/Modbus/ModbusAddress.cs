@@ -6,6 +6,19 @@ namespace FieldLink.Plc.Protocols.Modbus;
 /// <summary>Modicon 5자리 또는 6자리 표기법으로 작성된 Modbus 참조 주소를 해석한 불변 값 객체입니다. (사양서 §2)</summary>
 public sealed class ModbusAddress
 {
+    private const int ShortAddressLength = 5;
+    private const int LongAddressLength = 6;
+    private const int ShortAreaBaseOffset = 10000;
+    private const int LongAreaBaseOffset = 100000;
+    private const int InputRegisterPrefixMultiplier = 3;
+    private const int HoldingRegisterPrefixMultiplier = 4;
+    private const int MinElementNumber = 1;
+    private const int MaxElementNumber = 65536;
+    private const char CoilAreaPrefix = '0';
+    private const char DiscreteInputAreaPrefix = '1';
+    private const char InputRegisterAreaPrefix = '3';
+    private const char HoldingRegisterAreaPrefix = '4';
+
     private ModbusAddress(string originalAddress, ModbusArea area, int elementNumber, ushort pduAddress)
     {
         OriginalAddress = originalAddress;
@@ -66,9 +79,9 @@ public sealed class ModbusAddress
         result = null;
         errorMessage = null;
 
-        if (address is null || address.Length is not (5 or 6))
+        if (address is null || address.Length is not (ShortAddressLength or LongAddressLength))
         {
-            errorMessage = $"Modbus 주소 길이는 5자리 또는 6자리여야 합니다. (입력: {address})";
+            errorMessage = $"Modbus 주소 길이는 {ShortAddressLength}자리 또는 {LongAddressLength}자리여야 합니다. (입력: {address})";
             return false;
         }
 
@@ -83,37 +96,37 @@ public sealed class ModbusAddress
 
         int rawValue = int.Parse(address);
         char prefix = address[0];
-        int baseOffset = address.Length == 5 ? 10000 : 100000;
+        int baseOffset = address.Length == ShortAddressLength ? ShortAreaBaseOffset : LongAreaBaseOffset;
 
         ModbusArea area;
         int elementNumber;
 
         switch (prefix)
         {
-            case '0':
+            case CoilAreaPrefix:
                 area = ModbusArea.Coil;
                 elementNumber = rawValue;
                 break;
-            case '1':
+            case DiscreteInputAreaPrefix:
                 area = ModbusArea.DiscreteInput;
                 elementNumber = rawValue - baseOffset;
                 break;
-            case '3':
+            case InputRegisterAreaPrefix:
                 area = ModbusArea.InputRegister;
-                elementNumber = rawValue - (3 * baseOffset);
+                elementNumber = rawValue - (InputRegisterPrefixMultiplier * baseOffset);
                 break;
-            case '4':
+            case HoldingRegisterAreaPrefix:
                 area = ModbusArea.HoldingRegister;
-                elementNumber = rawValue - (4 * baseOffset);
+                elementNumber = rawValue - (HoldingRegisterPrefixMultiplier * baseOffset);
                 break;
             default:
                 errorMessage = $"지원하지 않는 Modbus 영역 접두사('{prefix}')입니다. 0, 1, 3, 4만 지원합니다.";
                 return false;
         }
 
-        if (elementNumber is < 1 or > 65536)
+        if (elementNumber is < MinElementNumber or > MaxElementNumber)
         {
-            errorMessage = $"원소 번호({elementNumber})는 1에서 65536 사이여야 합니다. (입력: {address})";
+            errorMessage = $"원소 번호({elementNumber})는 {MinElementNumber}에서 {MaxElementNumber} 사이여야 합니다. (입력: {address})";
             return false;
         }
 

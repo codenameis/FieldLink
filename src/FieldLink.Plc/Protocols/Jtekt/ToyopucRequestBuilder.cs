@@ -6,6 +6,23 @@ namespace FieldLink.Plc.Protocols.Jtekt;
 /// <summary>TOYOPUC Computer Link 2PORT-EFR 요청 프레임을 생성하는 빌더입니다. (사양서 §1)</summary>
 public static class ToyopucRequestBuilder
 {
+    private const int HeaderLength = 4;
+    private const int LengthFieldOffset = 2;
+    private const int CommandOffset = 4;
+    private const int BytesPerWord = 2;
+    private const ushort BasicReadWordsBodyLength = 5;
+    private const ushort ExtendedReadWordsBodyLength = 6;
+    private const int BasicWriteWordsHeaderLength = 7;
+    private const int ExtendedWriteWordsHeaderLength = 8;
+    private const byte BasicReadWordsCommand = 0x1C;
+    private const byte BasicWriteWordsCommand = 0x1D;
+    private const byte ReadBitCommand = 0x20;
+    private const byte WriteBitCommand = 0x21;
+    private const byte ExtendedReadWordsCommand = 0x94;
+    private const byte ExtendedWriteWordsCommand = 0x95;
+    private const byte ReadBitBodyLength = 0x03;
+    private const byte WriteBitBodyLength = 0x04;
+
     /// <summary>단일 비트 읽기(명령 0x20) 요청 프레임을 조립합니다.</summary>
     /// <param name="address">대상 비트 주소입니다.</param>
     /// <returns>생성된 요청 프레임 바이트 배열입니다.</returns>
@@ -16,9 +33,9 @@ public static class ToyopucRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        byte[] frame = new byte[7];
-        frame[2] = 0x03; // Body length = 3
-        frame[4] = 0x20; // CMD
+        byte[] frame = new byte[HeaderLength + ReadBitBodyLength];
+        frame[LengthFieldOffset] = ReadBitBodyLength;
+        frame[CommandOffset] = ReadBitCommand;
         BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
         return frame;
     }
@@ -34,9 +51,9 @@ public static class ToyopucRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        byte[] frame = new byte[8];
-        frame[2] = 0x04; // Body length = 4
-        frame[4] = 0x21; // CMD
+        byte[] frame = new byte[HeaderLength + WriteBitBodyLength];
+        frame[LengthFieldOffset] = WriteBitBodyLength;
+        frame[CommandOffset] = WriteBitCommand;
         BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
         frame[7] = (byte)(bitValue ? 0x01 : 0x00);
         return frame;
@@ -60,9 +77,9 @@ public static class ToyopucRequestBuilder
 
         if (address.Prg.HasValue)
         {
-            byte[] frame = new byte[10];
-            frame[2] = 0x06; // Body length = 6
-            frame[4] = 0x94; // Extended CMD
+            byte[] frame = new byte[HeaderLength + ExtendedReadWordsBodyLength];
+            frame[LengthFieldOffset] = (byte)ExtendedReadWordsBodyLength;
+            frame[CommandOffset] = ExtendedReadWordsCommand;
             frame[5] = address.Prg.Value;
             BinaryBuffer.WriteUInt16LE(frame, 6, address.WireAddress);
             BinaryBuffer.WriteUInt16LE(frame, 8, wordCount);
@@ -70,9 +87,9 @@ public static class ToyopucRequestBuilder
         }
         else
         {
-            byte[] frame = new byte[9];
-            frame[2] = 0x05; // Body length = 5
-            frame[4] = 0x1C; // Basic CMD
+            byte[] frame = new byte[HeaderLength + BasicReadWordsBodyLength];
+            frame[LengthFieldOffset] = (byte)BasicReadWordsBodyLength;
+            frame[CommandOffset] = BasicReadWordsCommand;
             BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
             BinaryBuffer.WriteUInt16LE(frame, 7, wordCount);
             return frame;
@@ -101,30 +118,30 @@ public static class ToyopucRequestBuilder
             throw new ArgumentNullException(nameof(wordData));
         }
 
-        if (wordData.Length != wordCount * 2)
+        if (wordData.Length != wordCount * BytesPerWord)
         {
             throw new ArgumentException("데이터 길이가 워드 개수와 일치하지 않습니다.", nameof(wordData));
         }
 
         if (address.Prg.HasValue)
         {
-            ushort bodyLen = (ushort)(4 + wordData.Length);
-            byte[] frame = new byte[4 + bodyLen];
-            BinaryBuffer.WriteUInt16LE(frame, 2, bodyLen);
-            frame[4] = 0x95;
+            ushort bodyLen = (ushort)(HeaderLength + wordData.Length);
+            byte[] frame = new byte[HeaderLength + bodyLen];
+            BinaryBuffer.WriteUInt16LE(frame, LengthFieldOffset, bodyLen);
+            frame[CommandOffset] = ExtendedWriteWordsCommand;
             frame[5] = address.Prg.Value;
             BinaryBuffer.WriteUInt16LE(frame, 6, address.WireAddress);
-            Buffer.BlockCopy(wordData, 0, frame, 8, wordData.Length);
+            Buffer.BlockCopy(wordData, 0, frame, ExtendedWriteWordsHeaderLength, wordData.Length);
             return frame;
         }
         else
         {
-            ushort bodyLen = (ushort)(3 + wordData.Length);
-            byte[] frame = new byte[4 + bodyLen];
-            BinaryBuffer.WriteUInt16LE(frame, 2, bodyLen);
-            frame[4] = 0x1D;
+            ushort bodyLen = (ushort)(ReadBitBodyLength + wordData.Length);
+            byte[] frame = new byte[HeaderLength + bodyLen];
+            BinaryBuffer.WriteUInt16LE(frame, LengthFieldOffset, bodyLen);
+            frame[CommandOffset] = BasicWriteWordsCommand;
             BinaryBuffer.WriteUInt16LE(frame, 5, address.WireAddress);
-            Buffer.BlockCopy(wordData, 0, frame, 7, wordData.Length);
+            Buffer.BlockCopy(wordData, 0, frame, BasicWriteWordsHeaderLength, wordData.Length);
             return frame;
         }
     }

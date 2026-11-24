@@ -11,6 +11,19 @@ public static class ModbusRequestBuilder
     private const ushort CoilOnValue = 0xFF00;
     private const ushort CoilOffValue = 0x0000;
     private const ushort ModbusTcpProtocolId = 0x0000;
+    private const int MinCount = 1;
+    private const int MaxReadCoilsCount = 2000;
+    private const int MaxReadRegistersCount = 125;
+    private const int MaxWriteCoilsCount = 1968;
+    private const int MaxWriteRegistersCount = 123;
+    private const int BytesPerRegister = 2;
+    private const int WriteMultipleHeaderLength = 6;
+    private const int MbapHeaderLength = 7;
+    private const int MbapUnitIdLength = 1;
+    private const int RtuFramingOverheadLength = 3;
+    private const int AsciiFramingOverheadLength = 3;
+    private const int ByteShift = 8;
+    private const int ByteMask = 0xFF;
     private const byte AsciiColon = 0x3A; // ':'
     private const byte AsciiCarriageReturn = 0x0D; // '\r'
     private const byte AsciiLineFeed = 0x0A; // '\n'
@@ -32,10 +45,10 @@ public static class ModbusRequestBuilder
         return new byte[]
         {
             (byte)functionCode,
-            (byte)(pduAddress >> 8),
-            (byte)(pduAddress & 0xFF),
-            (byte)(count >> 8),
-            (byte)(count & 0xFF)
+            (byte)(pduAddress >> ByteShift),
+            (byte)(pduAddress & ByteMask),
+            (byte)(count >> ByteShift),
+            (byte)(count & ByteMask)
         };
     }
 
@@ -46,10 +59,10 @@ public static class ModbusRequestBuilder
         return new byte[]
         {
             (byte)ModbusFunctionCode.WriteSingleCoil,
-            (byte)(pduAddress >> 8),
-            (byte)(pduAddress & 0xFF),
-            (byte)(rawValue >> 8),
-            (byte)(rawValue & 0xFF)
+            (byte)(pduAddress >> ByteShift),
+            (byte)(pduAddress & ByteMask),
+            (byte)(rawValue >> ByteShift),
+            (byte)(rawValue & ByteMask)
         };
     }
 
@@ -59,19 +72,19 @@ public static class ModbusRequestBuilder
         return new byte[]
         {
             (byte)ModbusFunctionCode.WriteSingleRegister,
-            (byte)(pduAddress >> 8),
-            (byte)(pduAddress & 0xFF),
-            (byte)(value >> 8),
-            (byte)(value & 0xFF)
+            (byte)(pduAddress >> ByteShift),
+            (byte)(pduAddress & ByteMask),
+            (byte)(value >> ByteShift),
+            (byte)(value & ByteMask)
         };
     }
 
     /// <summary>다중 코일 쓰기 요청 PDU를 만듭니다. (FC 0x0F)</summary>
     public static byte[] BuildWriteMultipleCoils(ushort pduAddress, ushort count, byte[] packedCoilBytes)
     {
-        if (count is < 1 or > 1968)
+        if (count is < MinCount or > MaxWriteCoilsCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(count), count, "다중 코일 쓰기 수량은 1에서 1968 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(count), count, $"다중 코일 쓰기 수량은 {MinCount}에서 {MaxWriteCoilsCount} 사이여야 합니다.");
         }
 
         if (packedCoilBytes is null)
@@ -87,14 +100,14 @@ public static class ModbusRequestBuilder
                 nameof(packedCoilBytes));
         }
 
-        byte[] pdu = new byte[6 + expectedByteCount];
+        byte[] pdu = new byte[WriteMultipleHeaderLength + expectedByteCount];
         pdu[0] = (byte)ModbusFunctionCode.WriteMultipleCoils;
-        pdu[1] = (byte)(pduAddress >> 8);
-        pdu[2] = (byte)(pduAddress & 0xFF);
-        pdu[3] = (byte)(count >> 8);
-        pdu[4] = (byte)(count & 0xFF);
+        pdu[1] = (byte)(pduAddress >> ByteShift);
+        pdu[2] = (byte)(pduAddress & ByteMask);
+        pdu[3] = (byte)(count >> ByteShift);
+        pdu[4] = (byte)(count & ByteMask);
         pdu[5] = (byte)expectedByteCount;
-        Array.Copy(packedCoilBytes, 0, pdu, 6, expectedByteCount);
+        Array.Copy(packedCoilBytes, 0, pdu, WriteMultipleHeaderLength, expectedByteCount);
 
         return pdu;
     }
@@ -102,9 +115,9 @@ public static class ModbusRequestBuilder
     /// <summary>다중 보유 레지스터 쓰기 요청 PDU를 만듭니다. (FC 0x10)</summary>
     public static byte[] BuildWriteMultipleRegisters(ushort pduAddress, ushort count, byte[] registerBytes)
     {
-        if (count is < 1 or > 123)
+        if (count is < MinCount or > MaxWriteRegistersCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(count), count, "다중 레지스터 쓰기 수량은 1에서 123 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(count), count, $"다중 레지스터 쓰기 수량은 {MinCount}에서 {MaxWriteRegistersCount} 사이여야 합니다.");
         }
 
         if (registerBytes is null)
@@ -112,7 +125,7 @@ public static class ModbusRequestBuilder
             throw new ArgumentNullException(nameof(registerBytes));
         }
 
-        int expectedByteCount = count * 2;
+        int expectedByteCount = count * BytesPerRegister;
         if (registerBytes.Length != expectedByteCount)
         {
             throw new ArgumentException(
@@ -120,14 +133,14 @@ public static class ModbusRequestBuilder
                 nameof(registerBytes));
         }
 
-        byte[] pdu = new byte[6 + expectedByteCount];
+        byte[] pdu = new byte[WriteMultipleHeaderLength + expectedByteCount];
         pdu[0] = (byte)ModbusFunctionCode.WriteMultipleRegisters;
-        pdu[1] = (byte)(pduAddress >> 8);
-        pdu[2] = (byte)(pduAddress & 0xFF);
-        pdu[3] = (byte)(count >> 8);
-        pdu[4] = (byte)(count & 0xFF);
+        pdu[1] = (byte)(pduAddress >> ByteShift);
+        pdu[2] = (byte)(pduAddress & ByteMask);
+        pdu[3] = (byte)(count >> ByteShift);
+        pdu[4] = (byte)(count & ByteMask);
         pdu[5] = (byte)expectedByteCount;
-        Array.Copy(registerBytes, 0, pdu, 6, expectedByteCount);
+        Array.Copy(registerBytes, 0, pdu, WriteMultipleHeaderLength, expectedByteCount);
 
         return pdu;
     }
@@ -140,18 +153,18 @@ public static class ModbusRequestBuilder
             throw new ArgumentNullException(nameof(pdu));
         }
 
-        int lengthField = 1 + pdu.Length; // 유닛 ID 1바이트 + PDU 길이
-        byte[] adu = new byte[7 + pdu.Length];
+        int lengthField = MbapUnitIdLength + pdu.Length; // 유닛 ID 1바이트 + PDU 길이
+        byte[] adu = new byte[MbapHeaderLength + pdu.Length];
 
-        adu[0] = (byte)(transactionId >> 8);
-        adu[1] = (byte)(transactionId & 0xFF);
-        adu[2] = (byte)(ModbusTcpProtocolId >> 8);
-        adu[3] = (byte)(ModbusTcpProtocolId & 0xFF);
-        adu[4] = (byte)(lengthField >> 8);
-        adu[5] = (byte)(lengthField & 0xFF);
+        adu[0] = (byte)(transactionId >> ByteShift);
+        adu[1] = (byte)(transactionId & ByteMask);
+        adu[2] = (byte)(ModbusTcpProtocolId >> ByteShift);
+        adu[3] = (byte)(ModbusTcpProtocolId & ByteMask);
+        adu[4] = (byte)(lengthField >> ByteShift);
+        adu[5] = (byte)(lengthField & ByteMask);
         adu[6] = unitId;
 
-        Array.Copy(pdu, 0, adu, 7, pdu.Length);
+        Array.Copy(pdu, 0, adu, MbapHeaderLength, pdu.Length);
         return adu;
     }
 
@@ -163,12 +176,12 @@ public static class ModbusRequestBuilder
             throw new ArgumentNullException(nameof(pdu));
         }
 
-        int totalLength = 1 + pdu.Length + 2;
+        int totalLength = RtuFramingOverheadLength + pdu.Length;
         byte[] adu = new byte[totalLength];
         adu[0] = unitId;
         Array.Copy(pdu, 0, adu, 1, pdu.Length);
 
-        byte[] crcBytes = Crc16Modbus.CalculateBytes(adu, 0, 1 + pdu.Length);
+        byte[] crcBytes = Crc16Modbus.CalculateBytes(adu, 0, MbapUnitIdLength + pdu.Length);
         adu[adu.Length - 2] = crcBytes[0];
         adu[adu.Length - 1] = crcBytes[1];
 
@@ -183,7 +196,7 @@ public static class ModbusRequestBuilder
             throw new ArgumentNullException(nameof(pdu));
         }
 
-        byte[] raw = new byte[1 + pdu.Length];
+        byte[] raw = new byte[MbapUnitIdLength + pdu.Length];
         raw[0] = unitId;
         Array.Copy(pdu, 0, raw, 1, pdu.Length);
 
@@ -191,7 +204,7 @@ public static class ModbusRequestBuilder
         string hexBody = AsciiHex.GetString(raw) + lrc.ToString("X2");
 
         byte[] bodyBytes = Encoding.ASCII.GetBytes(hexBody);
-        byte[] adu = new byte[1 + bodyBytes.Length + 2];
+        byte[] adu = new byte[AsciiFramingOverheadLength + bodyBytes.Length];
 
         adu[0] = AsciiColon;
         Array.Copy(bodyBytes, 0, adu, 1, bodyBytes.Length);
@@ -205,8 +218,8 @@ public static class ModbusRequestBuilder
     {
         bool isValid = functionCode switch
         {
-            ModbusFunctionCode.ReadCoils or ModbusFunctionCode.ReadDiscreteInputs => count is >= 1 and <= 2000,
-            ModbusFunctionCode.ReadHoldingRegisters or ModbusFunctionCode.ReadInputRegisters => count is >= 1 and <= 125,
+            ModbusFunctionCode.ReadCoils or ModbusFunctionCode.ReadDiscreteInputs => count is >= MinCount and <= MaxReadCoilsCount,
+            ModbusFunctionCode.ReadHoldingRegisters or ModbusFunctionCode.ReadInputRegisters => count is >= MinCount and <= MaxReadRegistersCount,
             _ => false
         };
 

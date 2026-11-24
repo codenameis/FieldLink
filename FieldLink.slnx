@@ -16,10 +16,14 @@
   <Folder Name="/src/">
     <Project Path="src/FieldLink.Transport/FieldLink.Transport.csproj" />
     <Project Path="src/FieldLink.Plc/FieldLink.Plc.csproj" />
+    <Project Path="src/FieldLink.Robot/FieldLink.Robot.csproj" />
+    <Project Path="src/FieldLink.OpcUa/FieldLink.OpcUa.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FieldLink.Transport.Tests/FieldLink.Transport.Tests.csproj" />
     <Project Path="tests/FieldLink.Plc.Tests/FieldLink.Plc.Tests.csproj" />
+    <Project Path="tests/FieldLink.Robot.Tests/FieldLink.Robot.Tests.csproj" />
+    <Project Path="tests/FieldLink.OpcUa.Tests/FieldLink.OpcUa.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/FieldLink.PacketBench/FieldLink.PacketBench.csproj" />

@@ -6,6 +6,12 @@ namespace FieldLink.Plc.Conversion;
 /// <summary>바이트 순서(ByteOrder)를 고려하여 PLC 바이트와 .NET 기본 형식 간 상호 변환을 수행하는 변환기입니다.</summary>
 public static partial class PlcValueConverter
 {
+    private const int BooleanByteSize = 1;
+    private const int Int16ByteSize = 2;
+    private const int Int32ByteSize = 4;
+    private const int Int64ByteSize = 8;
+    private const int MaxBitIndex = 7;
+
     /// <summary>버퍼에서 16비트 부호 있는 정수를 읽습니다.</summary>
     public static short ToInt16(byte[] buffer, int offset = 0, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
@@ -105,10 +111,10 @@ public static partial class PlcValueConverter
     /// <summary>버퍼의 특정 오프셋 및 비트 인덱스에서 불리언 값을 읽습니다.</summary>
     public static bool ToBoolean(byte[] buffer, int offset = 0, int bitIndex = 0)
     {
-        ValidateBuffer(buffer, offset, 1);
-        if (bitIndex is < 0 or > 7)
+        ValidateBuffer(buffer, offset, BooleanByteSize);
+        if (bitIndex is < 0 or > MaxBitIndex)
         {
-            throw new ArgumentOutOfRangeException(nameof(bitIndex), bitIndex, "비트 인덱스는 0에서 7 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(bitIndex), bitIndex, $"비트 인덱스는 0에서 {MaxBitIndex} 사이여야 합니다.");
         }
 
         return (buffer[offset] & (1 << bitIndex)) != 0;
@@ -266,7 +272,7 @@ public static partial class PlcValueConverter
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "오프셋은 0 이상이고 버퍼 길이 이하여야 합니다.");
         }
 
-        if (offset + requiredBytes > buffer.Length)
+        if (requiredBytes < 0 || requiredBytes > buffer.Length - offset)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(offset),

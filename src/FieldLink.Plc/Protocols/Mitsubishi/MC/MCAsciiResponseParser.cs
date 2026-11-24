@@ -8,8 +8,11 @@ public static class MCAsciiResponseParser
 {
     private const int Header3ELength = 18;
     private const int Header4ELength = 26;
+    private const int SerialNumberOffset = 4;
+    private const int LengthFieldCharacterCount = 4;
     private const int EndCodeCharacterCount = 4;
     private const int WordCharacterCount = 4;
+    private const int BytesPerWord = 2;
     private const string Response3ESubheader = "D000";
     private const string Response4ESubheader = "D400";
 
@@ -28,7 +31,7 @@ public static class MCAsciiResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"4E 응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
         }
 
-        return (ushort)BinaryBuffer.ReadAsciiHex(frame, 4, 4);
+        return (ushort)BinaryBuffer.ReadAsciiHex(frame, SerialNumberOffset, LengthFieldCharacterCount);
     }
 
     /// <summary>ASCII 읽기 응답 프레임에서 데이터를 추출합니다.</summary>
@@ -113,7 +116,7 @@ public static class MCAsciiResponseParser
 
     private static void ValidateLength(byte[] frame, int headerLength)
     {
-        int lengthField = BinaryBuffer.ReadAsciiHex(frame, headerLength - 4, 4);
+        int lengthField = BinaryBuffer.ReadAsciiHex(frame, headerLength - LengthFieldCharacterCount, LengthFieldCharacterCount);
         if (frame.Length != headerLength + lengthField)
         {
             throw new PlcException(
@@ -124,16 +127,17 @@ public static class MCAsciiResponseParser
 
     private static byte[] ParseWords(byte[] data, ushort pointCount)
     {
-        if (data.Length != pointCount * WordCharacterCount)
+        int expectedCharacterCount = pointCount * WordCharacterCount;
+        if (data.Length != expectedCharacterCount)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"읽은 워드 데이터 크기가 맞지 않습니다. (기대: {pointCount * WordCharacterCount}문자, 수신: {data.Length}문자)");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"읽은 워드 데이터 크기가 맞지 않습니다. (기대: {expectedCharacterCount}문자, 수신: {data.Length}문자)");
         }
 
-        var words = new byte[pointCount * 2];
+        var words = new byte[pointCount * BytesPerWord];
         for (int wordIndex = 0; wordIndex < pointCount; wordIndex++)
         {
             ushort word = (ushort)BinaryBuffer.ReadAsciiHex(data, wordIndex * WordCharacterCount, WordCharacterCount);
-            BinaryBuffer.WriteUInt16LE(words, wordIndex * 2, word);
+            BinaryBuffer.WriteUInt16LE(words, wordIndex * BytesPerWord, word);
         }
 
         return words;

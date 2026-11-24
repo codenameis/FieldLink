@@ -115,4 +115,24 @@ public sealed class HeaderLengthFrameDecoderTests
 
         Assert.Equal(TransportFailure.InvalidFrame, exception.Failure);
     }
+
+    [Fact]
+    public void TryGetFrameLength_FourByteLengthWithMsbSet_DoesNotOverflowToValidLength()
+    {
+        var decoder = new HeaderLengthFrameDecoder(
+            headerLength: 4,
+            lengthFieldOffset: 0,
+            lengthFieldByteCount: 4,
+            isBigEndian: true,
+            lengthAdjustment: 10,
+            maximumFrameLength: 100);
+
+        // 0xFFFFFFFE (-2 as signed int32) + 10 would become 8 without unsigned decoding
+        var buffer = new byte[] { 0xFF, 0xFF, 0xFF, 0xFE, 0x01, 0x02, 0x03, 0x04 };
+
+        TransportException exception = Assert.Throws<TransportException>(
+            () => decoder.TryGetFrameLength(new ArraySegment<byte>(buffer), out _));
+
+        Assert.Equal(TransportFailure.InvalidFrame, exception.Failure);
+    }
 }

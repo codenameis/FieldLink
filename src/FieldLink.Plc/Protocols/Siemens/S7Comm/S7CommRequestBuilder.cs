@@ -29,6 +29,19 @@ public static class S7CommRequestBuilder
     private const byte DataTransportSizeByte = 0x04;
     private const int BitsPerByte = 8;
     private const ushort ConcurrentRequestCount = 1;
+    private const int ConnectionRequestLength = 22;
+    private const byte CotpConnectionHeaderLength = 17;
+    private const byte TsapParameterLength = 0x02;
+    private const byte TpduSizeParameterLength = 0x01;
+    private const int SetupCommunicationLength = 25;
+    private const ushort SetupParameterLength = 8;
+    private const int ReadRequestLength = 31;
+    private const ushort VariableItemParameterLength = 14;
+    private const int VariableItemParameterOffset = 17;
+    private const ushort SingleBitCount = 1;
+    private const int DataItemHeaderLength = 4;
+    private const int WriteDataValueOffset = 35;
+    private const byte SingleItemCount = 0x01;
 
     /// <summary>COTP 연결 요청 프레임을 만듭니다. (사양서 §3-2)</summary>
     public static byte[] BuildConnectionRequest(S7CommOptions options)
@@ -38,12 +51,12 @@ public static class S7CommRequestBuilder
             throw new ArgumentNullException(nameof(options));
         }
 
-        byte[] frame = new byte[22];
+        byte[] frame = new byte[ConnectionRequestLength];
         frame[0] = TpktVersion;
         frame[1] = 0x00;
-        BinaryBuffer.WriteUInt16BE(frame, 2, 22);
+        BinaryBuffer.WriteUInt16BE(frame, 2, ConnectionRequestLength);
 
-        frame[4] = 17; // COTP Length
+        frame[4] = CotpConnectionHeaderLength; // COTP Length
         frame[5] = CotpConnectionRequest;
         frame[6] = 0x00;
         frame[7] = 0x00;
@@ -52,15 +65,15 @@ public static class S7CommRequestBuilder
         frame[10] = 0x00;
 
         frame[11] = CallingTsapCode;
-        frame[12] = 0x02;
+        frame[12] = TsapParameterLength;
         BinaryBuffer.WriteUInt16BE(frame, 13, options.LocalTsap);
 
         frame[15] = CalledTsapCode;
-        frame[16] = 0x02;
+        frame[16] = TsapParameterLength;
         BinaryBuffer.WriteUInt16BE(frame, 17, options.RemoteTsap);
 
         frame[19] = TpduSizeCode;
-        frame[20] = 0x01;
+        frame[20] = TpduSizeParameterLength;
         frame[21] = TpduSizeExponent;
 
         return frame;
@@ -74,9 +87,9 @@ public static class S7CommRequestBuilder
             throw new ArgumentNullException(nameof(options));
         }
 
-        byte[] frame = new byte[25];
-        WriteTpktAndCotpDataHeader(frame, totalFrameLength: 25);
-        WriteS7Header(frame, pduReference, paramLength: 8, dataLength: 0);
+        byte[] frame = new byte[SetupCommunicationLength];
+        WriteTpktAndCotpDataHeader(frame, totalFrameLength: SetupCommunicationLength);
+        WriteS7Header(frame, pduReference, paramLength: SetupParameterLength, dataLength: 0);
 
         frame[17] = FunctionSetupCommunication;
         frame[18] = 0x00;
@@ -100,15 +113,15 @@ public static class S7CommRequestBuilder
             throw new ArgumentOutOfRangeException(nameof(count), count, "개수는 1 이상이어야 합니다.");
         }
 
-        if (address.IsBit && count != 1)
+        if (address.IsBit && count != SingleBitCount)
         {
             throw new ArgumentException("비트 주소는 요청 하나에 비트 하나만 읽을 수 있습니다.", nameof(count));
         }
 
-        byte[] frame = new byte[31];
-        WriteTpktAndCotpDataHeader(frame, totalFrameLength: 31);
-        WriteS7Header(frame, pduReference, paramLength: 14, dataLength: 0);
-        WriteItemParameters(frame, offset: 17, FunctionReadVariable, address, count);
+        byte[] frame = new byte[ReadRequestLength];
+        WriteTpktAndCotpDataHeader(frame, totalFrameLength: ReadRequestLength);
+        WriteS7Header(frame, pduReference, paramLength: VariableItemParameterLength, dataLength: 0);
+        WriteItemParameters(frame, offset: VariableItemParameterOffset, FunctionReadVariable, address, count);
 
         return frame;
     }
@@ -126,35 +139,35 @@ public static class S7CommRequestBuilder
             throw new ArgumentException("쓸 데이터가 비어 있습니다.", nameof(data));
         }
 
-        if (address.IsBit && data.Length != 1)
+        if (address.IsBit && data.Length != SingleBitCount)
         {
             throw new ArgumentException("비트 주소는 요청 하나에 비트 하나만 쓸 수 있습니다.", nameof(data));
         }
 
-        if (data.Length * BitsPerByte > ushort.MaxValue)
+        if (data.Length > ushort.MaxValue / BitsPerByte)
         {
             throw new ArgumentOutOfRangeException(nameof(data), data.Length, "한 요청에 쓸 수 있는 바이트 수를 넘었습니다.");
         }
 
-        ushort dataSectionLength = (ushort)(4 + data.Length);
-        ushort totalLength = (ushort)(31 + dataSectionLength);
+        ushort dataSectionLength = (ushort)(DataItemHeaderLength + data.Length);
+        ushort totalLength = (ushort)(ReadRequestLength + dataSectionLength);
         byte[] frame = new byte[totalLength];
 
         WriteTpktAndCotpDataHeader(frame, totalLength);
-        WriteS7Header(frame, pduReference, paramLength: 14, dataLength: dataSectionLength);
-        WriteItemParameters(frame, offset: 17, FunctionWriteVariable, address, (ushort)data.Length);
+        WriteS7Header(frame, pduReference, paramLength: VariableItemParameterLength, dataLength: dataSectionLength);
+        WriteItemParameters(frame, offset: VariableItemParameterOffset, FunctionWriteVariable, address, (ushort)data.Length);
 
-        frame[31] = 0x00;
-        frame[32] = address.IsBit ? DataTransportSizeBit : DataTransportSizeByte;
-        BinaryBuffer.WriteUInt16BE(frame, 33, address.IsBit ? (ushort)1 : (ushort)(data.Length * BitsPerByte));
+        frame[ReadRequestLength] = 0x00;
+        frame[ReadRequestLength + 1] = address.IsBit ? DataTransportSizeBit : DataTransportSizeByte;
+        BinaryBuffer.WriteUInt16BE(frame, ReadRequestLength + 2, address.IsBit ? SingleBitCount : (ushort)(data.Length * BitsPerByte));
 
         if (address.IsBit)
         {
-            frame[35] = data[0] != 0 ? (byte)0x01 : (byte)0x00;
+            frame[WriteDataValueOffset] = data[0] != 0 ? (byte)0x01 : (byte)0x00;
         }
         else
         {
-            Buffer.BlockCopy(data, 0, frame, 35, data.Length);
+            Buffer.BlockCopy(data, 0, frame, WriteDataValueOffset, data.Length);
         }
 
         return frame;
@@ -184,7 +197,7 @@ public static class S7CommRequestBuilder
     private static void WriteItemParameters(byte[] frame, int offset, byte function, S7CommAddress address, ushort count)
     {
         frame[offset] = function;
-        frame[offset + 1] = 0x01;
+        frame[offset + 1] = SingleItemCount;
         frame[offset + 2] = VariableSpecification;
         frame[offset + 3] = AddressLength;
         frame[offset + 4] = SyntaxIdS7Any;

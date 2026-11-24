@@ -9,6 +9,8 @@ namespace FieldLink.Plc.Checksums;
 /// </remarks>
 public static class LongitudinalRedundancyCheck
 {
+    private const int ByteMask = 0xFF;
+
     /// <summary>지정된 바이트 배열의 LRC 1바이트 값을 계산합니다.</summary>
     /// <param name="buffer">체크섬을 계산할 데이터 배열입니다.</param>
     /// <param name="offset">계산을 시작할 배열 오프셋입니다.</param>
@@ -28,7 +30,7 @@ public static class LongitudinalRedundancyCheck
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "오프셋은 0 이상이고 배열 길이 이하여야 합니다.");
         }
 
-        if (count < 0 || offset + count > buffer.Length)
+        if (count < 0 || count > buffer.Length - offset)
         {
             throw new ArgumentOutOfRangeException(nameof(count), count, "바이트 수는 0 이상이고 배열 범위를 벗어날 수 없습니다.");
         }
@@ -39,7 +41,7 @@ public static class LongitudinalRedundancyCheck
             sum = (byte)(sum + buffer[offset + i]);
         }
 
-        return (byte)((-sum) & 0xFF);
+        return (byte)((-sum) & ByteMask);
     }
 
     /// <summary>전체 바이트 배열의 LRC 1바이트 값을 계산합니다.</summary>

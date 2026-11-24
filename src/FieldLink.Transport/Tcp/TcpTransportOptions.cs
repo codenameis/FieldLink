@@ -5,8 +5,16 @@ namespace FieldLink.Transport.Tcp;
 /// <summary>TCP 전송의 연결 및 소켓 설정입니다.</summary>
 public sealed class TcpTransportOptions
 {
-    private static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(3);
+    private const int MinimumPort = 1;
+    private const int MaximumPort = 65535;
     private const int DefaultBufferSize = 8192;
+    private const int DefaultConnectTimeoutSeconds = 3;
+
+    private static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(DefaultConnectTimeoutSeconds);
+
+    private readonly TimeSpan _connectTimeout = DefaultConnectTimeout;
+    private readonly int _receiveBufferSize = DefaultBufferSize;
+    private readonly int _sendBufferSize = DefaultBufferSize;
 
     /// <summary>호스트와 포트로 TCP 전송 설정을 초기화합니다.</summary>
     /// <param name="host">대상 호스트 이름 또는 IP 주소입니다.</param>
@@ -26,16 +34,13 @@ public sealed class TcpTransportOptions
             throw new ArgumentException("호스트 이름 또는 IP 주소는 필수입니다.", nameof(host));
         }
 
-        if (port is < 1 or > 65535)
+        if (port is < MinimumPort or > MaximumPort)
         {
             throw new ArgumentOutOfRangeException(nameof(port), port, "포트 번호는 1에서 65535 사이여야 합니다.");
         }
 
         Host = host;
         Port = port;
-        ConnectTimeout = DefaultConnectTimeout;
-        ReceiveBufferSize = DefaultBufferSize;
-        SendBufferSize = DefaultBufferSize;
         NoDelay = true;
     }
 
@@ -46,13 +51,49 @@ public sealed class TcpTransportOptions
     public int Port { get; }
 
     /// <summary>연결 시도 제한 시간입니다. 기본값은 3초입니다.</summary>
-    public TimeSpan ConnectTimeout { get; init; }
+    public TimeSpan ConnectTimeout
+    {
+        get => _connectTimeout;
+        init
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "연결 제한 시간은 0보다 커야 합니다.");
+            }
+
+            _connectTimeout = value;
+        }
+    }
 
     /// <summary>소켓 수신 버퍼 크기입니다. 바이트 단위.</summary>
-    public int ReceiveBufferSize { get; init; }
+    public int ReceiveBufferSize
+    {
+        get => _receiveBufferSize;
+        init
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "수신 버퍼 크기는 1 이상이어야 합니다.");
+            }
+
+            _receiveBufferSize = value;
+        }
+    }
 
     /// <summary>소켓 송신 버퍼 크기입니다. 바이트 단위.</summary>
-    public int SendBufferSize { get; init; }
+    public int SendBufferSize
+    {
+        get => _sendBufferSize;
+        init
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "송신 버퍼 크기는 1 이상이어야 합니다.");
+            }
+
+            _sendBufferSize = value;
+        }
+    }
 
     /// <summary>Nagle 알고리즘을 비활성화할지 여부입니다. 기본값은 true(지연 없음)입니다.</summary>
     public bool NoDelay { get; init; }

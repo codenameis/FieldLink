@@ -1,11 +1,24 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace FieldLink.Plc.Protocols.Jtekt;
 
 /// <summary>Toyota / JTEKT TOYOPUC Computer Link 2PORT-EFR 주소 표현입니다. (사양서 §1.2~§1.6)</summary>
 public sealed class ToyopucAddress
 {
+    private const int TwoCharPrefixLength = 2;
+    private const int SingleCharPrefixLength = 1;
+    private const int EbBankSize = 0x8000;
+    private const int EbBank2Start = 0x10000;
+    private const int EbMaxAddress = 0x18000;
+    private const byte EbBank0Prg = 0x09;
+    private const byte EbBank1Prg = 0x0A;
+    private const byte EbBank2Prg = 0x0B;
+    private const byte ExtendedExPrg = 0x00;
+    private const byte ExtendedGxPrg = 0x07;
+    private const byte ExtendedUPrg = 0x08;
+
     private ToyopucAddress(string original, string device, int number, ushort wireAddress, byte? prg, bool isBit)
     {
         Original = original;
@@ -37,6 +50,11 @@ public sealed class ToyopucAddress
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static ToyopucAddress Parse(string address, bool isBitAccess = false)
     {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+        }
+
         if (!TryParse(address, isBitAccess, out ToyopucAddress? result, out string? errorMessage))
         {
             throw new FormatException(errorMessage);
@@ -55,19 +73,20 @@ public sealed class ToyopucAddress
         result = null;
         errorMessage = null;
 
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null || string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+            errorMessage = "주소 문자열이 비어 있습니다.";
+            return false;
         }
 
-        string trimmed = address!.Trim().ToUpperInvariant();
+        string trimmed = address.Trim().ToUpperInvariant();
         if (!TryExtractDevice(trimmed, out string devicePrefix, out string numberText))
         {
             errorMessage = $"지원하지 않는 TOYOPUC 디바이스 접두사입니다: {address}";
             return false;
         }
 
-        if (!int.TryParse(numberText, System.Globalization.NumberStyles.HexNumber, null, out int hexNum) || hexNum < 0)
+        if (!int.TryParse(numberText, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int hexNum) || hexNum < 0)
         {
             errorMessage = $"16진 주소 파싱 실패: {address}";
             return false;
@@ -87,14 +106,14 @@ public sealed class ToyopucAddress
             if (trimmed.StartsWith(d, StringComparison.Ordinal))
             {
                 devicePrefix = d;
-                numberText = trimmed.Substring(2);
+                numberText = trimmed.Substring(TwoCharPrefixLength);
                 return true;
             }
         }
 
         char p1 = trimmed[0];
         devicePrefix = p1.ToString();
-        numberText = trimmed.Substring(1);
+        numberText = trimmed.Substring(SingleCharPrefixLength);
         return p1 is 'K' or 'V' or 'T' or 'C' or 'L' or 'X' or 'Y' or 'M' or 'S' or 'N' or 'R' or 'D' or 'B' or 'H' or 'U';
     }
 
@@ -129,7 +148,7 @@ public sealed class ToyopucAddress
         errorMessage = null;
 
         bool isBit = isBitAccess;
-        ushort baseOffset;
+        int baseOffset;
         if (isBit)
         {
             baseOffset = devicePrefix switch
@@ -140,7 +159,7 @@ public sealed class ToyopucAddress
                 "L" => 0x0800,
                 "X" or "Y" => 0x1000,
                 "M" => 0x1800,
-                _ => 0,
+                _ => -1,
             };
         }
         else
@@ -158,8 +177,16 @@ public sealed class ToyopucAddress
                 "R" => 0x0800,
                 "D" => 0x1000,
                 "B" => 0x6000,
-                _ => 0,
+                _ => -1,
             };
+        }
+
+        if (baseOffset < 0 || baseOffset + (long)hexNum > ushort.MaxValue)
+        {
+            errorMessage = isBit
+                ? $"TOYOPUC '{devicePrefix}' 디바이스는 비트 접근을 지원하지 않거나 주소 범위를 초과했습니다: {original}"
+                : $"TOYOPUC 기본 주소 범위를 초과했습니다: {original}";
+            return false;
         }
 
         ushort wire = (ushort)(baseOffset + hexNum);
@@ -180,19 +207,31 @@ public sealed class ToyopucAddress
 
         if (devicePrefix == "EB")
         {
-            byte prg = hexNum < 0x8000 ? (byte)0x09 : hexNum < 0x10000 ? (byte)0x0A : (byte)0x0B;
-            int offsetInBank = hexNum < 0x8000 ? hexNum : hexNum < 0x10000 ? hexNum - 0x8000 : hexNum - 0x10000;
+            if (isBitAccess || hexNum >= EbMaxAddress)
+            {
+                errorMessage = $"TOYOPUC EB 주소가 유효 범위를 벗어났습니다: {original}";
+                return false;
+            }
+
+            byte prg = hexNum < EbBankSize ? EbBank0Prg : hexNum < EbBank2Start ? EbBank1Prg : EbBank2Prg;
+            int offsetInBank = hexNum < EbBankSize ? hexNum : hexNum < EbBank2Start ? hexNum - EbBankSize : hexNum - EbBank2Start;
             result = new ToyopucAddress(original, devicePrefix, hexNum, (ushort)offsetInBank, prg, isBit: false);
             return true;
         }
 
         byte extPrg = devicePrefix switch
         {
-            "H" or "EK" or "EV" or "ET" or "EC" or "EL" or "EX" or "EY" or "EM" or "ES" or "EN" => 0x00,
-            "GX" or "GY" or "GM" => 0x07,
-            "U" => 0x08,
-            _ => 0xFF,
+            "H" or "EK" or "EV" or "ET" or "EC" or "EL" or "EX" or "EY" or "EM" or "ES" or "EN" => ExtendedExPrg,
+            "GX" or "GY" or "GM" => ExtendedGxPrg,
+            "U" => ExtendedUPrg,
+            _ => byte.MaxValue,
         };
+
+        if (extPrg == byte.MaxValue)
+        {
+            errorMessage = $"지원하지 않는 TOYOPUC 확장 디바이스입니다: {original}";
+            return false;
+        }
 
         ushort baseWord = devicePrefix switch
         {
@@ -210,6 +249,12 @@ public sealed class ToyopucAddress
             _ => 0x0000,
         };
 
+        if (baseWord + (long)hexNum > ushort.MaxValue)
+        {
+            errorMessage = $"TOYOPUC 확장 주소가 16비트 범위를 초과했습니다: {original}";
+            return false;
+        }
+
         ushort wire = (ushort)(baseWord + hexNum);
         result = new ToyopucAddress(original, devicePrefix, hexNum, wire, extPrg, isBit: isBitAccess);
         return true;
@@ -218,7 +263,36 @@ public sealed class ToyopucAddress
     /// <summary>오프셋만큼 주소를 이동한 새 <see cref="ToyopucAddress"/>를 반환합니다.</summary>
     public ToyopucAddress Offset(int count)
     {
-        int nextNum = Number + count;
+        if (count < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "오프셋은 0 이상이어야 합니다.");
+        }
+
+        if (count == 0)
+        {
+            return this;
+        }
+
+        long nextNumLong = (long)Number + count;
+        if (Device == "EB")
+        {
+            if (nextNumLong >= EbMaxAddress)
+            {
+                throw new ArgumentOutOfRangeException(nameof(count), count, "TOYOPUC EB 주소가 최대 뱅크 범위를 초과합니다.");
+            }
+
+            int nextEbNum = (int)nextNumLong;
+            byte nextPrg = nextEbNum < EbBankSize ? EbBank0Prg : nextEbNum < EbBank2Start ? EbBank1Prg : EbBank2Prg;
+            int offsetInBank = nextEbNum < EbBankSize ? nextEbNum : nextEbNum < EbBank2Start ? nextEbNum - EbBankSize : nextEbNum - EbBank2Start;
+            return new ToyopucAddress($"{Original}+{count}", Device, nextEbNum, (ushort)offsetInBank, nextPrg, IsBit);
+        }
+
+        if (WireAddress + (long)count > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "TOYOPUC 주소가 16비트 와이어 범위를 초과합니다.");
+        }
+
+        int nextNum = (int)nextNumLong;
         ushort nextWire = (ushort)(WireAddress + count);
         return new ToyopucAddress($"{Original}+{count}", Device, nextNum, nextWire, Prg, IsBit);
     }

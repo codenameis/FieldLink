@@ -5,6 +5,10 @@ namespace FieldLink.Plc.Conversion;
 /// <summary>16진수 문자열과 바이트 배열 간의 상호 변환을 지원하는 순수 함수 모음입니다.</summary>
 public static class AsciiHex
 {
+    private const int NibbleBitWidth = 4;
+    private const int LowNibbleMask = 0x0F;
+    private const int CharactersPerByte = 2;
+    private const int HexDigitOffset = 10;
     private static readonly char[] HexCharactersUpper = "0123456789ABCDEF".ToCharArray();
 
     /// <summary>16진수 문자열을 바이트 배열로 변환합니다. 공백은 무시합니다.</summary>
@@ -20,17 +24,17 @@ public static class AsciiHex
         }
 
         string sanitized = hex.Replace(" ", string.Empty);
-        if (sanitized.Length % 2 != 0)
+        if (sanitized.Length % CharactersPerByte != 0)
         {
             throw new FormatException("16진수 문자열 길이는 짝수여야 합니다.");
         }
 
-        byte[] bytes = new byte[sanitized.Length / 2];
+        byte[] bytes = new byte[sanitized.Length / CharactersPerByte];
         for (int i = 0; i < bytes.Length; i++)
         {
-            int highNibble = ParseHexNibble(sanitized[i * 2]);
-            int lowNibble = ParseHexNibble(sanitized[i * 2 + 1]);
-            bytes[i] = (byte)((highNibble << 4) | lowNibble);
+            int highNibble = ParseHexNibble(sanitized[i * CharactersPerByte]);
+            int lowNibble = ParseHexNibble(sanitized[(i * CharactersPerByte) + 1]);
+            bytes[i] = (byte)((highNibble << NibbleBitWidth) | lowNibble);
         }
 
         return bytes;
@@ -55,17 +59,22 @@ public static class AsciiHex
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "오프셋은 0 이상이고 배열 크기 이하여야 합니다.");
         }
 
-        if (count < 0 || offset + count > buffer.Length)
+        if (count < 0 || count > buffer.Length - offset)
         {
             throw new ArgumentOutOfRangeException(nameof(count), count, "바이트 수는 0 이상이고 배열 범위를 초과할 수 없습니다.");
         }
 
-        char[] chars = new char[count * 2];
+        if (count > int.MaxValue / CharactersPerByte)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "변환할 문자열 길이가 최대 허용 크기를 초과합니다.");
+        }
+
+        char[] chars = new char[count * CharactersPerByte];
         for (int i = 0; i < count; i++)
         {
             byte value = buffer[offset + i];
-            chars[i * 2] = HexCharactersUpper[value >> 4];
-            chars[i * 2 + 1] = HexCharactersUpper[value & 0x0F];
+            chars[i * CharactersPerByte] = HexCharactersUpper[value >> NibbleBitWidth];
+            chars[(i * CharactersPerByte) + 1] = HexCharactersUpper[value & LowNibbleMask];
         }
 
         return new string(chars);
@@ -89,8 +98,8 @@ public static class AsciiHex
         return c switch
         {
             >= '0' and <= '9' => c - '0',
-            >= 'A' and <= 'F' => c - 'A' + 10,
-            >= 'a' and <= 'f' => c - 'a' + 10,
+            >= 'A' and <= 'F' => c - 'A' + HexDigitOffset,
+            >= 'a' and <= 'f' => c - 'a' + HexDigitOffset,
             _ => throw new FormatException($"유효하지 않은 16진수 문자 '{c}'입니다.")
         };
     }

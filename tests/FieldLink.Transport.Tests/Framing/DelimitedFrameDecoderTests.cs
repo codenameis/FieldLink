@@ -85,4 +85,31 @@ public sealed class DelimitedFrameDecoderTests
 
         Assert.Equal(TransportFailure.InvalidFrame, exception.Failure);
     }
+
+    [Fact]
+    public void TryGetFrameLength_WhenDelimiterIsFoundBeyondMaximumLength_ThrowsInvalidFrame()
+    {
+        var decoder = new DelimitedFrameDecoder(new byte[] { 0x0D, 0x0A }, maximumFrameLength: 4);
+        var buffer = new byte[] { 0x01, 0x02, 0x03, 0x0D, 0x0A };
+
+        TransportException exception = Assert.Throws<TransportException>(
+            () => decoder.TryGetFrameLength(new ArraySegment<byte>(buffer), out _));
+
+        Assert.Equal(TransportFailure.InvalidFrame, exception.Failure);
+    }
+
+    [Fact]
+    public void TryGetFrameLength_WhenStartAndEndDelimitersAreIdentical_MatchesEndDelimiterAfterStart()
+    {
+        var decoder = new DelimitedFrameDecoder(
+            endDelimiter: new byte[] { 0xAA },
+            maximumFrameLength: 16,
+            startDelimiter: new byte[] { 0xAA });
+        var buffer = new byte[] { 0xAA, 0x01, 0x02, 0xAA };
+
+        bool result = decoder.TryGetFrameLength(new ArraySegment<byte>(buffer), out int frameLength);
+
+        Assert.True(result);
+        Assert.Equal(4, frameLength);
+    }
 }

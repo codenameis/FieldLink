@@ -11,6 +11,11 @@ public static class MCAsciiRequestBuilder
     private const string Request4ESubheader = "5400";
     private const string Reserved = "0000";
     private const char DeviceCodePadding = '*';
+    private const int BytesPerWord = 2;
+    private const int HexDigitsPerByte = 2;
+    private const int HexDigitsPerWord = 4;
+    private const int ByteShift = 8;
+    private const int HexNumberBase = 16;
 
     /// <summary>디바이스 일괄 읽기 요청 프레임을 만듭니다.</summary>
     /// <param name="options">프레임 종류·시리즈·액세스 경로 설정입니다.</param>
@@ -43,7 +48,7 @@ public static class MCAsciiRequestBuilder
             throw new ArgumentNullException(nameof(data));
         }
 
-        int expectedLength = address.IsBit ? pointCount : pointCount * 2;
+        int expectedLength = address.IsBit ? pointCount : pointCount * BytesPerWord;
         if (data.Length != expectedLength)
         {
             throw new ArgumentException($"쓰기 데이터는 {expectedLength}바이트여야 합니다. (실제: {data.Length})", nameof(data));
@@ -80,13 +85,13 @@ public static class MCAsciiRequestBuilder
     private static string BuildBody(MCOptions options, MCCommand command, MCAddress address, ushort pointCount, string payload)
     {
         var body = new StringBuilder();
-        body.Append(FormatHex(options.MonitoringTimer, 4));
-        body.Append(FormatHex((ushort)command, 4));
-        body.Append(FormatHex((ushort)options.Series.GetSubcommand(address.IsBit), 4));
+        body.Append(FormatHex(options.MonitoringTimer, HexDigitsPerWord));
+        body.Append(FormatHex((ushort)command, HexDigitsPerWord));
+        body.Append(FormatHex((ushort)options.Series.GetSubcommand(address.IsBit), HexDigitsPerWord));
         // 사양서 §3-3: ASCII에서는 바이너리와 달리 디바이스 코드가 번호보다 먼저 온다.
         body.Append(address.Device.Symbol.PadRight(options.Series.GetDeviceCodeCharacterCount(), DeviceCodePadding));
         body.Append(FormatDeviceNumber(address, options.Series.GetDeviceNumberCharacterCount()));
-        body.Append(FormatHex(pointCount, 4));
+        body.Append(FormatHex(pointCount, HexDigitsPerWord));
         body.Append(payload);
         return body.ToString();
     }
@@ -99,33 +104,33 @@ public static class MCAsciiRequestBuilder
         frame.Append(is4E ? Request4ESubheader : Request3ESubheader);
         if (is4E)
         {
-            frame.Append(FormatHex(serialNumber, 4));
+            frame.Append(FormatHex(serialNumber, HexDigitsPerWord));
             frame.Append(Reserved);
         }
 
-        frame.Append(FormatHex(options.NetworkNumber, 2));
-        frame.Append(FormatHex(options.PcNumber, 2));
-        frame.Append(FormatHex(options.ModuleIoNumber, 4));
-        frame.Append(FormatHex(options.ModuleStationNumber, 2));
-        frame.Append(FormatHex((uint)body.Length, 4));
+        frame.Append(FormatHex(options.NetworkNumber, HexDigitsPerByte));
+        frame.Append(FormatHex(options.PcNumber, HexDigitsPerByte));
+        frame.Append(FormatHex(options.ModuleIoNumber, HexDigitsPerWord));
+        frame.Append(FormatHex(options.ModuleStationNumber, HexDigitsPerByte));
+        frame.Append(FormatHex((uint)body.Length, HexDigitsPerWord));
         frame.Append(body);
         return frame.ToString();
     }
 
     private static string FormatDeviceNumber(MCAddress address, int characterCount)
     {
-        string format = address.Device.NumberBase == 16 ? "X" : "D";
+        string format = address.Device.NumberBase == HexNumberBase ? "X" : "D";
         return address.DeviceNumber.ToString(format + characterCount, CultureInfo.InvariantCulture);
     }
 
     private static string FormatWords(byte[] littleEndianWords)
     {
         // 사양서 §4: 워드 하나는 상위 바이트 2문자 + 하위 바이트 2문자 순서로 쓴다.
-        var text = new StringBuilder(littleEndianWords.Length * 2);
-        for (int wordIndex = 0; wordIndex < littleEndianWords.Length; wordIndex += 2)
+        var text = new StringBuilder(littleEndianWords.Length * HexDigitsPerByte);
+        for (int wordIndex = 0; wordIndex < littleEndianWords.Length; wordIndex += BytesPerWord)
         {
-            int word = littleEndianWords[wordIndex] | (littleEndianWords[wordIndex + 1] << 8);
-            text.Append(FormatHex((uint)word, 4));
+            int word = littleEndianWords[wordIndex] | (littleEndianWords[wordIndex + 1] << ByteShift);
+            text.Append(FormatHex((uint)word, HexDigitsPerWord));
         }
 
         return text.ToString();

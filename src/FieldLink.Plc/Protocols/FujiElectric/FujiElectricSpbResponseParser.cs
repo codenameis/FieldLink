@@ -7,11 +7,31 @@ namespace FieldLink.Plc.Protocols.FujiElectric;
 /// <summary>Fuji SPB 응답 프레임을 검증하고 데이터를 파싱합니다. (사양서 Part A §A.2)</summary>
 public static class FujiElectricSpbResponseParser
 {
+    private const int MinimumFrameLength = 17;
+    private const int HeaderPrefixHexLength = 5; // ':' + Station(2) + Len(2)
+    private const int StationOffset = 1;
+    private const int LengthFieldOffset = 3;
+    private const int EndCodeOffset = 9;
+    private const int CommandEchoOffset = 11;
+    private const int CommandEchoLength = 4;
+    private const int DataStartOffset = 15;
+    private const int AsciiCharsPerByte = 2;
+    private const int HexCharsPerWord = 4;
+    private const int BytesPerWord = 2;
+    private const int LrcAndTrailerLength = 4;
+    private const int TrailerLength = 2;
+    private const byte AsciiColon = (byte)':';
+    private const byte AsciiCarriageReturn = 0x0D;
+    private const byte AsciiLineFeed = 0x0A;
+    private const byte SuccessEndCode = 0x00;
+    private const int ByteMask = 0xFF;
+    private const string CommandReadWords = "0000";
+
     /// <summary>워드 읽기 응답을 검증하고 리틀엔디언 바이트 배열을 추출합니다.</summary>
     public static byte[] ParseReadWords(byte[] frame, byte expectedStation, ushort expectedCount)
     {
-        int dataOffset = ValidateHeaderAndLrc(frame, expectedStation, "0000", out int availableDataChars);
-        int expectedChars = expectedCount * 4;
+        int dataOffset = ValidateHeaderAndLrc(frame, expectedStation, CommandReadWords, out int availableDataChars);
+        int expectedChars = expectedCount * HexCharsPerWord;
 
         if (availableDataChars < expectedChars)
         {
@@ -20,10 +40,10 @@ public static class FujiElectricSpbResponseParser
                 $"수신 데이터 길이 부족: 필요 {expectedChars}, 수신 {availableDataChars}");
         }
 
-        byte[] result = new byte[expectedCount * 2];
+        byte[] result = new byte[expectedCount * BytesPerWord];
         for (int i = 0; i < result.Length; i++)
         {
-            result[i] = (byte)BinaryBuffer.ReadAsciiHex(frame, dataOffset + (i * 2), 2);
+            result[i] = (byte)BinaryBuffer.ReadAsciiHex(frame, dataOffset + (i * AsciiCharsPerByte), AsciiCharsPerByte);
         }
 
         return result;
@@ -37,63 +57,63 @@ public static class FujiElectricSpbResponseParser
 
     private static int ValidateHeaderAndLrc(byte[] frame, byte expectedStation, string expectedCmdSubcmd, out int dataCharCount)
     {
-        if (frame is null || frame.Length < 17)
+        if (frame is null || frame.Length < MinimumFrameLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "Fuji SPB 응답 프레임 길이가 너무 짧습니다.");
         }
 
-        if (frame[0] != (byte)':' || frame[frame.Length - 2] != 0x0D || frame[frame.Length - 1] != 0x0A)
+        if (frame[0] != AsciiColon || frame[frame.Length - TrailerLength] != AsciiCarriageReturn || frame[frame.Length - 1] != AsciiLineFeed)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "Fuji SPB 프레임 헤더(:) 또는 종료(CRLF)가 올바르지 않습니다.");
         }
 
-        byte station = (byte)BinaryBuffer.ReadAsciiHex(frame, 1, 2);
+        byte station = (byte)BinaryBuffer.ReadAsciiHex(frame, StationOffset, AsciiCharsPerByte);
         if (station != expectedStation)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"Fuji SPB 국번 불일치: 예상 {expectedStation:X2}, 수신 {station:X2}");
         }
 
-        int declaredByteLength = BinaryBuffer.ReadAsciiHex(frame, 3, 2);
-        byte endCodeVal = (byte)BinaryBuffer.ReadAsciiHex(frame, 9, 2);
-        if (endCodeVal != 0x00)
+        int declaredByteLength = BinaryBuffer.ReadAsciiHex(frame, LengthFieldOffset, AsciiCharsPerByte);
+        byte endCodeVal = (byte)BinaryBuffer.ReadAsciiHex(frame, EndCodeOffset, AsciiCharsPerByte);
+        if (endCodeVal != SuccessEndCode)
         {
-            string endCodeHex = Encoding.ASCII.GetString(frame, 9, 2).ToUpperInvariant();
+            string endCodeHex = Encoding.ASCII.GetString(frame, EndCodeOffset, AsciiCharsPerByte).ToUpperInvariant();
             string message = GetErrorMessage(endCodeHex);
             throw new PlcDeviceException(endCodeVal, $"Fuji SPB 장치 오류 (코드 {endCodeHex}): {message}");
         }
 
-        string cmdEcho = Encoding.ASCII.GetString(frame, 11, 4);
+        string cmdEcho = Encoding.ASCII.GetString(frame, CommandEchoOffset, CommandEchoLength);
         if (!string.Equals(cmdEcho, expectedCmdSubcmd, StringComparison.OrdinalIgnoreCase))
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"Fuji SPB 명령 에코 불일치: 예상 {expectedCmdSubcmd}, 수신 {cmdEcho}");
         }
 
         // ':'(1) + Station(2) + Len(2) + Body(declaredByteLength * 2) + LRC(2) + CRLF(2)
-        int expectedLengthWithLrc = 1 + 4 + (declaredByteLength * 2) + 2 + 2;
+        int expectedLengthWithLrc = HeaderPrefixHexLength + (declaredByteLength * AsciiCharsPerByte) + LrcAndTrailerLength;
         if (frame.Length == expectedLengthWithLrc)
         {
-            int lrcOffset = frame.Length - 4;
+            int lrcOffset = frame.Length - LrcAndTrailerLength;
             int sum = 0;
             for (int i = 1; i < lrcOffset; i++)
             {
                 sum += frame[i];
             }
 
-            byte expectedLrc = (byte)((-sum) & 0xFF);
-            byte actualLrc = (byte)BinaryBuffer.ReadAsciiHex(frame, lrcOffset, 2);
+            byte expectedLrc = (byte)((-sum) & ByteMask);
+            byte actualLrc = (byte)BinaryBuffer.ReadAsciiHex(frame, lrcOffset, AsciiCharsPerByte);
             if (expectedLrc != actualLrc)
             {
                 throw new PlcException(PlcErrorKind.InvalidResponse, $"Fuji SPB LRC 체크섬 불일치: 계산 {expectedLrc:X2}, 수신 {actualLrc:X2}");
             }
 
-            dataCharCount = lrcOffset - 15;
+            dataCharCount = lrcOffset - DataStartOffset;
         }
         else
         {
-            dataCharCount = (frame.Length - 2) - 15;
+            dataCharCount = (frame.Length - TrailerLength) - DataStartOffset;
         }
 
-        return 15;
+        return DataStartOffset;
     }
 
     private static string GetErrorMessage(string code) => code switch

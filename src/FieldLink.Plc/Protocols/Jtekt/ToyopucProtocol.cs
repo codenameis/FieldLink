@@ -12,7 +12,13 @@ namespace FieldLink.Plc.Protocols.Jtekt;
 /// <summary>Toyota / JTEKT TOYOPUC Computer Link 2PORT-EFR 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class ToyopucProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int BytesPerWord = 2;
+    private const byte BasicReadWordsCommand = 0x1C;
+    private const byte ExtendedReadWordsCommand = 0x94;
+    private const byte BasicWriteWordsCommand = 0x1D;
+    private const byte ExtendedWriteWordsCommand = 0x95;
+    private const byte WriteBitCommand = 0x21;
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly ToyopucOptions _options;
@@ -47,37 +53,35 @@ public sealed class ToyopucProtocol : IPlcProtocol
         bool isBit = request.DataType == PlcDataType.Boolean;
         var address = ToyopucAddress.Parse(request.Address, isBit);
 
-        if (isBit && request.Count == 1 && !address.Prg.HasValue)
+        if (isBit)
         {
-            byte[] requestFrame = ToyopucRequestBuilder.BuildReadBit(address);
-            byte bitVal = await _transport.RunExclusiveAsync<byte>(async session =>
-            {
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                return ToyopucResponseParser.ParseReadBit(responseFrame);
-            }, cancellationToken).ConfigureAwait(false);
-
-            return [bitVal];
+            return await ReadBitsAsync(address, request.Count, cancellationToken).ConfigureAwait(false);
         }
 
         int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, _options.MaxReadWords);
+        if (elementSize % BytesPerWord != 0)
+        {
+            throw new ArgumentException($"워드 영역 '{address.Original}'에는 2바이트 배수 자료형만 사용할 수 있습니다.", nameof(request));
+        }
+
+        int wordsPerElement = elementSize / BytesPerWord;
+        int maxElements = RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
         byte[] combinedBuffer = new byte[request.ByteCount];
 
         await _transport.RunExclusiveAsync<bool>(async session =>
         {
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                ToyopucAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
+                ToyopucAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
+                ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
 
-                byte[] requestFrame = ToyopucRequestBuilder.BuildReadWords(chunkAddress, count);
+                byte[] requestFrame = ToyopucRequestBuilder.BuildReadWords(chunkAddress, wordCount);
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                byte expectedCmd = chunkAddress.Prg.HasValue ? (byte)0x94 : (byte)0x1C;
-                byte[] chunkData = ToyopucResponseParser.ParseReadWords(responseFrame, expectedCmd, count);
+                byte expectedCmd = chunkAddress.Prg.HasValue ? ExtendedReadWordsCommand : BasicReadWordsCommand;
+                byte[] chunkData = ToyopucResponseParser.ParseReadWords(responseFrame, expectedCmd, wordCount);
 
-                int destOffset = chunk.ElementOffset * 2;
+                int destOffset = chunk.ElementOffset * elementSize;
                 Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
             }
 
@@ -98,39 +102,115 @@ public sealed class ToyopucProtocol : IPlcProtocol
         bool isBit = request.DataType == PlcDataType.Boolean;
         var address = ToyopucAddress.Parse(request.Address, isBit);
 
-        if (isBit && request.Count == 1 && !address.Prg.HasValue)
+        if (isBit)
         {
-            bool value = request.GetData()[0] != 0;
-            byte[] requestFrame = ToyopucRequestBuilder.BuildWriteBit(address, value);
-            await _transport.RunExclusiveAsync<bool>(async session =>
-            {
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                ToyopucResponseParser.VerifyWriteResponse(responseFrame, expectedCommand: 0x21);
-                return true;
-            }, cancellationToken).ConfigureAwait(false);
+            await WriteBitsAsync(address, request, cancellationToken).ConfigureAwait(false);
             return;
         }
 
         int elementSize = request.DataType.GetElementSize();
-        int wordsPerElement = Math.Max(1, elementSize / 2);
-        int totalWords = request.Count * wordsPerElement;
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalWords, _options.MaxWriteWords);
+        if (elementSize % BytesPerWord != 0)
+        {
+            throw new ArgumentException($"워드 영역 '{address.Original}'에는 2바이트 배수 자료형만 사용할 수 있습니다.", nameof(request));
+        }
 
+        int wordsPerElement = elementSize / BytesPerWord;
+        int maxElements = RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        int completedElements = 0;
+
+        try
+        {
+            await _transport.RunExclusiveAsync<bool>(async session =>
+            {
+                foreach (RequestChunker.Chunk chunk in chunks)
+                {
+                    ToyopucAddress chunkAddress = address.Offset(chunk.ElementOffset * wordsPerElement);
+                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                    byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+
+                    byte[] requestFrame = ToyopucRequestBuilder.BuildWriteWords(chunkAddress, wordCount, chunkData);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    byte expectedCmd = chunkAddress.Prg.HasValue ? ExtendedWriteWordsCommand : BasicWriteWordsCommand;
+                    ToyopucResponseParser.VerifyWriteResponse(responseFrame, expectedCmd);
+                    completedElements += chunk.ElementCount;
+                }
+
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PlcDeviceException deviceException)
+        {
+            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
+        }
+        catch (PlcException exception)
+        {
+            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
+            {
+                CompletedCount = completedElements
+            };
+        }
+    }
+
+    private async Task<byte[]> ReadBitsAsync(ToyopucAddress address, int count, CancellationToken cancellationToken)
+    {
+        if (address.Prg.HasValue)
+        {
+            throw new NotSupportedException($"확장 영역 '{address.Original}'에 대한 단일 비트 직접 읽기는 지원하지 않습니다.");
+        }
+
+        byte[] results = new byte[count];
         await _transport.RunExclusiveAsync<bool>(async session =>
         {
-            foreach (RequestChunker.Chunk chunk in chunks)
+            for (int i = 0; i < count; i++)
             {
-                ToyopucAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = (ushort)chunk.ElementCount;
-                byte[] chunkData = request.GetData(chunk.ElementOffset / wordsPerElement, chunk.ElementCount / wordsPerElement);
-
-                byte[] requestFrame = ToyopucRequestBuilder.BuildWriteWords(chunkAddress, count, chunkData);
+                byte[] requestFrame = ToyopucRequestBuilder.BuildReadBit(address.Offset(i));
                 byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                byte expectedCmd = chunkAddress.Prg.HasValue ? (byte)0x95 : (byte)0x1D;
-                ToyopucResponseParser.VerifyWriteResponse(responseFrame, expectedCmd);
+                results[i] = ToyopucResponseParser.ParseReadBit(responseFrame);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
+
+        return results;
+    }
+
+    private async Task WriteBitsAsync(ToyopucAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
+    {
+        if (address.Prg.HasValue)
+        {
+            throw new NotSupportedException($"확장 영역 '{address.Original}'에 대한 단일 비트 직접 쓰기는 지원하지 않습니다.");
+        }
+
+        byte[] values = request.GetData();
+        int completedBits = 0;
+
+        try
+        {
+            await _transport.RunExclusiveAsync<bool>(async session =>
+            {
+                for (int i = 0; i < request.Count; i++)
+                {
+                    bool value = values[i] != 0;
+                    byte[] requestFrame = ToyopucRequestBuilder.BuildWriteBit(address.Offset(i), value);
+                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                    ToyopucResponseParser.VerifyWriteResponse(responseFrame, expectedCommand: WriteBitCommand);
+                    completedBits++;
+                }
+
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (PlcDeviceException deviceException)
+        {
+            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedBits };
+        }
+        catch (PlcException exception)
+        {
+            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
+            {
+                CompletedCount = completedBits
+            };
+        }
     }
 }

@@ -11,6 +11,8 @@ public sealed class MCAsciiFrameDecoder : IFrameDecoder
     private const int Header3ELength = 18;
     private const int Header4ELength = 26;
     private const int LengthFieldCharacterCount = 4;
+    private const int HexNibbleShift = 4;
+    private const int HexLetterBaseValue = 10;
 
     private readonly int _headerLength;
 
@@ -26,12 +28,12 @@ public sealed class MCAsciiFrameDecoder : IFrameDecoder
     public bool TryGetFrameLength(ArraySegment<byte> received, out int frameLength)
     {
         frameLength = 0;
-        if (received.Count < _headerLength)
+        if (received.Count < _headerLength || received.Array is not { } array)
         {
             return false;
         }
 
-        int lengthField = ReadLengthField(received);
+        int lengthField = ReadLengthField(array, received.Offset);
         int totalLength = _headerLength + lengthField;
         if (received.Count < totalLength)
         {
@@ -42,15 +44,14 @@ public sealed class MCAsciiFrameDecoder : IFrameDecoder
         return true;
     }
 
-    private int ReadLengthField(ArraySegment<byte> received)
+    private int ReadLengthField(byte[] array, int segmentOffset)
     {
-        byte[] array = received.Array!;
-        int start = received.Offset + _headerLength - LengthFieldCharacterCount;
+        int start = segmentOffset + _headerLength - LengthFieldCharacterCount;
         int value = 0;
 
         for (int index = 0; index < LengthFieldCharacterCount; index++)
         {
-            value = (value << 4) | GetHexDigitValue(array[start + index]);
+            value = (value << HexNibbleShift) | GetHexDigitValue(array[start + index]);
         }
 
         return value;
@@ -65,12 +66,12 @@ public sealed class MCAsciiFrameDecoder : IFrameDecoder
 
         if (character is >= (byte)'A' and <= (byte)'F')
         {
-            return character - 'A' + 10;
+            return character - 'A' + HexLetterBaseValue;
         }
 
         if (character is >= (byte)'a' and <= (byte)'f')
         {
-            return character - 'a' + 10;
+            return character - 'a' + HexLetterBaseValue;
         }
 
         throw new TransportException(TransportFailure.InvalidFrame, $"길이 필드에 16진 문자가 아닌 값이 있습니다. (0x{character:X2})");

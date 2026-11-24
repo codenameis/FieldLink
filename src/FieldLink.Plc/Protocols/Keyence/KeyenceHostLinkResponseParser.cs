@@ -8,6 +8,18 @@ namespace FieldLink.Plc.Protocols.Keyence;
 /// <summary>Keyence KV 상위 링크(Host Link) 응답을 검증하고 데이터를 추출하는 파서입니다. (사양서 Part A §A.2)</summary>
 public static class KeyenceHostLinkResponseParser
 {
+    private const int MinimumFrameLength = 2;
+    private const int BytesPerWord = 2;
+    private const int ErrorCodeLength = 2;
+    private const int InvalidErrorNumber = -1;
+    private const string ConnectSuccessResponse = "CC";
+    private const string WriteSuccessResponse = "OK";
+    private const string ErrorPrefix = "E";
+    private const string BitOnToken = "1";
+    private const string BitOffToken = "0";
+    private const byte BitOnValue = 1;
+    private const byte BitOffValue = 0;
+
     private static readonly char[] SpaceSeparator = [' '];
 
     /// <summary>상위 링크 통신 접속(CR) 응답이 "CC"인지 검증합니다.</summary>
@@ -15,7 +27,7 @@ public static class KeyenceHostLinkResponseParser
     public static void VerifyConnectResponse(byte[] frame)
     {
         string text = ExtractText(frame);
-        if (!string.Equals(text, "CC", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(text, ConnectSuccessResponse, StringComparison.OrdinalIgnoreCase))
         {
             throw new PlcException(PlcErrorKind.ConnectionFailed, $"상위 링크 연결 실패: {text}");
         }
@@ -26,7 +38,7 @@ public static class KeyenceHostLinkResponseParser
     public static void VerifyWriteResponse(byte[] frame)
     {
         string text = ExtractText(frame);
-        if (!string.Equals(text, "OK", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(text, WriteSuccessResponse, StringComparison.OrdinalIgnoreCase))
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"상위 링크 쓰기 확인 실패: {text}");
         }
@@ -38,22 +50,27 @@ public static class KeyenceHostLinkResponseParser
     /// <returns>추출된 워드 데이터 바이트 배열(리틀 엔디언)입니다.</returns>
     public static byte[] ParseReadWords(byte[] frame, ushort expectedCount)
     {
-        string text = ExtractText(frame);
-        string[] tokens = text.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length < expectedCount)
+        if (expectedCount == 0)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 응답 토큰 수 부족 (예상: {expectedCount}, 수신: {tokens.Length})");
+            throw new ArgumentOutOfRangeException(nameof(expectedCount), expectedCount, "기대 워드 수는 1 이상이어야 합니다.");
         }
 
-        byte[] result = new byte[expectedCount * 2];
+        string text = ExtractText(frame);
+        string[] tokens = text.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length != expectedCount)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 응답 토큰 수 불일치 (예상: {expectedCount}, 수신: {tokens.Length})");
+        }
+
+        byte[] result = new byte[expectedCount * BytesPerWord];
         for (int i = 0; i < expectedCount; i++)
         {
-            if (!ushort.TryParse(tokens[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out ushort value))
+            if (!ushort.TryParse(tokens[i], NumberStyles.None, CultureInfo.InvariantCulture, out ushort value))
             {
                 throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 값 파싱 실패: {tokens[i]}");
             }
 
-            BinaryBuffer.WriteUInt16LE(result, i * 2, value);
+            BinaryBuffer.WriteUInt16LE(result, i * BytesPerWord, value);
         }
 
         return result;
@@ -65,11 +82,16 @@ public static class KeyenceHostLinkResponseParser
     /// <returns>추출된 비트 바이트 배열입니다.</returns>
     public static byte[] ParseReadBits(byte[] frame, ushort expectedCount)
     {
+        if (expectedCount == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedCount), expectedCount, "기대 비트 수는 1 이상이어야 합니다.");
+        }
+
         string text = ExtractText(frame);
         string[] tokens = text.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length < expectedCount)
+        if (tokens.Length != expectedCount)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"비트 응답 토큰 수 부족 (예상: {expectedCount}, 수신: {tokens.Length})");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"비트 응답 토큰 수 불일치 (예상: {expectedCount}, 수신: {tokens.Length})");
         }
 
         byte[] result = new byte[expectedCount];
@@ -77,8 +99,8 @@ public static class KeyenceHostLinkResponseParser
         {
             result[i] = tokens[i] switch
             {
-                "1" => 1,
-                "0" => 0,
+                BitOnToken => BitOnValue,
+                BitOffToken => BitOffValue,
                 _ => throw new PlcException(PlcErrorKind.InvalidResponse, $"유효하지 않은 비트 응답 토큰: {tokens[i]}")
             };
         }
@@ -88,17 +110,23 @@ public static class KeyenceHostLinkResponseParser
 
     private static string ExtractText(byte[] frame)
     {
-        if (frame is null || frame.Length < 2)
+        if (frame is null || frame.Length < MinimumFrameLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "응답 프레임이 너무 짧습니다.");
         }
 
         string full = Encoding.ASCII.GetString(frame).TrimEnd('\r', '\n');
-        if (full.StartsWith("E", StringComparison.OrdinalIgnoreCase) && full.Length >= 2)
+        if (full.Length >= ErrorCodeLength && full.StartsWith(ErrorPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            string errCode = full.Substring(0, 2).ToUpperInvariant();
+            string errCode = full.Substring(0, ErrorCodeLength).ToUpperInvariant();
             string message = GetErrorMessage(errCode);
-            int codeNum = int.TryParse(full.Substring(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) ? n : -1;
+            int codeNum = int.TryParse(
+                errCode.Substring(ErrorPrefix.Length),
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out int parsedCode)
+                ? parsedCode
+                : InvalidErrorNumber;
             throw new PlcDeviceException(codeNum, $"상위 링크 에러 ({errCode}): {message}");
         }
 

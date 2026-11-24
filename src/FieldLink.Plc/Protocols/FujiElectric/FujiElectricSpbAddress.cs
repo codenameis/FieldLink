@@ -1,11 +1,21 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace FieldLink.Plc.Protocols.FujiElectric;
 
 /// <summary>Fuji SPB 프로토콜의 주소 표현입니다. (사양서 Part A)</summary>
 public sealed class FujiElectricSpbAddress
 {
+    private const int BitsPerWord = 16;
+    private const int BitsPerByte = 8;
+    private const int BytesPerWord = 2;
+    private const int MaxBitOffsetInWord = 15;
+    private const int SwappedSegmentLength = 2;
+    private const int SwappedAddressLength = 4;
+    private const int TwoCharPrefixLength = 2;
+    private const int SingleCharPrefixLength = 1;
+
     private FujiElectricSpbAddress(string original, string areaCode, ushort wordAddress, byte bitOffset, bool isBit, string wireWordAddress)
     {
         Original = original;
@@ -37,12 +47,23 @@ public sealed class FujiElectricSpbAddress
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static FujiElectricSpbAddress Parse(string address)
     {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+        }
+
         if (!TryParse(address, out FujiElectricSpbAddress? result, out string? errorMessage))
         {
             throw new FormatException(errorMessage);
         }
 
         return result;
+    }
+
+    internal static FujiElectricSpbAddress FromAreaWord(string areaCode, ushort wordAddress)
+    {
+        string wire = $"{areaCode}{FormatSwapped4(wordAddress)}";
+        return new FujiElectricSpbAddress($"{areaCode}:{wordAddress}", areaCode, wordAddress, 0, isBit: false, wire);
     }
 
     /// <summary>주소 문자열 파싱을 시도합니다.</summary>
@@ -54,12 +75,13 @@ public sealed class FujiElectricSpbAddress
         result = null;
         errorMessage = null;
 
-        if (string.IsNullOrWhiteSpace(address))
+        if (address is null || string.IsNullOrWhiteSpace(address))
         {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+            errorMessage = "주소 문자열이 비어 있습니다.";
+            return false;
         }
 
-        string trimmed = address!.Trim().ToUpperInvariant();
+        string trimmed = address.Trim().ToUpperInvariant();
         if (!TryExtractPrefix(trimmed, out _, out string areaCode, out bool isBitArea, out string numberText))
         {
             errorMessage = $"지원하지 않는 Fuji SPB 주소 접두사입니다: {address}";
@@ -87,7 +109,7 @@ public sealed class FujiElectricSpbAddress
             if (trimmed.StartsWith(p2, StringComparison.Ordinal))
             {
                 prefix = p2;
-                numberText = trimmed.Substring(2);
+                numberText = trimmed.Substring(TwoCharPrefixLength);
                 areaCode = p2 switch
                 {
                     "TC" => "04",
@@ -102,7 +124,7 @@ public sealed class FujiElectricSpbAddress
         }
 
         char p1 = trimmed[0];
-        numberText = trimmed.Substring(1);
+        numberText = trimmed.Substring(SingleCharPrefixLength);
         prefix = p1.ToString();
         isBitArea = p1 is 'Y' or 'X' or 'M' or 'L';
 
@@ -138,7 +160,7 @@ public sealed class FujiElectricSpbAddress
             return TryParseDotAddress(original, areaCode, numberText, dotIndex, out result, out errorMessage);
         }
 
-        if (!ushort.TryParse(numberText, out ushort parsedNumber))
+        if (!ushort.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out ushort parsedNumber))
         {
             errorMessage = $"Fuji SPB 주소 번호가 올바르지 않습니다: {original}";
             return false;
@@ -148,8 +170,8 @@ public sealed class FujiElectricSpbAddress
         byte bitOffset;
         if (isBitArea)
         {
-            wordAddr = (ushort)(parsedNumber / 16);
-            bitOffset = (byte)(parsedNumber % 16);
+            wordAddr = (ushort)(parsedNumber / BitsPerWord);
+            bitOffset = (byte)(parsedNumber % BitsPerWord);
         }
         else
         {
@@ -177,13 +199,13 @@ public sealed class FujiElectricSpbAddress
         string wordStr = numberText.Substring(0, dotIndex);
         string bitStr = numberText.Substring(dotIndex + 1);
 
-        if (!ushort.TryParse(wordStr, out ushort wordAddr))
+        if (!ushort.TryParse(wordStr, NumberStyles.None, CultureInfo.InvariantCulture, out ushort wordAddr))
         {
             errorMessage = $"워드 주소 파싱 실패: {original}";
             return false;
         }
 
-        if (!byte.TryParse(bitStr, System.Globalization.NumberStyles.HexNumber, null, out byte bitOffset) || bitOffset > 15)
+        if (!byte.TryParse(bitStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte bitOffset) || bitOffset > MaxBitOffsetInWord)
         {
             errorMessage = $"비트 오프셋 파싱 실패 (0~F): {original}";
             return false;
@@ -198,27 +220,27 @@ public sealed class FujiElectricSpbAddress
     /// <summary>10진 ushort 값을 4자리로 만들고 상위 2자리와 하위 2자리를 맞바꿉니다. (예: 100 -> "0100" -> "0001")</summary>
     public static string FormatSwapped4(ushort value)
     {
-        string d4 = value.ToString("D4");
-        return d4.Substring(2, 2) + d4.Substring(0, 2);
+        string d4 = value.ToString($"D{SwappedAddressLength}", CultureInfo.InvariantCulture);
+        return d4.Substring(SwappedSegmentLength, SwappedSegmentLength) + d4.Substring(0, SwappedSegmentLength);
     }
 
     /// <summary>상·하위 교차된 4자리 10진 문자열을 ushort로 복원합니다. (예: "0001" -> "0100" -> 100)</summary>
     public static ushort Unswap4(string swapped4)
     {
-        if (swapped4.Length != 4)
+        if (swapped4 is null || swapped4.Length != SwappedAddressLength)
         {
-            throw new ArgumentException("4자리 문자열이어야 합니다.", nameof(swapped4));
+            throw new ArgumentException($"{SwappedAddressLength}자리 문자열이어야 합니다.", nameof(swapped4));
         }
 
-        string d4 = swapped4.Substring(2, 2) + swapped4.Substring(0, 2);
-        return ushort.Parse(d4);
+        string d4 = swapped4.Substring(SwappedSegmentLength, SwappedSegmentLength) + swapped4.Substring(0, SwappedSegmentLength);
+        return ushort.Parse(d4, CultureInfo.InvariantCulture);
     }
 
     /// <summary>단일 비트 쓰기용 8문자 주소를 생성합니다. (영역코드2 + 자리교차4문자(바이트인덱스) + 바이트내비트2자리)</summary>
     public string BuildBitWriteAddress()
     {
-        int byteIndex = (WordAddress * 2) + (BitOffset / 8);
-        int bitInByte = BitOffset % 8;
+        int byteIndex = (WordAddress * BytesPerWord) + (BitOffset / BitsPerByte);
+        int bitInByte = BitOffset % BitsPerByte;
         string swappedByte = FormatSwapped4((ushort)byteIndex);
         return $"{AreaCode}{swappedByte}{bitInByte:D2}";
     }
@@ -226,17 +248,34 @@ public sealed class FujiElectricSpbAddress
     /// <summary>오프셋만큼 워드 또는 비트 주소를 이동한 새 인스턴스를 반환합니다.</summary>
     public FujiElectricSpbAddress Offset(int count)
     {
+        if (count < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "오프셋은 0 이상이어야 합니다.");
+        }
+
         if (IsBit)
         {
-            int totalBits = (WordAddress * 16) + BitOffset + count;
-            ushort newWord = (ushort)(totalBits / 16);
-            byte newBit = (byte)(totalBits % 16);
+            long totalBits = ((long)WordAddress * BitsPerWord) + BitOffset + count;
+            long nextWord = totalBits / BitsPerWord;
+            if (nextWord > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(count), count, "비트 주소가 16비트 워드 범위를 초과합니다.");
+            }
+
+            ushort newWord = (ushort)nextWord;
+            byte newBit = (byte)(totalBits % BitsPerWord);
             string wire = $"{AreaCode}{FormatSwapped4(newWord)}";
             return new FujiElectricSpbAddress($"{AreaCode}.{totalBits}", AreaCode, newWord, newBit, true, wire);
         }
         else
         {
-            ushort newWord = (ushort)(WordAddress + count);
+            long nextWord = (long)WordAddress + count;
+            if (nextWord > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(count), count, "워드 주소가 16비트 범위를 초과합니다.");
+            }
+
+            ushort newWord = (ushort)nextWord;
             string wire = $"{AreaCode}{FormatSwapped4(newWord)}";
             return new FujiElectricSpbAddress($"{AreaCode}{newWord}", AreaCode, newWord, 0, false, wire);
         }

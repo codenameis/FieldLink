@@ -7,32 +7,42 @@ namespace FieldLink.Plc.Protocols.FujiElectric;
 public static class FujiElectricSphResponseParser
 {
     private const byte FrameHeader = 0xFB;
+    private const byte SuccessStatus = 0x00;
+    private const byte CommandReadWords = 0x00;
+    private const byte CommandWriteWords = 0x01;
+    private const int HeaderLength = 20;
+    private const int DataPayloadOffset = 26;
+    private const int BytesPerWord = 2;
+    private const int StatusOffset = 4;
+    private const int ConnectionIdOffset = 6;
+    private const int CommandEchoOffset = 14;
+    private const int PayloadLengthOffset = 18;
 
     /// <summary>워드 읽기 응답을 검증하고 리틀엔디언 바이트 배열을 추출합니다.</summary>
     public static byte[] ParseReadWords(byte[] frame, byte expectedConnectionId, ushort expectedWordCount)
     {
-        ValidateResponseHeader(frame, expectedConnectionId, expectedCommand: 0x00);
+        ValidateResponseHeader(frame, expectedConnectionId, expectedCommand: CommandReadWords);
 
-        int expectedBytes = expectedWordCount * 2;
-        if (frame.Length < 26 + expectedBytes)
+        int expectedBytes = expectedWordCount * BytesPerWord;
+        if (frame.Length < DataPayloadOffset + expectedBytes)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 응답 데이터 길이가 부족합니다: 필요 {26 + expectedBytes}, 수신 {frame.Length}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 응답 데이터 길이가 부족합니다: 필요 {DataPayloadOffset + expectedBytes}, 수신 {frame.Length}");
         }
 
         byte[] result = new byte[expectedBytes];
-        Buffer.BlockCopy(frame, 26, result, 0, expectedBytes);
+        Buffer.BlockCopy(frame, DataPayloadOffset, result, 0, expectedBytes);
         return result;
     }
 
     /// <summary>워드 쓰기 응답을 검증합니다.</summary>
     public static void VerifyWriteResponse(byte[] frame, byte expectedConnectionId)
     {
-        ValidateResponseHeader(frame, expectedConnectionId, expectedCommand: 0x01);
+        ValidateResponseHeader(frame, expectedConnectionId, expectedCommand: CommandWriteWords);
     }
 
     private static void ValidateResponseHeader(byte[] frame, byte expectedConnectionId, byte expectedCommand)
     {
-        if (frame is null || frame.Length < 20)
+        if (frame is null || frame.Length < HeaderLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "SPH 응답 헤더 길이가 부족합니다.");
         }
@@ -42,27 +52,27 @@ public static class FujiElectricSphResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"올바르지 않은 SPH 헤더 식별자입니다: 0x{frame[0]:X2}");
         }
 
-        byte status = frame[4];
-        if (status != 0x00)
+        byte status = frame[StatusOffset];
+        if (status != SuccessStatus)
         {
             string message = GetErrorMessage(status);
             throw new PlcDeviceException(status, $"SPH 장치 오류 (코드 0x{status:X2}): {message}");
         }
 
-        if (frame[6] != expectedConnectionId)
+        if (frame[ConnectionIdOffset] != expectedConnectionId)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 연결 ID 불일치: 예상 0x{expectedConnectionId:X2}, 수신 0x{frame[6]:X2}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 연결 ID 불일치: 예상 0x{expectedConnectionId:X2}, 수신 0x{frame[ConnectionIdOffset]:X2}");
         }
 
-        if (frame[14] != expectedCommand)
+        if (frame[CommandEchoOffset] != expectedCommand)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 명령 에코 불일치: 예상 0x{expectedCommand:X2}, 수신 0x{frame[14]:X2}");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 명령 에코 불일치: 예상 0x{expectedCommand:X2}, 수신 0x{frame[CommandEchoOffset]:X2}");
         }
 
-        ushort declaredPayloadLength = BinaryBuffer.ReadUInt16LE(frame, 18);
-        if (frame.Length - 20 < declaredPayloadLength)
+        ushort declaredPayloadLength = BinaryBuffer.ReadUInt16LE(frame, PayloadLengthOffset);
+        if (frame.Length - HeaderLength < declaredPayloadLength)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 응답 페이로드 길이가 선언된 크기({declaredPayloadLength})보다 작습니다. (실제: {frame.Length - 20})");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"SPH 응답 페이로드 길이가 선언된 크기({declaredPayloadLength})보다 작습니다. (실제: {frame.Length - HeaderLength})");
         }
     }
 

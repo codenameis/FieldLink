@@ -5,6 +5,8 @@ namespace FieldLink.Transport.Framing;
 /// <summary>특정 구분자(예: CR LF 또는 콜론과 CR LF)로 끝나는 프레임을 판정하는 디코더입니다.</summary>
 public sealed class DelimitedFrameDecoder : IFrameDecoder
 {
+    private const int DefaultMaximumFrameLength = 4096;
+
     private readonly byte[] _endDelimiter;
     private readonly byte[]? _startDelimiter;
     private readonly int _maximumFrameLength;
@@ -15,8 +17,11 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
     /// <param name="startDelimiter">프레임 시작을 검증할 바이트 배열입니다. null이면 검사하지 않습니다.</param>
     /// <exception cref="ArgumentNullException"><paramref name="endDelimiter"/>가 null일 때.</exception>
     /// <exception cref="ArgumentException"><paramref name="endDelimiter"/>가 비어 있을 때.</exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maximumFrameLength"/>가 1 미만일 때.</exception>
-    public DelimitedFrameDecoder(byte[] endDelimiter, int maximumFrameLength = 4096, byte[]? startDelimiter = null)
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maximumFrameLength"/>가 최소 프레임 길이 미만일 때.</exception>
+    public DelimitedFrameDecoder(
+        byte[] endDelimiter,
+        int maximumFrameLength = DefaultMaximumFrameLength,
+        byte[]? startDelimiter = null)
     {
         if (endDelimiter is null)
         {
@@ -28,12 +33,13 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
             throw new ArgumentException("종료 구분자는 비어 있을 수 없습니다.", nameof(endDelimiter));
         }
 
-        if (maximumFrameLength < endDelimiter.Length)
+        int minimumFrameLength = (startDelimiter?.Length ?? 0) + endDelimiter.Length;
+        if (maximumFrameLength < minimumFrameLength)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(maximumFrameLength),
                 maximumFrameLength,
-                "최대 프레임 길이는 종료 구분자 길이 이상이어야 합니다.");
+                $"최대 프레임 길이는 시작·종료 구분자 길이 합({minimumFrameLength}) 이상이어야 합니다.");
         }
 
         _endDelimiter = (byte[])endDelimiter.Clone();
@@ -49,7 +55,15 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
         int delimiterIndex = FindEndDelimiterIndex(received);
         if (delimiterIndex >= 0)
         {
-            frameLength = delimiterIndex + _endDelimiter.Length;
+            int detectedLength = delimiterIndex + _endDelimiter.Length;
+            if (detectedLength > _maximumFrameLength)
+            {
+                throw new TransportException(
+                    TransportFailure.InvalidFrame,
+                    $"감지된 프레임 길이({detectedLength} 바이트)가 최대 허용 길이({_maximumFrameLength} 바이트)를 초과했습니다.");
+            }
+
+            frameLength = detectedLength;
             return true;
         }
 
@@ -71,7 +85,11 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
             return;
         }
 
-        byte[] array = received.Array!;
+        if (received.Array is not { } array)
+        {
+            throw new TransportException(TransportFailure.InvalidFrame, "수신 세그먼트의 내부 배열이 비어 있습니다.");
+        }
+
         int offset = received.Offset;
 
         for (int i = 0; i < _startDelimiter.Length; i++)
@@ -87,12 +105,17 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
 
     private int FindEndDelimiterIndex(ArraySegment<byte> received)
     {
-        byte[] array = received.Array!;
+        if (received.Array is not { } array)
+        {
+            return -1;
+        }
+
         int offset = received.Offset;
         int count = received.Count;
         int delimiterLength = _endDelimiter.Length;
+        int searchStart = _startDelimiter?.Length ?? 0;
 
-        for (int i = 0; i <= count - delimiterLength; i++)
+        for (int i = searchStart; i <= count - delimiterLength; i++)
         {
             if (IsDelimiterMatch(array, offset + i))
             {

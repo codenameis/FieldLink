@@ -5,7 +5,13 @@ namespace FieldLink.Transport.Udp;
 /// <summary>UDP 전송의 대상 호스트와 포트 설정입니다.</summary>
 public sealed class UdpTransportOptions
 {
-    private static readonly TimeSpan DefaultReceiveTimeout = TimeSpan.FromSeconds(3);
+    private const int MinimumPort = 1;
+    private const int MaximumPort = 65535;
+    private const int DefaultReceiveTimeoutSeconds = 3;
+
+    private static readonly TimeSpan DefaultReceiveTimeout = TimeSpan.FromSeconds(DefaultReceiveTimeoutSeconds);
+
+    private readonly TimeSpan _receiveTimeout = DefaultReceiveTimeout;
 
     /// <summary>호스트와 포트로 UDP 전송 설정을 초기화합니다.</summary>
     /// <param name="host">대상 호스트 이름 또는 IP 주소입니다.</param>
@@ -26,12 +32,12 @@ public sealed class UdpTransportOptions
             throw new ArgumentException("호스트 이름 또는 IP 주소는 필수입니다.", nameof(host));
         }
 
-        if (port is < 1 or > 65535)
+        if (port is < MinimumPort or > MaximumPort)
         {
             throw new ArgumentOutOfRangeException(nameof(port), port, "포트 번호는 1에서 65535 사이여야 합니다.");
         }
 
-        if (localPort.HasValue && localPort.Value is < 1 or > 65535)
+        if (localPort.HasValue && localPort.Value is < MinimumPort or > MaximumPort)
         {
             throw new ArgumentOutOfRangeException(nameof(localPort), localPort.Value, "로컬 포트 번호는 1에서 65535 사이여야 합니다.");
         }
@@ -39,7 +45,6 @@ public sealed class UdpTransportOptions
         Host = host;
         Port = port;
         LocalPort = localPort;
-        ReceiveTimeout = DefaultReceiveTimeout;
     }
 
     /// <summary>대상 호스트 이름 또는 IP 주소입니다.</summary>
@@ -52,5 +57,17 @@ public sealed class UdpTransportOptions
     public int? LocalPort { get; }
 
     /// <summary>데이터그램 수신 제한 시간입니다. 기본값은 3초입니다.</summary>
-    public TimeSpan ReceiveTimeout { get; init; }
+    public TimeSpan ReceiveTimeout
+    {
+        get => _receiveTimeout;
+        init
+        {
+            if (value <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "수신 제한 시간은 0보다 커야 합니다.");
+            }
+
+            _receiveTimeout = value;
+        }
+    }
 }

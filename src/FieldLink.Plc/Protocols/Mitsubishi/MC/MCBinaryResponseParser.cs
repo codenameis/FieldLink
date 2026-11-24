@@ -8,7 +8,13 @@ public static class MCBinaryResponseParser
 {
     private const int Header3ELength = 9;
     private const int Header4ELength = 13;
+    private const int SerialNumberOffset = 2;
+    private const int LengthFieldSize = 2;
     private const int EndCodeByteCount = 2;
+    private const int BytesPerWord = 2;
+    private const int BitsPerPackedByte = 2;
+    private const byte HighNibbleBitMask = 0x10;
+    private const byte LowNibbleBitMask = 0x01;
     private const ushort Response3ESubheader = 0x00D0;
     private const ushort Response4ESubheader = 0x00D4;
 
@@ -26,7 +32,7 @@ public static class MCBinaryResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"4E 응답 프레임이 너무 짧습니다. (길이: {frame.Length})");
         }
 
-        return BinaryBuffer.ReadUInt16LE(frame, 2);
+        return BinaryBuffer.ReadUInt16LE(frame, SerialNumberOffset);
     }
 
     /// <summary>일괄 읽기 응답에서 데이터를 꺼냅니다.</summary>
@@ -110,7 +116,7 @@ public static class MCBinaryResponseParser
 
     private static void ValidateLength(byte[] frame, int headerLength)
     {
-        int lengthField = BinaryBuffer.ReadUInt16LE(frame, headerLength - 2);
+        int lengthField = BinaryBuffer.ReadUInt16LE(frame, headerLength - LengthFieldSize);
         if (frame.Length != headerLength + lengthField)
         {
             throw new PlcException(
@@ -121,9 +127,10 @@ public static class MCBinaryResponseParser
 
     private static byte[] CopyWords(byte[] data, ushort pointCount)
     {
-        if (data.Length != pointCount * 2)
+        int expectedBytes = pointCount * BytesPerWord;
+        if (data.Length != expectedBytes)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"읽은 워드 데이터 크기가 맞지 않습니다. (기대: {pointCount * 2}바이트, 수신: {data.Length}바이트)");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"읽은 워드 데이터 크기가 맞지 않습니다. (기대: {expectedBytes}바이트, 수신: {data.Length}바이트)");
         }
 
         return data;
@@ -132,16 +139,17 @@ public static class MCBinaryResponseParser
     private static byte[] UnpackBits(byte[] data, ushort pointCount)
     {
         // 사양서 §4: 바이트 하나에 두 점. 첫 점은 상위 니블, 두 번째 점은 하위 니블.
-        if (data.Length != (pointCount + 1) / 2)
+        int expectedPackedBytes = (pointCount + 1) / BitsPerPackedByte;
+        if (data.Length != expectedPackedBytes)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"읽은 비트 데이터 크기가 맞지 않습니다. (기대: {(pointCount + 1) / 2}바이트, 수신: {data.Length}바이트)");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"읽은 비트 데이터 크기가 맞지 않습니다. (기대: {expectedPackedBytes}바이트, 수신: {data.Length}바이트)");
         }
 
         var bits = new byte[pointCount];
         for (int bitIndex = 0; bitIndex < pointCount; bitIndex++)
         {
-            byte packed = data[bitIndex / 2];
-            bool isOn = bitIndex % 2 == 0 ? (packed & 0x10) != 0 : (packed & 0x01) != 0;
+            byte packed = data[bitIndex / BitsPerPackedByte];
+            bool isOn = bitIndex % BitsPerPackedByte == 0 ? (packed & HighNibbleBitMask) != 0 : (packed & LowNibbleBitMask) != 0;
             bits[bitIndex] = isOn ? (byte)1 : (byte)0;
         }
 

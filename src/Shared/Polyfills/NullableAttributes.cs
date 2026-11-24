@@ -1,7 +1,8 @@
-// netstandard2.0에는 Nullable 흐름 분석 특성이 없어 직접 공급한다. (.NET Core 3.0+에는 기본 포함)
+// netstandard2.0 및 net48에는 Nullable 흐름 분석 특성이 없어 직접 공급한다. (.NET Core 3.0+ / netstandard2.1+에는 일부 포함)
 // 이 파일은 Directory.Build.props가 모든 제품 프로젝트에 링크로 포함한다.
 namespace System.Diagnostics.CodeAnalysis;
 
+#if !NETSTANDARD2_1_OR_GREATER && !NETCOREAPP3_0_OR_GREATER
 /// <summary>반환값이 지정한 값일 때 out 인수가 null이 아님을 컴파일러에 알립니다.</summary>
 [AttributeUsage(AttributeTargets.Parameter, Inherited = false)]
 internal sealed class NotNullWhenAttribute : Attribute
@@ -31,7 +32,9 @@ internal sealed class MaybeNullWhenAttribute : Attribute
 internal sealed class DoesNotReturnAttribute : Attribute
 {
 }
+#endif
 
+#if !NET5_0_OR_GREATER
 /// <summary>멤버가 true를 반환하면 지정한 멤버가 null이 아님을 컴파일러에 알립니다.</summary>
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Property, Inherited = false, AllowMultiple = true)]
 internal sealed class MemberNotNullWhenAttribute : Attribute
@@ -46,3 +49,4 @@ internal sealed class MemberNotNullWhenAttribute : Attribute
 
     public string[] Members { get; }
 }
+#endif

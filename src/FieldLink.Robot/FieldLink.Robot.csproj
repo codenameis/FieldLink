@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 로봇 계층: 공통 결과/계약, 값 변환, 제조사별 산업용 로봇 프로토콜 클라이언트. -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>FieldLink.Robot</RootNamespace>
+    <Version>0.1.0</Version>
+    <Description>제조사별 산업용 로봇 통신 프로토콜 클라이언트 라이브러리.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FieldLink.Transport\FieldLink.Transport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="FieldLink.Robot.Tests" />
+  </ItemGroup>
+
+</Project>

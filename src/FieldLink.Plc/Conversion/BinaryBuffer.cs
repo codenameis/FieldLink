@@ -10,6 +10,10 @@ namespace FieldLink.Plc.Conversion;
 internal static class BinaryBuffer
 {
     private const string HexAlphabet = "0123456789ABCDEF";
+    private const int NibbleBitWidth = 4;
+    private const int LowNibbleMask = 0x0F;
+    private const int HexDigitOffset = 10;
+    private const int MaximumIntHexCharacters = 7;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ushort ReadUInt16LE(byte[] buffer, int offset) =>
@@ -61,8 +65,8 @@ internal static class BinaryBuffer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void WriteAsciiHexByte(byte[] buffer, int offset, byte value)
     {
-        buffer[offset] = (byte)HexAlphabet[value >> 4];
-        buffer[offset + 1] = (byte)HexAlphabet[value & 0x0F];
+        buffer[offset] = (byte)HexAlphabet[value >> NibbleBitWidth];
+        buffer[offset + 1] = (byte)HexAlphabet[value & LowNibbleMask];
     }
 
     /// <summary>Substring 할당 없이 바이트 배열의 지정된 오프셋에서 16진수 ASCII 문자열을 정수로 파싱합니다.</summary>
@@ -73,7 +77,7 @@ internal static class BinaryBuffer
             throw new ArgumentNullException(nameof(buffer));
         }
 
-        if (offset < 0 || characterCount <= 0 || offset + characterCount > buffer.Length)
+        if (offset < 0 || characterCount <= 0 || characterCount > MaximumIntHexCharacters || offset > buffer.Length - characterCount)
         {
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
@@ -87,12 +91,12 @@ internal static class BinaryBuffer
             int digit = ch switch
             {
                 >= (byte)'0' and <= (byte)'9' => ch - '0',
-                >= (byte)'A' and <= (byte)'F' => ch - 'A' + 10,
-                >= (byte)'a' and <= (byte)'f' => ch - 'a' + 10,
+                >= (byte)'A' and <= (byte)'F' => ch - 'A' + HexDigitOffset,
+                >= (byte)'a' and <= (byte)'f' => ch - 'a' + HexDigitOffset,
                 _ => throw new PlcException(PlcErrorKind.InvalidResponse, $"유효하지 않은 16진수 ASCII 문자입니다. (0x{ch:X2})")
             };
 
-            value = (value << 4) | digit;
+            value = (value << NibbleBitWidth) | digit;
         }
 
         return value;

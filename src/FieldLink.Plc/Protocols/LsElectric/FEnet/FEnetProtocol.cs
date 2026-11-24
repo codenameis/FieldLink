@@ -12,7 +12,12 @@ namespace FieldLink.Plc.Protocols.LsElectric.FEnet;
 /// <summary>TCP 소켓 상에서 실행되는 LS ELECTRIC XGT FEnet 클라이언트 프로토콜 구현체입니다. (사양서 §1, §3)</summary>
 public sealed class FEnetProtocol : IPlcProtocol
 {
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
+    private const int InvokeIdOffset = 14;
+    private const int ByteShift = 8;
+    private const ushort MaxInvokeId = 0xFFFF;
+    private const ushort InitialInvokeId = 0x0001;
+    private const int WordSizeBytes = 2;
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: WordSizeBytes);
 
     private readonly ITransport _transport;
     private readonly FEnetOptions _options;
@@ -60,13 +65,19 @@ public sealed class FEnetProtocol : IPlcProtocol
 
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                var chunkAddress = address.WithOffset(chunk.ElementOffset);
+                var chunkAddress = address.WithByteOffset((long)chunk.ElementOffset * elementSize);
                 ushort readByteCount = (ushort)(chunk.ElementCount * elementSize);
 
                 byte[] chunkData = await ReadChunkAsync(session, chunkAddress.VariableName, readByteCount).ConfigureAwait(false);
+                if (chunkData.Length != readByteCount)
+                {
+                    throw new PlcException(
+                        PlcErrorKind.InvalidResponse,
+                        $"FEnet 읽기 응답 데이터 길이({chunkData.Length})가 요청 바이트 수({readByteCount})와 일치하지 않습니다.");
+                }
 
                 int destinationOffset = chunk.ElementOffset * elementSize;
-                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
+                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, readByteCount);
             }
 
             return true;
@@ -98,7 +109,7 @@ public sealed class FEnetProtocol : IPlcProtocol
 
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
-                    var chunkAddress = address.WithOffset(chunk.ElementOffset);
+                    var chunkAddress = address.WithByteOffset((long)chunk.ElementOffset * elementSize);
                     byte[] slice = request.GetData(chunk.ElementOffset, chunk.ElementCount);
 
                     await WriteChunkAsync(session, chunkAddress.VariableName, slice).ConfigureAwait(false);
@@ -131,7 +142,7 @@ public sealed class FEnetProtocol : IPlcProtocol
         while (true)
         {
             byte[] responseFrame = await session.ReceiveAsync(_frameDecoder).ConfigureAwait(false);
-            ushort receivedInvokeId = (ushort)(responseFrame[14] | (responseFrame[15] << 8));
+            ushort receivedInvokeId = (ushort)(responseFrame[InvokeIdOffset] | (responseFrame[InvokeIdOffset + 1] << ByteShift));
 
             if (receivedInvokeId == invokeId)
             {
@@ -150,7 +161,7 @@ public sealed class FEnetProtocol : IPlcProtocol
         while (true)
         {
             byte[] responseFrame = await session.ReceiveAsync(_frameDecoder).ConfigureAwait(false);
-            ushort receivedInvokeId = (ushort)(responseFrame[14] | (responseFrame[15] << 8));
+            ushort receivedInvokeId = (ushort)(responseFrame[InvokeIdOffset] | (responseFrame[InvokeIdOffset + 1] << ByteShift));
 
             if (receivedInvokeId == invokeId)
             {
@@ -164,7 +175,7 @@ public sealed class FEnetProtocol : IPlcProtocol
     {
         lock (_invokeLock)
         {
-            _invokeId = (ushort)(_invokeId == 0xFFFF ? 0x0001 : _invokeId + 1);
+            _invokeId = (ushort)(_invokeId == MaxInvokeId ? InitialInvokeId : _invokeId + 1);
             return _invokeId;
         }
     }

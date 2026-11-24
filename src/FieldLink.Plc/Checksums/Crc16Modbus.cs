@@ -11,6 +11,10 @@ public static class Crc16Modbus
 {
     private const ushort InitialValue = 0xFFFF;
     private const ushort Polynomial = 0xA001;
+    private const int LookupTableSize = 256;
+    private const int BitsPerByte = 8;
+    private const ushort LowestBitMask = 0x0001;
+    private const ushort ByteMask = 0xFF;
 
     private static readonly ushort[] LookupTable = CreateLookupTable();
 
@@ -33,7 +37,7 @@ public static class Crc16Modbus
             throw new ArgumentOutOfRangeException(nameof(offset), offset, "오프셋은 0 이상이고 배열 길이 이하여야 합니다.");
         }
 
-        if (count < 0 || offset + count > buffer.Length)
+        if (count < 0 || count > buffer.Length - offset)
         {
             throw new ArgumentOutOfRangeException(nameof(count), count, "바이트 수는 0 이상이고 배열 범위를 벗어날 수 없습니다.");
         }
@@ -71,20 +75,20 @@ public static class Crc16Modbus
         ushort crc = Calculate(buffer, offset, count);
         return new byte[]
         {
-            (byte)(crc & 0xFF),
-            (byte)((crc >> 8) & 0xFF)
+            (byte)(crc & ByteMask),
+            (byte)((crc >> BitsPerByte) & ByteMask)
         };
     }
 
     private static ushort[] CreateLookupTable()
     {
-        var table = new ushort[256];
-        for (int i = 0; i < 256; i++)
+        var table = new ushort[LookupTableSize];
+        for (int i = 0; i < LookupTableSize; i++)
         {
             ushort value = (ushort)i;
-            for (int bit = 0; bit < 8; bit++)
+            for (int bit = 0; bit < BitsPerByte; bit++)
             {
-                if ((value & 0x0001) != 0)
+                if ((value & LowestBitMask) != 0)
                 {
                     value = (ushort)((value >> 1) ^ Polynomial);
                 }

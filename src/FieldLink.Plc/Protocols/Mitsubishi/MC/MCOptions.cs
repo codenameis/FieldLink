@@ -10,9 +10,14 @@ public sealed class MCOptions
     private const ushort DefaultModuleIoNumber = 0x03FF;
     private const byte DefaultModuleStationNumber = 0x00;
     private const ushort DefaultMonitoringTimer = 0x0010; // 250ms 단위, 4초
+    private const int MinPointCount = 1;
+    private const int MinPort = 1;
+    private const int MaxPort = ushort.MaxValue;
     private const int DefaultMaxWordPoints = 960;
     private const int DefaultMaxBitPoints = 3584;
     private const int DefaultPort = 5000;
+
+    private readonly int _port = DefaultPort;
 
     /// <summary>프레임 종류와 시리즈로 옵션을 만듭니다. 나머지는 사양서 기본값입니다.</summary>
     /// <param name="frameType">3E 또는 4E 프레임입니다.</param>
@@ -26,14 +31,14 @@ public sealed class MCOptions
         int maxWordPoints = DefaultMaxWordPoints,
         int maxBitPoints = DefaultMaxBitPoints)
     {
-        if (maxWordPoints is < 1 or > ushort.MaxValue)
+        if (maxWordPoints is < MinPointCount or > ushort.MaxValue)
         {
-            throw new ArgumentOutOfRangeException(nameof(maxWordPoints), maxWordPoints, "워드 한도는 1 이상 65535 이하여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(maxWordPoints), maxWordPoints, $"워드 한도는 {MinPointCount} 이상 {ushort.MaxValue} 이하여야 합니다.");
         }
 
-        if (maxBitPoints is < 1 or > ushort.MaxValue)
+        if (maxBitPoints is < MinPointCount or > ushort.MaxValue)
         {
-            throw new ArgumentOutOfRangeException(nameof(maxBitPoints), maxBitPoints, "비트 한도는 1 이상 65535 이하여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(maxBitPoints), maxBitPoints, $"비트 한도는 {MinPointCount} 이상 {ushort.MaxValue} 이하여야 합니다.");
         }
 
         FrameType = frameType;
@@ -45,7 +50,6 @@ public sealed class MCOptions
         ModuleIoNumber = DefaultModuleIoNumber;
         ModuleStationNumber = DefaultModuleStationNumber;
         MonitoringTimer = DefaultMonitoringTimer;
-        Port = DefaultPort;
     }
 
     /// <summary>3E 또는 4E 프레임 종류입니다.</summary>
@@ -76,5 +80,17 @@ public sealed class MCOptions
     public ushort MonitoringTimer { get; init; }
 
     /// <summary>대상 장비의 TCP·UDP 포트입니다. 장비 파라미터 설정에 따르며 기본값은 5000입니다.</summary>
-    public int Port { get; init; }
+    public int Port
+    {
+        get => _port;
+        init
+        {
+            if (value is < MinPort or > MaxPort)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, $"포트 번호는 {MinPort}에서 {MaxPort} 사이여야 합니다.");
+            }
+
+            _port = value;
+        }
+    }
 }
