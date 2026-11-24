@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Opc.Ua;
 
 namespace FieldLink.OpcUa.Internal;
 
@@ -128,7 +129,22 @@ internal readonly struct OpcUaDeadline
             ObserveIfCreated(operationTask);
             throw new TimeoutException($"{operationName} 작업이 전체 제한 시간을 초과했습니다.", ex);
         }
+        catch (ServiceResultException ex) when (callerToken.IsCancellationRequested && IsCancellationStatus(ex.StatusCode))
+        {
+            ObserveIfCreated(operationTask);
+            throw new OperationCanceledException($"{operationName} 작업이 취소되었습니다.", ex, callerToken);
+        }
+        catch (ServiceResultException ex) when (timeoutSource.IsCancellationRequested && IsCancellationStatus(ex.StatusCode))
+        {
+            ObserveIfCreated(operationTask);
+            throw new TimeoutException($"{operationName} 작업이 전체 제한 시간을 초과했습니다.", ex);
+        }
     }
+
+    private static bool IsCancellationStatus(uint statusCode) =>
+        statusCode == StatusCodes.BadRequestInterrupted
+        || statusCode == StatusCodes.BadRequestCancelledByClient
+        || statusCode == StatusCodes.BadTimeout;
 
     private static void ObserveIfCreated(Task? task)
     {

@@ -34,7 +34,7 @@ public class YokogawaAddressTests
         int expectedNumber,
         bool expectedBit)
     {
-        var result = YokogawaAddress.Parse(address, expectedBit);
+        var result = YokogawaAddress.Parse(address);
 
         Assert.Equal(expectedAttr, result.Attribute);
         Assert.Equal(expectedNumber, result.Number);

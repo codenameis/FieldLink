@@ -8,12 +8,16 @@ namespace FieldLink.Transport.Tcp;
 /// <summary>TCP 소켓을 통해 산업용 장치와 바이트를 주고받는 전송 구현체입니다.</summary>
 public sealed class TcpTransport : ITransport
 {
+    private const int DrainChunkByteSize = 512;
+
     private readonly TcpTransportOptions _options;
     private readonly SemaphoreSlim _exclusiveLock = new(1, 1);
     private readonly object _stateLock = new();
+    private readonly byte[] _drainScratchBuffer = new byte[DrainChunkByteSize];
 
     private TcpClient? _client;
     private NetworkStream? _stream;
+    private StreamTransportSession? _session;
     private long _connectionId;
     private TransportState _state = TransportState.Closed;
 
@@ -85,6 +89,7 @@ public sealed class TcpTransport : ITransport
     {
         TcpClient? client;
         NetworkStream? stream;
+        StreamTransportSession? session;
         lock (_stateLock)
         {
             if (_state is TransportState.Closed or TransportState.Disposed)
@@ -95,10 +100,13 @@ public sealed class TcpTransport : ITransport
             _state = TransportState.Closed;
             client = _client;
             stream = _stream;
+            session = _session;
             _client = null;
             _stream = null;
+            _session = null;
         }
 
+        session?.ClearReceiveBuffer();
         DisposeResourcesSafely(stream, client);
         return Task.CompletedTask;
     }
@@ -118,14 +126,21 @@ public sealed class TcpTransport : ITransport
         await _exclusiveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            (long connectionId, NetworkStream stream) = CaptureOpenSession();
-            var session = new StreamTransportSession(
-                connectionId,
-                stream,
-                cancellationToken,
-                _options.ReceiveBufferSize);
+            StreamTransportSession session = CaptureOpenSession();
+            session.SetCancellationToken(cancellationToken);
+            session.ClearReceiveBuffer();
+            DrainPendingReceiveBytes();
 
-            return await work(session).ConfigureAwait(false);
+            try
+            {
+                return await work(session).ConfigureAwait(false);
+            }
+            catch
+            {
+                session.ClearReceiveBuffer();
+                DrainPendingReceiveBytes();
+                throw;
+            }
         }
         finally
         {
@@ -138,6 +153,7 @@ public sealed class TcpTransport : ITransport
     {
         TcpClient? client;
         NetworkStream? stream;
+        StreamTransportSession? session;
         lock (_stateLock)
         {
             if (_state == TransportState.Disposed)
@@ -148,10 +164,13 @@ public sealed class TcpTransport : ITransport
             _state = TransportState.Disposed;
             client = _client;
             stream = _stream;
+            session = _session;
             _client = null;
             _stream = null;
+            _session = null;
         }
 
+        session?.ClearReceiveBuffer();
         DisposeResourcesSafely(stream, client);
     }
 
@@ -196,9 +215,15 @@ public sealed class TcpTransport : ITransport
                 throw new OperationCanceledException("연결 시도 중 전송이 닫혔습니다.");
             }
 
+            long connectionId = Interlocked.Increment(ref _connectionId);
             _client = client;
             _stream = stream;
-            Interlocked.Increment(ref _connectionId);
+            _session = new StreamTransportSession(
+                connectionId,
+                stream,
+                CancellationToken.None,
+                _options.ReceiveBufferSize,
+                DrainPendingReceiveBytes);
             _state = TransportState.Open;
         }
     }
@@ -214,7 +239,7 @@ public sealed class TcpTransport : ITransport
         }
     }
 
-    private (long ConnectionId, NetworkStream Stream) CaptureOpenSession()
+    private StreamTransportSession CaptureOpenSession()
     {
         lock (_stateLock)
         {
@@ -223,12 +248,42 @@ public sealed class TcpTransport : ITransport
                 throw new ObjectDisposedException(nameof(TcpTransport));
             }
 
-            if (_state != TransportState.Open || _stream is null)
+            if (_state != TransportState.Open || _stream is null || _session is null)
             {
                 throw new InvalidOperationException("TCP 전송이 열려 있지 않습니다. OpenAsync를 먼저 호출하세요.");
             }
 
-            return (Interlocked.Read(ref _connectionId), _stream);
+            return _session;
+        }
+    }
+
+    private void DrainPendingReceiveBytes()
+    {
+        NetworkStream? stream;
+        lock (_stateLock)
+        {
+            stream = _stream;
+        }
+
+        if (stream is null)
+        {
+            return;
+        }
+
+        try
+        {
+            while (stream.DataAvailable)
+            {
+                int read = stream.Read(_drainScratchBuffer, 0, _drainScratchBuffer.Length);
+                if (read <= 0)
+                {
+                    break;
+                }
+            }
+        }
+        catch
+        {
+            // 소켓 상태 이상 시 다음 송수신에서 정식 TransportException으로 보고됨
         }
     }
 

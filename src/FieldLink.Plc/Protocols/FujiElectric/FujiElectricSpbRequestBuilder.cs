@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Text;
 
 namespace FieldLink.Plc.Protocols.FujiElectric;
@@ -6,21 +7,33 @@ namespace FieldLink.Plc.Protocols.FujiElectric;
 /// <summary>Fuji SPB ASCII 요청 프레임을 생성하는 빌더입니다. (사양서 Part A §A.1)</summary>
 public static class FujiElectricSpbRequestBuilder
 {
-    private const string CpuDirect = "FFFF";
-    private const int MinWordCount = 1;
-    private const int MaxWordCount = 64;
-    private const int BytesPerWord = 2;
-    private const int FixedWritePayloadBytes = 9;
-    private const int FixedHeaderChars = 18;
-    private const int AsciiCharsPerByte = 2;
-    private const int ByteMask = 0xFF;
-    private const string FixedLengthHex = "09";
-    private const string CommandReadWords = "0000";
-    private const string CommandWriteWords = "0100";
-    private const string CommandWriteBit = "0102";
+    private const string DirectCpuExtendedStation = "FFFF";
+    private const string ReadWordsCommand = "0000";
+    private const string WriteWordsCommand = "0100";
+    private const string WriteBitCommand = "0102";
+    private const string BitOnText = "01";
+    private const string BitOffText = "00";
 
-    /// <summary>연속 워드 읽기(명령 00 00) 프레임을 빌드합니다.</summary>
-    public static byte[] BuildReadWords(byte station, FujiElectricSpbAddress address, ushort wordCount, bool includeLrc = false)
+    private const ushort MinWordCount = 1;
+    private const ushort MaxWordCount = 64;
+    private const int FixedReadWordsBodyByteLength = 9;
+    private const int FixedWriteBitBodyByteLength = 9;
+    private const int WriteWordsBaseBodyByteLength = 9;
+    private const int BytesPerWord = 2;
+    private const int WriteWordsBaseAsciiLength = 22;
+    private const int LowByteMask = 0xFF;
+
+    /// <summary>연속 워드 읽기(명령 00 00) 요청 프레임을 생성합니다.</summary>
+    /// <param name="station">대상 PLC 국번입니다.</param>
+    /// <param name="address">읽기 시작 주소입니다.</param>
+    /// <param name="wordCount">읽을 워드 수(1~64)입니다.</param>
+    /// <param name="includeLrc">2문자 ASCII LRC 체크섬을 포함할지 여부입니다.</param>
+    /// <returns>조립된 ASCII 요청 바이트 배열입니다.</returns>
+    public static byte[] BuildReadWords(
+        byte station,
+        FujiElectricSpbAddress address,
+        ushort wordCount,
+        bool includeLrc = false)
     {
         if (address is null)
         {
@@ -29,16 +42,27 @@ public static class FujiElectricSpbRequestBuilder
 
         if (wordCount is < MinWordCount or > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 읽기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 읽기 개수는 1~64 사이여야 합니다.");
         }
 
-        string swappedCount = FujiElectricSpbAddress.FormatSwapped4(wordCount);
-        string payload = $"{station:X2}{FixedLengthHex}{CpuDirect}{CommandReadWords}{address.WireWordAddress}{swappedCount}";
+        string swappedWordCount = FujiElectricSpbAddress.FormatSwapped4(wordCount);
+        string payload = $"{station:X2}{FixedReadWordsBodyByteLength:X2}{DirectCpuExtendedStation}{ReadWordsCommand}{address.WireWordAddress}{swappedWordCount}";
         return EncodeFrame(payload, includeLrc);
     }
 
-    /// <summary>연속 워드 쓰기(명령 01 00) 프레임을 빌드합니다.</summary>
-    public static byte[] BuildWriteWords(byte station, FujiElectricSpbAddress address, ushort wordCount, byte[] wordData, bool includeLrc = false)
+    /// <summary>연속 워드 쓰기(명령 01 00) 요청 프레임을 생성합니다.</summary>
+    /// <param name="station">대상 PLC 국번입니다.</param>
+    /// <param name="address">쓰기 시작 주소입니다.</param>
+    /// <param name="wordCount">쓸 워드 수(1~64)입니다.</param>
+    /// <param name="wordData">리틀엔디언 워드 데이터 바이트 배열입니다.</param>
+    /// <param name="includeLrc">2문자 ASCII LRC 체크섬을 포함할지 여부입니다.</param>
+    /// <returns>조립된 ASCII 요청 바이트 배열입니다.</returns>
+    public static byte[] BuildWriteWords(
+        byte station,
+        FujiElectricSpbAddress address,
+        ushort wordCount,
+        byte[] wordData,
+        bool includeLrc = false)
     {
         if (address is null)
         {
@@ -47,7 +71,7 @@ public static class FujiElectricSpbRequestBuilder
 
         if (wordCount is < MinWordCount or > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 쓰기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 쓰기 개수는 1~64 사이여야 합니다.");
         }
 
         if (wordData is null)
@@ -60,37 +84,56 @@ public static class FujiElectricSpbRequestBuilder
             throw new ArgumentException("데이터 길이가 워드 개수와 일치하지 않습니다.", nameof(wordData));
         }
 
-        int bodyLen = FixedWritePayloadBytes + (wordCount * BytesPerWord);
-        string swappedCount = FujiElectricSpbAddress.FormatSwapped4(wordCount);
-
-        var sb = new StringBuilder(FixedHeaderChars + (wordData.Length * AsciiCharsPerByte));
-        sb.Append(station.ToString("X2"));
-        sb.Append(bodyLen.ToString("X2"));
-        sb.Append(CpuDirect);
-        sb.Append(CommandWriteWords);
-        sb.Append(address.WireWordAddress);
-        sb.Append(swappedCount);
-
-        for (int i = 0; i < wordData.Length; i++)
-        {
-            sb.Append(wordData[i].ToString("X2"));
-        }
-
-        return EncodeFrame(sb.ToString(), includeLrc);
+        string payload = BuildWriteWordsPayload(station, address, wordCount, wordData);
+        return EncodeFrame(payload, includeLrc);
     }
 
-    /// <summary>단일 비트 쓰기(명령 01 02) 프레임을 빌드합니다.</summary>
-    public static byte[] BuildWriteBit(byte station, FujiElectricSpbAddress address, bool bitValue, bool includeLrc = false)
+    /// <summary>단일 비트 쓰기(명령 01 02) 요청 프레임을 생성합니다.</summary>
+    /// <param name="station">대상 PLC 국번입니다.</param>
+    /// <param name="address">대상 비트 주소입니다.</param>
+    /// <param name="bitValue">기록할 비트 값(true=ON, false=OFF)입니다.</param>
+    /// <param name="includeLrc">2문자 ASCII LRC 체크섬을 포함할지 여부입니다.</param>
+    /// <returns>조립된 ASCII 요청 바이트 배열입니다.</returns>
+    public static byte[] BuildWriteBit(
+        byte station,
+        FujiElectricSpbAddress address,
+        bool bitValue,
+        bool includeLrc = false)
     {
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
         }
 
-        string bitAddr = address.BuildBitWriteAddress();
-        string valStr = bitValue ? "01" : "00";
-        string payload = $"{station:X2}{FixedLengthHex}{CpuDirect}{CommandWriteBit}{bitAddr}{valStr}";
+        string bitWriteAddress = address.BuildBitWriteAddress();
+        string bitValueText = bitValue ? BitOnText : BitOffText;
+        string payload = $"{station:X2}{FixedWriteBitBodyByteLength:X2}{DirectCpuExtendedStation}{WriteBitCommand}{bitWriteAddress}{bitValueText}";
         return EncodeFrame(payload, includeLrc);
+    }
+
+    private static string BuildWriteWordsPayload(
+        byte station,
+        FujiElectricSpbAddress address,
+        ushort wordCount,
+        byte[] wordData)
+    {
+        int bodyByteLength = WriteWordsBaseBodyByteLength + (wordCount * BytesPerWord);
+        string swappedWordCount = FujiElectricSpbAddress.FormatSwapped4(wordCount);
+
+        var builder = new StringBuilder(WriteWordsBaseAsciiLength + (wordData.Length * BytesPerWord));
+        builder.Append(station.ToString("X2", CultureInfo.InvariantCulture));
+        builder.Append(bodyByteLength.ToString("X2", CultureInfo.InvariantCulture));
+        builder.Append(DirectCpuExtendedStation);
+        builder.Append(WriteWordsCommand);
+        builder.Append(address.WireWordAddress);
+        builder.Append(swappedWordCount);
+
+        for (int i = 0; i < wordData.Length; i++)
+        {
+            builder.Append(wordData[i].ToString("X2", CultureInfo.InvariantCulture));
+        }
+
+        return builder.ToString();
     }
 
     private static byte[] EncodeFrame(string payload, bool includeLrc)
@@ -100,13 +143,13 @@ public static class FujiElectricSpbRequestBuilder
             return Encoding.ASCII.GetBytes($":{payload}\r\n");
         }
 
-        int sum = 0;
+        int asciiByteSum = 0;
         for (int i = 0; i < payload.Length; i++)
         {
-            sum += (byte)payload[i];
+            asciiByteSum += (byte)payload[i];
         }
 
-        byte lrc = (byte)((-sum) & ByteMask);
+        byte lrc = (byte)((-asciiByteSum) & LowByteMask);
         return Encoding.ASCII.GetBytes($":{payload}{lrc:X2}\r\n");
     }
 }

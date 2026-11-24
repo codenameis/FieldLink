@@ -12,17 +12,12 @@ namespace FieldLink.Plc.Protocols.Vigor;
 /// <summary>VIGOR VS 계열 Computer Link 프로토콜 클라이언트입니다. (사양서 §1~§3)</summary>
 public sealed class VigorProtocol : IPlcProtocol
 {
-    private const int MaxBitReadChunk = 1024;
-    private const int MaxWordReadChunk = 64;
-    private const int Max32BitWordReadChunk = 32;
-    private const int BytesPerWord = 2;
-    private const int BytesPer32BitWord = 4;
+    private const int Max32BitCountersPerRequest = 32;
+    private const int BytesPer16BitWord = 2;
+    private const int BytesPer32BitCounter = 4;
     private const int BitsPerByte = 8;
-    private const byte BitOnValue = 1;
-    private const byte BitOffValue = 0;
-    private const byte StringPaddingByte = 0x00;
 
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: StringPaddingByte, wordSize: BytesPerWord);
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: 2);
 
     private readonly ITransport _transport;
     private readonly VigorOptions _options;
@@ -46,9 +41,6 @@ public sealed class VigorProtocol : IPlcProtocol
     public Task DisconnectAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     /// <inheritdoc />
-    public ITransport Transport => _transport;
-
-    /// <inheritdoc />
     public async Task<byte[]> ReadAsync(PlcReadRequest request, CancellationToken cancellationToken)
     {
         if (request is null)
@@ -57,93 +49,19 @@ public sealed class VigorProtocol : IPlcProtocol
         }
 
         var address = VigorAddress.Parse(request.Address);
-        int elementSize = request.DataType.GetElementSize();
-        ValidateAddressAndDataType(address, request.DataType, elementSize);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+        Validate32BitCounterDataType(address, request.DataType, request.ByteCount, nameof(request));
 
         if (address.IsBit)
         {
             return await ReadBitsAsync(address, request.Count, cancellationToken).ConfigureAwait(false);
         }
 
-        return await ReadWordsAsync(address, request, elementSize, cancellationToken).ConfigureAwait(false);
-    }
-
-    private async Task<byte[]> ReadBitsAsync(VigorAddress address, int totalBits, CancellationToken cancellationToken)
-    {
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, MaxBitReadChunk);
-        byte[] result = new byte[totalBits];
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            foreach (RequestChunker.Chunk chunk in chunks)
-            {
-                VigorAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                ushort count = checked((ushort)chunk.ElementCount);
-
-                byte[] requestFrame = VigorRequestBuilder.BuildReadRequest(_options.StationNumber, chunkAddress, count);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                byte[] packed = VigorResponseParser.ParseResponse(responseFrame, _options.StationNumber);
-                int requiredBytes = (chunk.ElementCount + BitsPerByte - 1) / BitsPerByte;
-                if (packed.Length < requiredBytes)
-                {
-                    throw new PlcException(
-                        PlcErrorKind.InvalidResponse,
-                        $"비트 응답 길이가 부족합니다 (필요: {requiredBytes}, 수신: {packed.Length}).");
-                }
-
-                for (int i = 0; i < count; i++)
-                {
-                    bool bit = (packed[i / BitsPerByte] & (1 << (i % BitsPerByte))) != 0;
-                    result[chunk.ElementOffset + i] = bit ? BitOnValue : BitOffValue;
-                }
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
-
-        return result;
-    }
-
-    private async Task<byte[]> ReadWordsAsync(
-        VigorAddress address,
-        PlcReadRequest request,
-        int elementSize,
-        CancellationToken cancellationToken)
-    {
-        int unitBytes = address.Is32BitWord ? BytesPer32BitWord : BytesPerWord;
-        int unitsPerElement = elementSize / unitBytes;
-        int maxChunkUnits = address.Is32BitWord ? Max32BitWordReadChunk : MaxWordReadChunk;
-        int maxElements = RequestChunker.CalculateElementLimit(maxChunkUnits, unitsPerElement);
-
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
-        byte[] combinedBuffer = new byte[request.ByteCount];
-
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            foreach (RequestChunker.Chunk chunk in chunks)
-            {
-                VigorAddress chunkAddress = address.Offset(checked(chunk.ElementOffset * unitsPerElement));
-                ushort unitCount = checked((ushort)(chunk.ElementCount * unitsPerElement));
-
-                byte[] requestFrame = VigorRequestBuilder.BuildReadRequest(_options.StationNumber, chunkAddress, unitCount);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                byte[] chunkData = VigorResponseParser.ParseResponse(responseFrame, _options.StationNumber);
-                int expectedBytes = checked(chunk.ElementCount * elementSize);
-                if (chunkData.Length != expectedBytes)
-                {
-                    throw new PlcException(
-                        PlcErrorKind.InvalidResponse,
-                        $"워드 응답 바이트 길이가 요청({expectedBytes})과 다릅니다: {chunkData.Length}");
-                }
-
-                int destOffset = checked(chunk.ElementOffset * elementSize);
-                Array.Copy(chunkData, 0, combinedBuffer, destOffset, chunkData.Length);
-            }
-
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
-
-        return combinedBuffer;
+        int requestedByteCount = request.ByteCount;
+        int bytesPerDeviceUnit = address.Is32BitWord ? BytesPer32BitCounter : BytesPer16BitWord;
+        PlcReadRequest effectiveRequest = ProtocolExecutionGuard.NormalizeWordReadRequest(request, bytesPerDeviceUnit);
+        byte[] buffer = await ReadWordsAsync(address, effectiveRequest, cancellationToken).ConfigureAwait(false);
+        return ProtocolExecutionGuard.TrimReadResult(buffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -155,43 +73,135 @@ public sealed class VigorProtocol : IPlcProtocol
         }
 
         var address = VigorAddress.Parse(request.Address);
-        int elementSize = request.DataType.GetElementSize();
-        ValidateAddressAndDataType(address, request.DataType, elementSize);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+        Validate32BitCounterDataType(address, request.DataType, request.ByteCount, nameof(request));
 
         if (address.IsBit)
         {
             await WriteBitsAsync(address, request, cancellationToken).ConfigureAwait(false);
+            return;
         }
-        else
+
+        await WriteWordsAsync(address, request, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void Validate32BitCounterDataType(
+        VigorAddress address,
+        PlcDataType dataType,
+        int byteCount,
+        string paramName)
+    {
+        if (!address.Is32BitWord)
         {
-            await WriteWordsAsync(address, request, elementSize, cancellationToken).ConfigureAwait(false);
+            return;
         }
+
+        if (dataType is PlcDataType.Int16 or PlcDataType.UInt16 ||
+            (dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPer32BitCounter != 0))
+        {
+            throw new ArgumentException(
+                "32비트 카운터(C200~C255)는 32비트 이상 자료형 또는 4바이트 배수로만 접근할 수 있습니다.",
+                paramName);
+        }
+    }
+
+    private async Task<byte[]> ReadBitsAsync(VigorAddress address, int totalBits, CancellationToken cancellationToken)
+    {
+        ValidateDeviceRange(address, totalBits, nameof(totalBits));
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, _options.MaxBitsPerRequest);
+        byte[] result = new byte[totalBits];
+
+        await _transport.RunExclusiveAsync(async session =>
+        {
+            foreach (RequestChunker.Chunk chunk in chunks)
+            {
+                VigorAddress chunkAddress = address.Offset(chunk.ElementOffset);
+                ushort bitCount = (ushort)chunk.ElementCount;
+
+                byte[] requestFrame = VigorRequestBuilder.BuildReadRequest(_options.StationNumber, chunkAddress, bitCount);
+                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                byte[] packedBits = VigorResponseParser.ParseResponse(responseFrame, _options.StationNumber);
+
+                for (int i = 0; i < bitCount; i++)
+                {
+                    bool bitValue = (packedBits[i / BitsPerByte] & (1 << (i % BitsPerByte))) != 0;
+                    result[chunk.ElementOffset + i] = bitValue ? (byte)1 : (byte)0;
+                }
+            }
+
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+
+        return result;
+    }
+
+    private async Task<byte[]> ReadWordsAsync(VigorAddress address, PlcReadRequest effectiveRequest, CancellationToken cancellationToken)
+    {
+        int bytesPerElement = effectiveRequest.DataType.GetElementSize();
+        int bytesPerDeviceUnit = address.Is32BitWord ? BytesPer32BitCounter : BytesPer16BitWord;
+        int deviceUnitsPerElement = Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        ValidateDeviceRange(address, effectiveRequest.Count * deviceUnitsPerElement, nameof(effectiveRequest));
+
+        int maxDeviceUnits = GetMaxDeviceUnitsPerRequest(address);
+        int maxElementsPerChunk = RequestChunker.CalculateElementLimit(maxDeviceUnits, deviceUnitsPerElement);
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
+
+        await _transport.RunExclusiveAsync(async session =>
+        {
+            foreach (RequestChunker.Chunk chunk in chunks)
+            {
+                VigorAddress chunkAddress = address.Offset(chunk.ElementOffset * deviceUnitsPerElement);
+                ushort deviceUnitCount = (ushort)(chunk.ElementCount * deviceUnitsPerElement);
+                int expectedByteCount = deviceUnitCount * bytesPerDeviceUnit;
+
+                byte[] requestFrame = VigorRequestBuilder.BuildReadRequest(_options.StationNumber, chunkAddress, deviceUnitCount);
+                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+                byte[] chunkData = VigorResponseParser.ParseResponse(responseFrame, _options.StationNumber);
+
+                if (chunkData.Length != expectedByteCount)
+                {
+                    throw new PlcException(
+                        PlcErrorKind.InvalidResponse,
+                        $"VIGOR 응답 데이터 바이트 수가 일치하지 않습니다: 기대={expectedByteCount}, 실제={chunkData.Length}");
+                }
+
+                int bufferByteOffset = chunk.ElementOffset * bytesPerElement;
+                Array.Copy(chunkData, 0, combinedBuffer, bufferByteOffset, chunkData.Length);
+            }
+
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+
+        return combinedBuffer;
     }
 
     private async Task WriteBitsAsync(VigorAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
     {
-        int count = request.Count;
-        byte[] raw = request.GetData();
-        bool[] bools = new bool[count];
-        for (int i = 0; i < count; i++)
+        int totalBits = request.Count;
+        ValidateDeviceRange(address, totalBits, nameof(request));
+        byte[] rawBytes = request.GetData();
+        bool[] bitValues = new bool[totalBits];
+        for (int i = 0; i < totalBits; i++)
         {
-            bools[i] = raw[i] != 0;
+            bitValues[i] = rawBytes[i] != 0;
         }
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(count, MaxBitReadChunk);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, _options.MaxBitsPerRequest);
         int completedElements = 0;
 
         try
         {
-            await _transport.RunExclusiveAsync<bool>(async session =>
+            await _transport.RunExclusiveAsync(async session =>
             {
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
                     VigorAddress chunkAddress = address.Offset(chunk.ElementOffset);
-                    bool[] subBools = new bool[chunk.ElementCount];
-                    Array.Copy(bools, chunk.ElementOffset, subBools, 0, chunk.ElementCount);
+                    bool[] chunkBits = new bool[chunk.ElementCount];
+                    Array.Copy(bitValues, chunk.ElementOffset, chunkBits, 0, chunk.ElementCount);
 
-                    byte[] requestFrame = VigorRequestBuilder.BuildWriteBitRequest(_options.StationNumber, chunkAddress, subBools);
+                    byte[] requestFrame = VigorRequestBuilder.BuildWriteBitRequest(_options.StationNumber, chunkAddress, chunkBits);
                     byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
                     VigorResponseParser.ParseResponse(responseFrame, _options.StationNumber);
                     completedElements += chunk.ElementCount;
@@ -200,79 +210,74 @@ public sealed class VigorProtocol : IPlcProtocol
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (PlcDeviceException deviceException)
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
-            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
-        }
-        catch (PlcException exception)
-        {
-            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
-            {
-                CompletedCount = completedElements
-            };
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
     }
 
-    private async Task WriteWordsAsync(
-        VigorAddress address,
-        PlcWriteRequest request,
-        int elementSize,
-        CancellationToken cancellationToken)
+    private async Task WriteWordsAsync(VigorAddress address, PlcWriteRequest request, CancellationToken cancellationToken)
     {
-        int unitBytes = address.Is32BitWord ? BytesPer32BitWord : BytesPerWord;
-        int unitsPerElement = elementSize / unitBytes;
-        int maxChunkUnits = address.Is32BitWord ? Max32BitWordReadChunk : MaxWordReadChunk;
-        int maxElements = RequestChunker.CalculateElementLimit(maxChunkUnits, unitsPerElement);
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        int totalOriginalCount = request.Count;
+        int bytesPerDeviceUnit = address.Is32BitWord ? BytesPer32BitCounter : BytesPer16BitWord;
+        PlcWriteRequest effectiveRequest = ProtocolExecutionGuard.NormalizeWordWriteRequest(
+            request,
+            out int originalElementsPerUnit,
+            bytesPerDeviceUnit);
+
+        int bytesPerElement = effectiveRequest.DataType.GetElementSize();
+        int deviceUnitsPerElement = Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        ValidateDeviceRange(address, effectiveRequest.Count * deviceUnitsPerElement, nameof(request));
+        int maxDeviceUnits = GetMaxDeviceUnitsPerRequest(address);
+        int maxElementsPerChunk = RequestChunker.CalculateElementLimit(maxDeviceUnits, deviceUnitsPerElement);
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         int completedElements = 0;
 
         try
         {
-            await _transport.RunExclusiveAsync<bool>(async session =>
+            await _transport.RunExclusiveAsync(async session =>
             {
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
-                    VigorAddress chunkAddress = address.Offset(checked(chunk.ElementOffset * unitsPerElement));
-                    byte[] chunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+                    VigorAddress chunkAddress = address.Offset(chunk.ElementOffset * deviceUnitsPerElement);
+                    byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
                     byte[] requestFrame = VigorRequestBuilder.BuildWriteWordRequest(_options.StationNumber, chunkAddress, chunkData);
                     byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
                     VigorResponseParser.ParseResponse(responseFrame, _options.StationNumber);
-                    completedElements += chunk.ElementCount;
+                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                        completedElements,
+                        chunk.ElementCount,
+                        originalElementsPerUnit,
+                        totalOriginalCount);
                 }
 
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (PlcDeviceException deviceException)
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
-            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
-        }
-        catch (PlcException exception)
-        {
-            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
-            {
-                CompletedCount = completedElements
-            };
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
     }
 
-    private static void ValidateAddressAndDataType(VigorAddress address, PlcDataType dataType, int elementSize)
+    private static void ValidateDeviceRange(VigorAddress address, int totalDeviceUnits, string paramName)
     {
-        if (address.IsBit && dataType != PlcDataType.Boolean)
+        try
         {
-            throw new ArgumentException($"비트 접점 '{address.Original}'에는 Boolean 자료형만 사용할 수 있습니다.", nameof(dataType));
+            address.Offset(Math.Max(0, totalDeviceUnits - 1));
         }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new ArgumentException("요청 범위가 디바이스 영역 경계를 벗어났습니다.", paramName, exception);
+        }
+    }
 
-        if (!address.IsBit)
-        {
-            int requiredUnitBytes = address.Is32BitWord ? BytesPer32BitWord : BytesPerWord;
-            if (elementSize % requiredUnitBytes != 0)
-            {
-                throw new ArgumentException(
-                    $"워드 영역 '{address.Original}'에는 {requiredUnitBytes}바이트 배수 자료형만 사용할 수 있습니다.",
-                    nameof(dataType));
-            }
-        }
+    private int GetMaxDeviceUnitsPerRequest(VigorAddress address)
+    {
+        return address.Is32BitWord
+            ? Math.Min(_options.MaxWordsPerRequest, Max32BitCountersPerRequest)
+            : _options.MaxWordsPerRequest;
     }
 }

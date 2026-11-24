@@ -8,9 +8,14 @@ public sealed class YokogawaOptions
     private const byte MinCpuNumber = 1;
     private const byte MaxCpuNumber = 4;
     private const int DefaultTimeoutSeconds = 3;
+    private const int MinElementsPerRequest = 1;
+    private const int DefaultMaxWordsPerRequest = 64;
+    private const int DefaultMaxBitsPerRequest = 256;
 
     private byte _cpuNumber = MinCpuNumber;
     private TimeSpan _timeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
+    private int _maxWordsPerRequest = DefaultMaxWordsPerRequest;
+    private int _maxBitsPerRequest = DefaultMaxBitsPerRequest;
 
     /// <summary>CPU 번호(1~4, 기본 1)입니다.</summary>
     public byte CpuNumber
@@ -42,6 +47,42 @@ public sealed class YokogawaOptions
             }
 
             _timeout = value;
+        }
+    }
+
+    /// <summary>1회 요청당 최대 워드 수(기본 64워드)입니다.</summary>
+    public int MaxWordsPerRequest
+    {
+        get => _maxWordsPerRequest;
+        set
+        {
+            if (value < MinElementsPerRequest || value > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    value,
+                    $"최대 워드 수는 {MinElementsPerRequest}~{ushort.MaxValue} 범위여야 합니다.");
+            }
+
+            _maxWordsPerRequest = value;
+        }
+    }
+
+    /// <summary>1회 요청당 최대 비트 수(기본 256비트)입니다.</summary>
+    public int MaxBitsPerRequest
+    {
+        get => _maxBitsPerRequest;
+        set
+        {
+            if (value < MinElementsPerRequest || value > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    value,
+                    $"최대 비트 수는 {MinElementsPerRequest}~{ushort.MaxValue} 범위여야 합니다.");
+            }
+
+            _maxBitsPerRequest = value;
         }
     }
 }

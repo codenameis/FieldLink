@@ -48,9 +48,10 @@ public sealed partial class PlcClient
     }
 
     /// <summary>PLC 메모리에 문자열을 씁니다.</summary>
+    /// <remarks>워드 단위 디바이스에 쓸 때는 인접 레지스터 보호를 위해 워드 크기(2바이트) 배수로 패딩되어 기록됩니다.</remarks>
     /// <param name="address">시작 주소입니다.</param>
     /// <param name="value">기록할 문자열입니다.</param>
-    /// <param name="characterCapacity">할당된 최대 문자 수입니다.</param>
+    /// <param name="characterCapacity">할당된 최대 문자(바이트) 수입니다.</param>
     /// <param name="cancellationToken">취소 토큰입니다.</param>
     public Task<PlcResult> WriteStringAsync(string address, string value, int characterCapacity, CancellationToken cancellationToken = default)
     {
@@ -70,6 +71,7 @@ public sealed partial class PlcClient
     }
 
     /// <summary>PLC 메모리에 원시 바이트 배열을 씁니다.</summary>
+    /// <remarks>워드 기반 프로토콜에서는 인접 레지스터 오염 방지를 위해 바이트 배열 길이가 워드 단위(2바이트, 32비트 카운터는 4바이트)의 배수여야 합니다.</remarks>
     public Task<PlcResult> WriteBytesAsync(string address, byte[] bytes, CancellationToken cancellationToken = default)
     {
         if (bytes is null)

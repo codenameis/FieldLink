@@ -10,13 +10,13 @@ public sealed partial class PlcClient
     /// <summary>16비트 부호 있는 정수 한 개를 읽습니다.</summary>
     public Task<PlcResult<short>> ReadInt16Async(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Int16, 1, bytes => PlcValueConverter.ToInt16(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.Int16, PlcValueConverter.ToInt16, cancellationToken);
     }
 
     /// <summary>연속된 16비트 부호 있는 정수 배열을 읽습니다.</summary>
     public Task<PlcResult<short[]>> ReadInt16Async(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Int16, count, bytes => PlcValueConverter.ToInt16Array(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.Int16, count, PlcValueConverter.ToInt16Array, cancellationToken);
     }
 
     /// <summary>16비트 부호 있는 정수 한 개를 씁니다.</summary>
@@ -34,13 +34,13 @@ public sealed partial class PlcClient
     /// <summary>16비트 부호 없는 정수 한 개를 읽습니다.</summary>
     public Task<PlcResult<ushort>> ReadUInt16Async(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.UInt16, 1, bytes => PlcValueConverter.ToUInt16(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.UInt16, PlcValueConverter.ToUInt16, cancellationToken);
     }
 
     /// <summary>연속된 16비트 부호 없는 정수 배열을 읽습니다.</summary>
     public Task<PlcResult<ushort[]>> ReadUInt16Async(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.UInt16, count, bytes => PlcValueConverter.ToUInt16Array(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.UInt16, count, PlcValueConverter.ToUInt16Array, cancellationToken);
     }
 
     /// <summary>16비트 부호 없는 정수 한 개를 씁니다.</summary>
@@ -58,13 +58,13 @@ public sealed partial class PlcClient
     /// <summary>32비트 부호 있는 정수 한 개를 읽습니다.</summary>
     public Task<PlcResult<int>> ReadInt32Async(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Int32, 1, bytes => PlcValueConverter.ToInt32(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.Int32, PlcValueConverter.ToInt32, cancellationToken);
     }
 
     /// <summary>연속된 32비트 부호 있는 정수 배열을 읽습니다.</summary>
     public Task<PlcResult<int[]>> ReadInt32Async(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Int32, count, bytes => PlcValueConverter.ToInt32Array(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.Int32, count, PlcValueConverter.ToInt32Array, cancellationToken);
     }
 
     /// <summary>32비트 부호 있는 정수 한 개를 씁니다.</summary>
@@ -82,13 +82,13 @@ public sealed partial class PlcClient
     /// <summary>32비트 부호 없는 정수 한 개를 읽습니다.</summary>
     public Task<PlcResult<uint>> ReadUInt32Async(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.UInt32, 1, bytes => PlcValueConverter.ToUInt32(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.UInt32, PlcValueConverter.ToUInt32, cancellationToken);
     }
 
     /// <summary>연속된 32비트 부호 없는 정수 배열을 읽습니다.</summary>
     public Task<PlcResult<uint[]>> ReadUInt32Async(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.UInt32, count, bytes => PlcValueConverter.ToUInt32Array(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.UInt32, count, PlcValueConverter.ToUInt32Array, cancellationToken);
     }
 
     /// <summary>32비트 부호 없는 정수 한 개를 씁니다.</summary>
@@ -106,13 +106,13 @@ public sealed partial class PlcClient
     /// <summary>64비트 부호 있는 정수 한 개를 읽습니다.</summary>
     public Task<PlcResult<long>> ReadInt64Async(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Int64, 1, bytes => PlcValueConverter.ToInt64(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.Int64, PlcValueConverter.ToInt64, cancellationToken);
     }
 
     /// <summary>연속된 64비트 부호 있는 정수 배열을 읽습니다.</summary>
     public Task<PlcResult<long[]>> ReadInt64Async(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Int64, count, bytes => PlcValueConverter.ToInt64Array(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.Int64, count, PlcValueConverter.ToInt64Array, cancellationToken);
     }
 
     /// <summary>64비트 부호 있는 정수 한 개를 씁니다.</summary>
@@ -130,13 +130,13 @@ public sealed partial class PlcClient
     /// <summary>64비트 부호 없는 정수 한 개를 읽습니다.</summary>
     public Task<PlcResult<ulong>> ReadUInt64Async(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.UInt64, 1, bytes => PlcValueConverter.ToUInt64(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.UInt64, PlcValueConverter.ToUInt64, cancellationToken);
     }
 
     /// <summary>연속된 64비트 부호 없는 정수 배열을 읽습니다.</summary>
     public Task<PlcResult<ulong[]>> ReadUInt64Async(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.UInt64, count, bytes => PlcValueConverter.ToUInt64Array(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.UInt64, count, PlcValueConverter.ToUInt64Array, cancellationToken);
     }
 
     /// <summary>64비트 부호 없는 정수 한 개를 씁니다.</summary>
@@ -154,13 +154,13 @@ public sealed partial class PlcClient
     /// <summary>단정밀도 부동소수점 한 개를 읽습니다.</summary>
     public Task<PlcResult<float>> ReadSingleAsync(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Single, 1, bytes => PlcValueConverter.ToSingle(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.Single, PlcValueConverter.ToSingle, cancellationToken);
     }
 
     /// <summary>연속된 단정밀도 부동소수점 배열을 읽습니다.</summary>
     public Task<PlcResult<float[]>> ReadSingleAsync(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Single, count, bytes => PlcValueConverter.ToSingleArray(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.Single, count, PlcValueConverter.ToSingleArray, cancellationToken);
     }
 
     /// <summary>단정밀도 부동소수점 한 개를 씁니다.</summary>
@@ -178,13 +178,13 @@ public sealed partial class PlcClient
     /// <summary>배정밀도 부동소수점 한 개를 읽습니다.</summary>
     public Task<PlcResult<double>> ReadDoubleAsync(string address, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Double, 1, bytes => PlcValueConverter.ToDouble(bytes, 0, _byteOrder), cancellationToken);
+        return ReadScalarAsync(address, PlcDataType.Double, PlcValueConverter.ToDouble, cancellationToken);
     }
 
     /// <summary>연속된 배정밀도 부동소수점 배열을 읽습니다.</summary>
     public Task<PlcResult<double[]>> ReadDoubleAsync(string address, int count, CancellationToken cancellationToken = default)
     {
-        return ReadCoreAsync(address, PlcDataType.Double, count, bytes => PlcValueConverter.ToDoubleArray(bytes, 0, count, _byteOrder), cancellationToken);
+        return ReadArrayAsync(address, PlcDataType.Double, count, PlcValueConverter.ToDoubleArray, cancellationToken);
     }
 
     /// <summary>배정밀도 부동소수점 한 개를 씁니다.</summary>

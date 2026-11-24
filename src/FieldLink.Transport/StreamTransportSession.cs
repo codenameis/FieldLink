@@ -14,6 +14,7 @@ internal sealed class StreamTransportSession : ITransportSession
     private const int BufferGrowthFactor = 2;
 
     private readonly Stream _stream;
+    private readonly Action? _onBeforeSend;
     private byte[] _buffer;
     private int _bufferedCount;
     private bool _hasSent;
@@ -22,11 +23,13 @@ internal sealed class StreamTransportSession : ITransportSession
         long connectionId,
         Stream stream,
         CancellationToken cancellationToken,
-        int initialBufferSize = DefaultInitialBufferSize)
+        int initialBufferSize = DefaultInitialBufferSize,
+        Action? onBeforeSend = null)
     {
         ConnectionId = connectionId;
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         CancellationToken = cancellationToken;
+        _onBeforeSend = onBeforeSend;
         int clampedBufferSize = Math.Min(Math.Max(initialBufferSize, DefaultInitialBufferSize), MaximumBufferSize);
         _buffer = new byte[clampedBufferSize];
         _bufferedCount = 0;
@@ -34,7 +37,21 @@ internal sealed class StreamTransportSession : ITransportSession
 
     public long ConnectionId { get; }
 
-    public CancellationToken CancellationToken { get; }
+    public CancellationToken CancellationToken { get; private set; }
+
+    public void SetCancellationToken(CancellationToken cancellationToken)
+    {
+        CancellationToken = cancellationToken;
+    }
+
+    public void ClearReceiveBuffer()
+    {
+        if (_bufferedCount > 0)
+        {
+            Array.Clear(_buffer, 0, _bufferedCount);
+            _bufferedCount = 0;
+        }
+    }
 
     public async Task SendAsync(byte[] frame)
     {
@@ -47,6 +64,9 @@ internal sealed class StreamTransportSession : ITransportSession
         {
             return;
         }
+
+        ClearReceiveBuffer();
+        _onBeforeSend?.Invoke();
 
         try
         {
@@ -97,11 +117,33 @@ internal sealed class StreamTransportSession : ITransportSession
         int bytesRead;
         try
         {
-            bytesRead = await _stream.ReadAsync(
+            Task<int> readTask = _stream.ReadAsync(
                 _buffer,
                 _bufferedCount,
                 _buffer.Length - _bufferedCount,
-                CancellationToken).ConfigureAwait(false);
+                CancellationToken);
+
+            if (!readTask.IsCompleted && CancellationToken.CanBeCanceled)
+            {
+                var cancellationSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using (CancellationToken.Register(
+                    static state => ((TaskCompletionSource<bool>)state!).TrySetResult(true),
+                    cancellationSource))
+                {
+                    Task completedTask = await Task.WhenAny(readTask, cancellationSource.Task).ConfigureAwait(false);
+                    if (completedTask != readTask)
+                    {
+                        _ = readTask.ContinueWith(
+                            static faulted => _ = faulted.Exception,
+                            CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+                        CancellationToken.ThrowIfCancellationRequested();
+                    }
+                }
+            }
+
+            bytesRead = await readTask.ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -137,7 +179,7 @@ internal sealed class StreamTransportSession : ITransportSession
 
     private byte[] ExtractFrame(int frameLength)
     {
-        if (frameLength <= 0 || frameLength > _bufferedCount)
+        if (frameLength <= 0 || frameLength > _bufferedCount || frameLength > MaximumBufferSize)
         {
             throw new TransportException(
                 TransportFailure.InvalidFrame,
@@ -154,6 +196,7 @@ internal sealed class StreamTransportSession : ITransportSession
             Array.Copy(_buffer, frameLength, _buffer, 0, remainingBytes);
         }
 
+        Array.Clear(_buffer, remainingBytes, frameLength);
         _bufferedCount = remainingBytes;
         return frame;
     }

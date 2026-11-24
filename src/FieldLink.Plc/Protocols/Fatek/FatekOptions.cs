@@ -13,10 +13,10 @@ public sealed class FatekOptions
     private const int MaxBitLimit = 255;
 
     private readonly byte _station = DefaultStation;
-    private readonly int _maxReadWords = MaxWordLimit;
-    private readonly int _maxReadBits = MaxBitLimit;
-    private readonly int _maxWriteWords = MaxWordLimit;
-    private readonly int _maxWriteBits = MaxBitLimit;
+    private int _maxReadWords = MaxWordLimit;
+    private int _maxWriteWords = MaxWordLimit;
+    private int _maxReadBits = MaxBitLimit;
+    private int _maxWriteBits = MaxBitLimit;
 
     /// <summary>PLC 슬레이브 국번(Station 번호)입니다. 기본값은 1입니다. (1~254)</summary>
     public byte Station
@@ -24,7 +24,7 @@ public sealed class FatekOptions
         get => _station;
         init
         {
-            if (value is < MinStation or > MaxStation)
+            if (value < MinStation || value > MaxStation)
             {
                 throw new ArgumentOutOfRangeException(nameof(value), value, $"국번은 {MinStation}~{MaxStation} 사이여야 합니다.");
             }
@@ -33,28 +33,40 @@ public sealed class FatekOptions
         }
     }
 
-    /// <summary>한 번의 요청으로 읽을 수 있는 최대 워드 수입니다. 기본값은 64입니다. (최대 64)</summary>
+    /// <summary>한 번의 요청으로 읽거나 쓸 수 있는 최대 워드 수입니다. 기본값은 64입니다. (1~64)</summary>
+    public int MaxWordsPerRequest
+    {
+        get => _maxReadWords;
+        init
+        {
+            int validated = ValidateLimit(value, MaxWordLimit, nameof(value), "최대 워드 수");
+            _maxReadWords = validated;
+            _maxWriteWords = validated;
+        }
+    }
+
+    /// <summary>한 번의 요청으로 읽을 수 있는 최대 워드 수입니다. 기본값은 64입니다. (1~64)</summary>
     public int MaxReadWords
     {
         get => _maxReadWords;
         init => _maxReadWords = ValidateLimit(value, MaxWordLimit, nameof(value), "최대 읽기 워드 수");
     }
 
-    /// <summary>한 번의 요청으로 읽을 수 있는 최대 비트 수입니다. 기본값은 255입니다. (최대 255)</summary>
+    /// <summary>한 번의 요청으로 읽을 수 있는 최대 비트 수입니다. 기본값은 255입니다. (1~255)</summary>
     public int MaxReadBits
     {
         get => _maxReadBits;
         init => _maxReadBits = ValidateLimit(value, MaxBitLimit, nameof(value), "최대 읽기 비트 수");
     }
 
-    /// <summary>한 번의 요청으로 쓸 수 있는 최대 워드 수입니다. 기본값은 64입니다. (최대 64)</summary>
+    /// <summary>한 번의 요청으로 쓸 수 있는 최대 워드 수입니다. 기본값은 64입니다. (1~64)</summary>
     public int MaxWriteWords
     {
         get => _maxWriteWords;
         init => _maxWriteWords = ValidateLimit(value, MaxWordLimit, nameof(value), "최대 쓰기 워드 수");
     }
 
-    /// <summary>한 번의 요청으로 쓸 수 있는 최대 비트 수입니다. 기본값은 255입니다. (최대 255)</summary>
+    /// <summary>한 번의 요청으로 쓸 수 있는 최대 비트 수입니다. 기본값은 255입니다. (1~255)</summary>
     public int MaxWriteBits
     {
         get => _maxWriteBits;

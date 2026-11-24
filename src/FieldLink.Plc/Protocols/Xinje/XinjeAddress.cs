@@ -11,6 +11,8 @@ public sealed class XinjeAddress
     private const int HighByteShift = 16;
     private const int MidByteShift = 8;
     private const int ByteMask = 0xFF;
+    private const int ExtendedAddressThreshold = 20480;
+    private const int Max24BitAddressNumber = 0xFFFFFF;
     private const char MinOctalDigit = '0';
     private const char MaxOctalDigit = '7';
     private const int XcHighAddressBoundary = 8000;
@@ -20,6 +22,13 @@ public sealed class XinjeAddress
     private const int XdWordIoBlock1Boundary = 10000;
     private const int XdWordIoBlock2Boundary = 20000;
     private const int XdWordIoBlock3Boundary = 30000;
+
+    private static readonly string[] OrderedDevicePrefixes =
+    [
+        "HSCD", "HSC", "HSD", "ETD", "HTD", "HCD", "SFD", "SEM", "FSD",
+        "ET", "HM", "HS", "HT", "HC", "SM", "TD", "CD", "SD", "ID", "QD", "HD", "FD", "FS", "ED",
+        "X", "Y", "M", "S", "T", "C", "D", "F", "E"
+    ];
 
     private XinjeAddress(
         string original,
@@ -54,6 +63,12 @@ public sealed class XinjeAddress
 
     /// <summary>PLC 시리즈입니다.</summary>
     public XinjeSeries Series { get; }
+
+    /// <summary>확장 주소 영역(표준 16비트 오프셋 초과 또는 정전유지/플래시 확장 디바이스) 여부입니다.</summary>
+    public bool IsExtended =>
+        Number >= ExtendedAddressThreshold ||
+        Device is "ET" or "HM" or "HS" or "HT" or "HC" or "HSC" or "SEM"
+            or "ETD" or "HD" or "HSD" or "HTD" or "HCD" or "HSCD" or "FD" or "SFD" or "FS" or "FSD";
 
     /// <summary>확장 Modbus 24비트(3바이트 BE) 주소 바이트를 반환합니다.</summary>
     public byte[] Get24BitAddressBytes()
@@ -211,13 +226,13 @@ public sealed class XinjeAddress
         result = null;
         errorMessage = null;
 
-        if (address is null || string.IsNullOrWhiteSpace(address))
+        if (string.IsNullOrWhiteSpace(address))
         {
             errorMessage = "주소 문자열이 비어 있습니다.";
             return false;
         }
 
-        string trimmed = address.Trim().ToUpperInvariant();
+        string trimmed = address!.Trim().ToUpperInvariant();
         if (!TryExtractDevice(trimmed, out string devicePrefix, out string numberText))
         {
             errorMessage = $"지원하지 않는 XINJE 디바이스 접두사입니다: {address}";
@@ -227,47 +242,52 @@ public sealed class XinjeAddress
         int number;
         if (devicePrefix is "X" or "Y")
         {
-            if (!TryParseOctal(numberText, out number))
+            if (!TryParseOctal24Bit(numberText, out number))
             {
                 errorMessage = $"유효하지 않은 8진수 XINJE 주소입니다: {address}";
                 return false;
             }
         }
-        else
+        else if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out number))
         {
-            if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out number))
-            {
-                errorMessage = $"유효하지 않은 10진수 XINJE 주소입니다: {address}";
-                return false;
-            }
+            errorMessage = $"유효하지 않은 10진수 XINJE 주소입니다: {address}";
+            return false;
+        }
+
+        if (number < 0 || number > Max24BitAddressNumber)
+        {
+            errorMessage = $"XINJE 주소 번호가 24비트 허용 범위를 벗어났습니다: {address}";
+            return false;
         }
 
         return TryResolveExtendedDevice(trimmed, devicePrefix, number, series, isBitAccess, out result, out errorMessage);
     }
 
-    private static bool TryParseOctal(string numberText, out int number)
+    private static bool TryParseOctal24Bit(string text, out int number)
     {
         number = 0;
-        if (numberText.Length == 0)
+        if (string.IsNullOrEmpty(text))
         {
             return false;
         }
 
-        foreach (char digit in numberText)
+        long accumulated = 0;
+        for (int i = 0; i < text.Length; i++)
         {
-            if (digit < MinOctalDigit || digit > MaxOctalDigit)
+            char c = text[i];
+            if (c < MinOctalDigit || c > MaxOctalDigit)
             {
                 return false;
             }
 
-            if (number > (int.MaxValue - (digit - MinOctalDigit)) / OctalRadix)
+            accumulated = (accumulated * OctalRadix) + (c - MinOctalDigit);
+            if (accumulated > Max24BitAddressNumber)
             {
                 return false;
             }
-
-            number = (number * OctalRadix) + (digit - MinOctalDigit);
         }
 
+        number = (int)accumulated;
         return true;
     }
 
@@ -276,20 +296,13 @@ public sealed class XinjeAddress
         devicePrefix = string.Empty;
         numberText = string.Empty;
 
-        string[] prefixes =
-        [
-            "HSCD", "HSC", "HSD", "ETD", "HTD", "HCD", "SFD", "SEM", "FSD",
-            "ET", "HM", "HS", "HT", "HC", "SM", "TD", "CD", "SD", "ID", "QD", "HD", "FD", "FS", "ED",
-            "X", "Y", "M", "S", "T", "C", "D", "F", "E"
-        ];
-
-        foreach (string p in prefixes)
+        foreach (string prefix in OrderedDevicePrefixes)
         {
-            if (trimmed.StartsWith(p, StringComparison.Ordinal))
+            if (trimmed.StartsWith(prefix, StringComparison.Ordinal))
             {
-                devicePrefix = p;
-                numberText = trimmed.Substring(p.Length);
-                return true;
+                devicePrefix = prefix;
+                numberText = trimmed.Substring(prefix.Length);
+                return numberText.Length > 0;
             }
         }
 
@@ -317,8 +330,8 @@ public sealed class XinjeAddress
             case "Y": code = 0x02; isBit = true; break;
             case "M": code = 0x03; isBit = true; break;
             case "S": code = 0x04; isBit = true; break;
-            case "T": code = 0x05; isBit = true; break;
-            case "C": code = 0x06; isBit = true; break;
+            case "T": code = 0x05; isBit = series != XinjeSeries.XC || isBitAccess; break;
+            case "C": code = 0x06; isBit = series != XinjeSeries.XC || isBitAccess; break;
             case "ET": code = 0x07; isBit = true; break;
             case "HM": code = 0x08; isBit = true; break;
             case "HS": code = 0x09; isBit = true; break;
@@ -349,11 +362,6 @@ public sealed class XinjeAddress
                 return false;
         }
 
-        if (isBitAccess)
-        {
-            isBit = true;
-        }
-
         result = new XinjeAddress(original, devicePrefix, number, code, isBit, series);
         return true;
     }
@@ -361,6 +369,11 @@ public sealed class XinjeAddress
     /// <summary>오프셋만큼 주소를 이동한 새 <see cref="XinjeAddress"/>를 반환합니다.</summary>
     public XinjeAddress Offset(int count)
     {
-        return new XinjeAddress($"{Original}+{count}", Device, Number + count, ExtendedDeviceCode, IsBit, Series);
+        if (count < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count), count, "오프셋은 0 이상이어야 합니다.");
+        }
+
+        return new XinjeAddress($"{Original}+{count}", Device, checked(Number + count), ExtendedDeviceCode, IsBit, Series);
     }
 }

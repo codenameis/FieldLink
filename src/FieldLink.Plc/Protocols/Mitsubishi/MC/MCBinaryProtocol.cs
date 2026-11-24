@@ -14,7 +14,9 @@ public sealed class MCBinaryProtocol : IPlcProtocol
 {
     private const int BytesPerWord = 2;
     private const ushort InitialSerialNumber = 1;
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
+    private const byte StringPaddingByte = 0x00;
+
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: StringPaddingByte, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly MCOptions _options;
@@ -51,10 +53,14 @@ public sealed class MCBinaryProtocol : IPlcProtocol
         }
 
         var address = MCAddress.Parse(request.Address);
-        int wordsPerElement = GetWordsPerElement(address, request.DataType);
-        int elementSize = request.DataType.GetElementSize();
-        List<RequestChunker.Chunk> chunks = PlanChunks(address, wordsPerElement, request.Count);
-        byte[] combinedBuffer = new byte[request.ByteCount];
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+
+        int requestedByteCount = request.ByteCount;
+        PlcReadRequest effectiveRequest = address.IsBit ? request : ProtocolExecutionGuard.NormalizeWordReadRequest(request);
+        int wordsPerElement = GetWordsPerElement(address, effectiveRequest.DataType);
+        int elementSize = effectiveRequest.DataType.GetElementSize();
+        List<RequestChunker.Chunk> chunks = PlanChunks(address, wordsPerElement, effectiveRequest.Count);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
 
         await _transport.RunExclusiveAsync(async session =>
         {
@@ -62,17 +68,17 @@ public sealed class MCBinaryProtocol : IPlcProtocol
 
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                MCAddress chunkAddress = address.WithOffset(chunk.ElementOffset * wordsPerElement);
-                ushort pointCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                MCAddress chunkAddress = address.WithOffset(checked(chunk.ElementOffset * wordsPerElement));
+                ushort pointCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
 
                 byte[] chunkData = await ReadChunkAsync(session, chunkAddress, pointCount).ConfigureAwait(false);
-                Array.Copy(chunkData, 0, combinedBuffer, chunk.ElementOffset * elementSize, chunkData.Length);
+                Array.Copy(chunkData, 0, combinedBuffer, checked(chunk.ElementOffset * elementSize), chunkData.Length);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
 
-        return combinedBuffer;
+        return ProtocolExecutionGuard.TrimReadResult(combinedBuffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -84,8 +90,16 @@ public sealed class MCBinaryProtocol : IPlcProtocol
         }
 
         var address = MCAddress.Parse(request.Address);
-        int wordsPerElement = GetWordsPerElement(address, request.DataType);
-        List<RequestChunker.Chunk> chunks = PlanChunks(address, wordsPerElement, request.Count);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
+
+        int totalOriginalCount = request.Count;
+        int originalElementsPerUnit = 1;
+        PlcWriteRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit);
+
+        int wordsPerElement = GetWordsPerElement(address, effectiveRequest.DataType);
+        List<RequestChunker.Chunk> chunks = PlanChunks(address, wordsPerElement, effectiveRequest.Count);
         int completedElements = 0;
 
         try
@@ -96,24 +110,24 @@ public sealed class MCBinaryProtocol : IPlcProtocol
 
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
-                    MCAddress chunkAddress = address.WithOffset(chunk.ElementOffset * wordsPerElement);
-                    ushort pointCount = (ushort)(chunk.ElementCount * wordsPerElement);
-                    byte[] slice = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+                    MCAddress chunkAddress = address.WithOffset(checked(chunk.ElementOffset * wordsPerElement));
+                    ushort pointCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
+                    byte[] slice = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
                     await WriteChunkAsync(session, chunkAddress, pointCount, slice).ConfigureAwait(false);
-                    completedElements += chunk.ElementCount;
+                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                        completedElements,
+                        chunk.ElementCount,
+                        originalElementsPerUnit,
+                        totalOriginalCount);
                 }
 
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (PlcDeviceException exception)
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
-            throw new PlcDeviceException(exception.DeviceErrorCode, exception.Message) { CompletedCount = completedElements };
-        }
-        catch (PlcException exception)
-        {
-            throw new PlcException(exception.Kind, exception.Message, exception.InnerException) { CompletedCount = completedElements };
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
     }
 
@@ -121,21 +135,10 @@ public sealed class MCBinaryProtocol : IPlcProtocol
     {
         if (address.IsBit)
         {
-            if (dataType != PlcDataType.Boolean)
-            {
-                throw new ArgumentException($"비트 디바이스 '{address}'는 Boolean 자료형만 읽고 쓸 수 있습니다.", nameof(dataType));
-            }
-
             return 1;
         }
 
-        int elementSize = dataType.GetElementSize();
-        if (elementSize < BytesPerWord || elementSize % BytesPerWord != 0)
-        {
-            throw new ArgumentException($"워드 디바이스 '{address}'는 {BytesPerWord}바이트 배수 자료형만 읽고 쓸 수 있습니다. ({dataType})", nameof(dataType));
-        }
-
-        return elementSize / BytesPerWord;
+        return Math.Max(1, dataType.GetElementSize() / BytesPerWord);
     }
 
     private List<RequestChunker.Chunk> PlanChunks(MCAddress address, int wordsPerElement, int elementCount)

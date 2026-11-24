@@ -15,7 +15,7 @@ public class FujiElectricSpbAddressTests
     [InlineData("CN1", "0B0100", false)]
     public void Parse_SpbAddresses_MatchesExpectedWireFormat(string input, string expectedWire, bool isBit)
     {
-        var parsedAddress = FujiElectricSpbAddress.Parse(input);
+        FujiElectricSpbAddress parsedAddress = FujiElectricSpbAddress.Parse(input);
         Assert.Equal(expectedWire, parsedAddress.WireWordAddress);
         Assert.Equal(isBit, parsedAddress.IsBit);
     }
@@ -35,9 +35,23 @@ public class FujiElectricSpbAddressTests
     [Fact]
     public void BuildBitWriteAddress_M1000_MatchesTestVector()
     {
-        // M1000: word 62, bit 8 -> byte 125, bit 0 -> 02 + 2501 + 00 = 02250100
-        var parsedAddress = FujiElectricSpbAddress.Parse("M1000");
+        // 출처: docs/plc-packet-manual/fuji.md §A.3 "M1000 비트 ON" (word 62, bit 8 -> byte 125, bit 0 -> 02250100)
+        FujiElectricSpbAddress parsedAddress = FujiElectricSpbAddress.Parse("M1000");
         Assert.Equal("02250100", parsedAddress.BuildBitWriteAddress());
+    }
+
+    [Fact]
+    public void Offset_SpbBitAddress_AdvancesAcrossWordBoundaryIn16BitUnits()
+    {
+        // M100: word 6, bit 4 -> +12 bits = M112: word 7, bit 0
+        FujiElectricSpbAddress startAddress = FujiElectricSpbAddress.Parse("M100");
+        Assert.Equal((ushort)6, startAddress.WordAddress);
+        Assert.Equal((byte)4, startAddress.BitOffset);
+
+        FujiElectricSpbAddress nextWordBitAddress = startAddress.Offset(12);
+        Assert.Equal((ushort)7, nextWordBitAddress.WordAddress);
+        Assert.Equal((byte)0, nextWordBitAddress.BitOffset);
+        Assert.Equal("020700", nextWordBitAddress.WireWordAddress);
     }
 
     [Theory]
@@ -48,7 +62,7 @@ public class FujiElectricSpbAddressTests
     [InlineData("Q10", 0x01, 10u, false)]
     public void Parse_SphAddresses_MapsToExpectedAreaAndOffset(string input, byte expectedArea, uint expectedWord, bool isBit)
     {
-        var parsedAddress = FujiElectricSphAddress.Parse(input);
+        FujiElectricSphAddress parsedAddress = FujiElectricSphAddress.Parse(input);
         Assert.Equal(expectedArea, parsedAddress.AreaCode);
         Assert.Equal(expectedWord, parsedAddress.WordAddress);
         Assert.Equal(isBit, parsedAddress.IsBit);

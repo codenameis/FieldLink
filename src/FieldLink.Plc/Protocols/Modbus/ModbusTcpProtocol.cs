@@ -14,9 +14,11 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
 {
     private const int BytesPerRegister = 2;
     private const int ByteShift = 8;
+    private const byte StringPaddingByte = 0x00;
     private const ushort MaxTransactionId = 0xFFFF;
     private const ushort InitialTransactionId = 0x0001;
-    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerRegister);
+
+    private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: StringPaddingByte, wordSize: BytesPerRegister);
 
     private readonly ITransport _transport;
     private readonly ModbusTcpOptions _options;
@@ -52,15 +54,15 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
         }
 
         var address = ModbusAddress.Parse(request.Address);
-        int elementSize = request.DataType.GetElementSize();
-        ValidateAddressAndType(address, request.DataType, request.Count, isWrite: false, elementSize);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        int maxElements = address.IsBit
-            ? _options.MaxReadCoils
-            : (_options.MaxReadRegisters * BytesPerRegister) / elementSize;
+        int requestedByteCount = request.ByteCount;
+        PlcReadRequest effectiveRequest = address.IsBit ? request : ProtocolExecutionGuard.NormalizeWordReadRequest(request);
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, effectiveRequest.DataType.GetElementSize() / BytesPerRegister);
+        ValidateAddressRange(address, effectiveRequest.Count, wordsPerElement);
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
-        byte[] combinedBuffer = new byte[request.ByteCount];
+        List<RequestChunker.Chunk> chunks = PlanReadChunks(address.IsBit, effectiveRequest.Count, wordsPerElement);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
 
         await _transport.RunExclusiveAsync(async session =>
         {
@@ -68,33 +70,15 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
 
             foreach (RequestChunker.Chunk chunk in chunks)
             {
-                int chunkWordOffset = address.IsBit ? chunk.ElementOffset : (chunk.ElementOffset * elementSize) / BytesPerRegister;
-                ushort chunkPduAddress = (ushort)(address.PduAddress + chunkWordOffset);
-                ushort quantity = address.IsBit
-                    ? (ushort)chunk.ElementCount
-                    : (ushort)(((chunk.ElementCount * elementSize) + (BytesPerRegister - 1)) / BytesPerRegister);
-
-                byte[] pdu = ModbusRequestBuilder.BuildRead(address.Area, chunkPduAddress, quantity);
-                byte[] responsePdu = await ExchangeWithLateResponseDiscardAsync(session, pdu).ConfigureAwait(false);
-
-                byte[] chunkData = address.IsBit
-                    ? ModbusResponseParser.ParseReadBits(responsePdu, (ModbusFunctionCode)pdu[0], quantity)
-                    : ModbusResponseParser.ParseReadRegisters(responsePdu, (ModbusFunctionCode)pdu[0], quantity);
-
-                int destinationOffset = chunk.ElementOffset * elementSize;
-                int bytesToCopy = chunk.ElementCount * elementSize;
-                if (chunkData.Length < bytesToCopy)
-                {
-                    throw new PlcException(PlcErrorKind.InvalidResponse, $"응답 바이트 수({chunkData.Length})가 요청 바이트 수({bytesToCopy})보다 적습니다.");
-                }
-
-                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, bytesToCopy);
+                byte[] chunkData = await ReadChunkAsync(session, address, chunk, wordsPerElement).ConfigureAwait(false);
+                int destinationOffset = checked(chunk.ElementOffset * effectiveRequest.DataType.GetElementSize());
+                Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
             }
 
             return true;
         }, cancellationToken).ConfigureAwait(false);
 
-        return combinedBuffer;
+        return ProtocolExecutionGuard.TrimReadResult(combinedBuffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -111,14 +95,18 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
             throw new ArgumentException("읽기 전용 영역(이산 입력, 입력 레지스터)에는 쓸 수 없습니다.", nameof(request));
         }
 
-        int elementSize = request.DataType.GetElementSize();
-        ValidateAddressAndType(address, request.DataType, request.Count, isWrite: true, elementSize);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        int maxElements = address.IsBit
-            ? _options.MaxWriteCoils
-            : (_options.MaxWriteRegisters * BytesPerRegister) / elementSize;
+        int totalOriginalCount = request.Count;
+        int originalElementsPerUnit = 1;
+        PlcWriteRequest effectiveRequest = address.IsBit
+            ? request
+            : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit);
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, effectiveRequest.DataType.GetElementSize() / BytesPerRegister);
+        ValidateAddressRange(address, effectiveRequest.Count, wordsPerElement);
+
+        List<RequestChunker.Chunk> chunks = PlanWriteChunks(address.IsBit, effectiveRequest.Count, wordsPerElement);
         int completedElements = 0;
 
         try
@@ -129,38 +117,88 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
 
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
-                    int chunkWordOffset = address.IsBit ? chunk.ElementOffset : (chunk.ElementOffset * elementSize) / BytesPerRegister;
-                    ushort chunkPduAddress = (ushort)(address.PduAddress + chunkWordOffset);
-                    byte[] pdu = BuildWritePdu(address, chunkPduAddress, chunk, request, elementSize);
-
-                    byte[] responsePdu = await ExchangeWithLateResponseDiscardAsync(session, pdu).ConfigureAwait(false);
-                    ValidateWriteResponse(pdu, responsePdu, address, chunkPduAddress, chunk, elementSize);
-
-                    completedElements += chunk.ElementCount;
+                    await WriteChunkAsync(session, address, chunk, effectiveRequest).ConfigureAwait(false);
+                    completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                        completedElements,
+                        chunk.ElementCount,
+                        originalElementsPerUnit,
+                        totalOriginalCount);
                 }
 
                 return true;
             }, cancellationToken).ConfigureAwait(false);
         }
-        catch (PlcDeviceException deviceException)
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
-            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
-        catch (PlcException exception)
+    }
+
+    private static void ValidateAddressRange(ModbusAddress address, int elementCount, int wordsPerElement)
+    {
+        long totalUnits = address.IsBit ? elementCount : (long)elementCount * wordsPerElement;
+        if ((long)address.PduAddress + totalUnits - 1 > ushort.MaxValue)
         {
-            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
-            {
-                CompletedCount = completedElements
-            };
+            throw new ArgumentOutOfRangeException(
+                nameof(elementCount),
+                elementCount,
+                $"요청 범위가 Modbus 16비트 주소 공간(0~{ushort.MaxValue})을 초과합니다.");
         }
+    }
+
+    private List<RequestChunker.Chunk> PlanReadChunks(bool isBit, int count, int wordsPerElement)
+    {
+        int maxElements = isBit
+            ? _options.MaxReadCoils
+            : RequestChunker.CalculateElementLimit(_options.MaxReadRegisters, wordsPerElement);
+        return RequestChunker.Plan(count, maxElements);
+    }
+
+    private List<RequestChunker.Chunk> PlanWriteChunks(bool isBit, int count, int wordsPerElement)
+    {
+        int maxElements = isBit
+            ? _options.MaxWriteCoils
+            : RequestChunker.CalculateElementLimit(_options.MaxWriteRegisters, wordsPerElement);
+        return RequestChunker.Plan(count, maxElements);
+    }
+
+    private async Task<byte[]> ReadChunkAsync(
+        ITransportSession session,
+        ModbusAddress address,
+        RequestChunker.Chunk chunk,
+        int wordsPerElement)
+    {
+        ushort chunkPduAddress = (ushort)(address.PduAddress + (chunk.ElementOffset * wordsPerElement));
+        ushort quantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
+
+        byte[] pdu = ModbusRequestBuilder.BuildRead(address.Area, chunkPduAddress, quantity);
+        byte[] responsePdu = await ExchangeWithLateResponseDiscardAsync(session, pdu).ConfigureAwait(false);
+
+        return address.IsBit
+            ? ModbusResponseParser.ParseReadBits(responsePdu, (ModbusFunctionCode)pdu[0], quantity)
+            : ModbusResponseParser.ParseReadRegisters(responsePdu, (ModbusFunctionCode)pdu[0], quantity);
+    }
+
+    private async Task WriteChunkAsync(
+        ITransportSession session,
+        ModbusAddress address,
+        RequestChunker.Chunk chunk,
+        PlcWriteRequest request)
+    {
+        int wordsPerElement = address.IsBit ? 1 : Math.Max(1, request.DataType.GetElementSize() / BytesPerRegister);
+        ushort chunkPduAddress = (ushort)(address.PduAddress + (chunk.ElementOffset * wordsPerElement));
+        byte[] pdu = BuildWritePdu(address, chunkPduAddress, chunk, request);
+
+        byte[] responsePdu = await ExchangeWithLateResponseDiscardAsync(session, pdu).ConfigureAwait(false);
+        ushort expectedQuantity = (ushort)(address.IsBit ? chunk.ElementCount : chunk.ElementCount * wordsPerElement);
+        ValidateWriteResponse(pdu, responsePdu, chunkPduAddress, expectedQuantity);
     }
 
     private byte[] BuildWritePdu(
         ModbusAddress address,
         ushort chunkPduAddress,
         RequestChunker.Chunk chunk,
-        PlcWriteRequest request,
-        int elementSize)
+        PlcWriteRequest request)
     {
         if (address.IsBit)
         {
@@ -181,63 +219,33 @@ public sealed class ModbusTcpProtocol : IPlcProtocol
             return ModbusRequestBuilder.BuildWriteMultipleCoils(chunkPduAddress, (ushort)chunk.ElementCount, packed);
         }
 
-        int registerCount = (chunk.ElementCount * elementSize) / BytesPerRegister;
-        if (_options.UseSingleWriteFunctions && registerCount == 1)
+        int wordsPerElement = Math.Max(1, request.DataType.GetElementSize() / BytesPerRegister);
+        if (_options.UseSingleWriteFunctions && chunk.ElementCount == 1 && wordsPerElement == 1)
         {
-            byte[] raw = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+            byte[] raw = request.GetData(chunk.ElementOffset, 1);
             ushort registerValue = (ushort)((raw[0] << ByteShift) | raw[1]);
             return ModbusRequestBuilder.BuildWriteSingleRegister(chunkPduAddress, registerValue);
         }
 
         byte[] registerSlice = request.GetData(chunk.ElementOffset, chunk.ElementCount);
-        return ModbusRequestBuilder.BuildWriteMultipleRegisters(chunkPduAddress, (ushort)registerCount, registerSlice);
+        ushort registerCount = (ushort)(chunk.ElementCount * wordsPerElement);
+        return ModbusRequestBuilder.BuildWriteMultipleRegisters(chunkPduAddress, registerCount, registerSlice);
     }
 
     private static void ValidateWriteResponse(
         byte[] requestPdu,
         byte[] responsePdu,
-        ModbusAddress address,
         ushort chunkPduAddress,
-        RequestChunker.Chunk chunk,
-        int elementSize)
+        ushort expectedQuantity)
     {
-        var fc = (ModbusFunctionCode)requestPdu[0];
-        if (fc is ModbusFunctionCode.WriteSingleCoil or ModbusFunctionCode.WriteSingleRegister)
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
+        if (functionCode is ModbusFunctionCode.WriteSingleCoil or ModbusFunctionCode.WriteSingleRegister)
         {
             ModbusResponseParser.ParseWriteSingleResponse(responsePdu, requestPdu);
         }
         else
         {
-            ushort expectedQuantity = address.IsBit
-                ? (ushort)chunk.ElementCount
-                : (ushort)((chunk.ElementCount * elementSize) / BytesPerRegister);
-            ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, fc, chunkPduAddress, expectedQuantity);
-        }
-    }
-
-    private static void ValidateAddressAndType(ModbusAddress address, PlcDataType dataType, int count, bool isWrite, int elementSize)
-    {
-        if (address.IsBit && dataType != PlcDataType.Boolean)
-        {
-            throw new ArgumentException("비트 영역(코일/이산 입력)에는 Boolean 자료형만 사용할 수 있습니다.", nameof(dataType));
-        }
-
-        if (!address.IsBit && dataType == PlcDataType.Boolean)
-        {
-            throw new ArgumentException("워드 레지스터 영역에는 Boolean 자료형을 직접 사용할 수 없습니다.", nameof(dataType));
-        }
-
-        if (isWrite && !address.IsBit && ((long)count * elementSize) % BytesPerRegister != 0)
-        {
-            throw new ArgumentException("워드 레지스터 영역에는 2바이트 배수 길이의 데이터만 쓸 수 있습니다.", nameof(count));
-        }
-
-        long unitSpan = address.IsBit
-            ? count
-            : (((long)count * elementSize) + (BytesPerRegister - 1)) / BytesPerRegister;
-        if ((long)address.PduAddress + unitSpan - 1 > ushort.MaxValue)
-        {
-            throw new ArgumentOutOfRangeException(nameof(count), count, "요청 범위가 Modbus 16비트 주소 공간(0~65535)을 초과합니다.");
+            ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, chunkPduAddress, expectedQuantity);
         }
     }
 

@@ -1,3 +1,4 @@
+using System;
 using System.Threading.Tasks;
 using FieldLink.Plc.Abstractions;
 using FieldLink.Plc.Protocols.Yokogawa;
@@ -11,10 +12,10 @@ public class YokogawaProtocolTests
     [Fact]
     public void BuildReadRequest_D100_1Word_MatchesTestVector()
     {
-        var parsedAddress = YokogawaAddress.Parse("D100", isBitAccess: false);
+        // 출처: docs/plc-packet-manual/yokogawa.md §4 "D100 1워드 읽기"
+        var parsedAddress = YokogawaAddress.Parse("D100");
         byte[] requestFrame = YokogawaRequestBuilder.BuildReadRequest(cpuNumber: 1, parsedAddress, count: 1);
 
-        // Vector from §4: 11 01 00 08 00 04 00 00 00 64 00 01
         byte[] expected =
         [
             0x11, 0x01, 0x00, 0x08, 0x00, 0x04, 0x00, 0x00, 0x00, 0x64, 0x00, 0x01
@@ -26,7 +27,6 @@ public class YokogawaProtocolTests
     [Fact]
     public void ParseReadResponse_ValidWordRead_ReturnsData()
     {
-        // Subheader: 0x11 | 0x80 = 0x91, EndCode: 0x00, Size: 0x00 0x02, Data: 0x34 0x12
         byte[] response = [0x91, 0x00, 0x00, 0x02, 0x34, 0x12];
         byte[] data = YokogawaResponseParser.ParseReadResponse(response, expectedCommand: 0x11);
 
@@ -34,16 +34,27 @@ public class YokogawaProtocolTests
     }
 
     [Fact]
+    public void ParseReadResponse_TrailingExtraBytes_ThrowsInvalidResponse()
+    {
+        // 선언된 크기(0x0002)보다 실제 본문이 1바이트 더 긴 손상 프레임 (frame.Length = 7 != 4 + 2)
+        byte[] corruptedFrame = [0x91, 0x00, 0x00, 0x02, 0x34, 0x12, 0xFF];
+
+        var exception = Assert.Throws<PlcException>(() =>
+            YokogawaResponseParser.ParseReadResponse(corruptedFrame, expectedCommand: 0x11));
+
+        Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
+    }
+
+    [Fact]
     public void ParseReadResponse_DeviceError_ThrowsPlcDeviceException()
     {
-        // Subheader 0x91, EndCode: 0x03 (ER03 디바이스 오류)
         byte[] response = [0x91, 0x03, 0x00, 0x00];
 
-        var ex = Assert.Throws<PlcDeviceException>(() =>
+        var exception = Assert.Throws<PlcDeviceException>(() =>
             YokogawaResponseParser.ParseReadResponse(response, expectedCommand: 0x11));
 
-        Assert.Equal(0x03, ex.DeviceErrorCode);
-        Assert.Contains("ER03", ex.Message);
+        Assert.Equal(0x03, exception.DeviceErrorCode);
+        Assert.Contains("ER03", exception.Message);
     }
 
     [Fact]
@@ -55,8 +66,8 @@ public class YokogawaProtocolTests
         byte[] response = [0x91, 0x00, 0x00, 0x02, 0x34, 0x12];
         transport.EnqueueResponse(response);
 
-        var requestFrame = new PlcReadRequest("D100", PlcDataType.Int16, 1);
-        byte[] result = await protocol.ReadAsync(requestFrame, default);
+        var request = new PlcReadRequest("D100", PlcDataType.Int16, 1);
+        byte[] result = await protocol.ReadAsync(request, default);
 
         Assert.Equal(new byte[] { 0x34, 0x12 }, result);
         Assert.Single(transport.SentFrames);
@@ -73,11 +84,59 @@ public class YokogawaProtocolTests
         byte[] response = [0x92, 0x00, 0x00, 0x00];
         transport.EnqueueResponse(response);
 
-        var requestFrame = new PlcWriteRequest("D100", PlcDataType.Int16, new byte[] { 0x34, 0x12 });
-        await protocol.WriteAsync(requestFrame, default);
+        var request = new PlcWriteRequest("D100", PlcDataType.Int16, new byte[] { 0x34, 0x12 });
+        await protocol.WriteAsync(request, default);
 
         Assert.Single(transport.SentFrames);
         byte[] sent = transport.SentFrames[0];
         Assert.Equal(0x12, sent[0]);
+    }
+
+    [Fact]
+    public async Task Protocol_ReadAndWrite_Int32_ChunksProperlyAndPreservesCompletedCount()
+    {
+        var transport = new ScriptedTransport();
+        // MaxWordsPerRequest = 3일 때 Int32(2워드)는 청크당 1개(2워드)씩 정렬 분할되어야 함
+        var options = new YokogawaOptions { CpuNumber = 1, MaxWordsPerRequest = 3 };
+        var protocol = new YokogawaProtocol(transport, options);
+
+        transport.EnqueueResponse([0x91, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04]);
+        transport.EnqueueResponse([0x91, 0x00, 0x00, 0x04, 0x05, 0x06, 0x07, 0x08]);
+
+        var readRequest = new PlcReadRequest("D100", PlcDataType.Int32, 2);
+        byte[] readResult = await protocol.ReadAsync(readRequest, default);
+
+        Assert.Equal(new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 }, readResult);
+        Assert.Equal(2, transport.SentFrames.Count);
+
+        // 첫 번째 청크: D100 (0x64), 2워드 요청
+        Assert.Equal(100, transport.SentFrames[0][9]);
+        Assert.Equal(2, transport.SentFrames[0][11]);
+
+        // 두 번째 청크: D102 (0x66), 2워드 요청
+        Assert.Equal(102, transport.SentFrames[1][9]);
+        Assert.Equal(2, transport.SentFrames[1][11]);
+
+        // 분할 쓰기 중 두 번째 청크에서 ER03 오류 발생 시 CompletedCount = 1 보존
+        transport.EnqueueResponse([0x92, 0x00, 0x00, 0x00]);
+        transport.EnqueueResponse([0x92, 0x03, 0x00, 0x00]);
+
+        var writeRequest = new PlcWriteRequest("D100", PlcDataType.Int32, readResult);
+        var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(writeRequest, default));
+
+        Assert.Equal(0x03, exception.DeviceErrorCode);
+        Assert.Equal(1, exception.CompletedCount);
+    }
+
+    [Fact]
+    public async Task Protocol_DataTypeMismatch_ThrowsArgumentException()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new YokogawaProtocol(transport);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("M1", PlcDataType.Int16, 1), default));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D100", PlcDataType.Boolean, 1), default));
     }
 }

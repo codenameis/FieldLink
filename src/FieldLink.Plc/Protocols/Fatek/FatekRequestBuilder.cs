@@ -9,23 +9,29 @@ public static class FatekRequestBuilder
 {
     private const byte Stx = 0x02;
     private const byte Etx = 0x03;
-    private const int MinCount = 1;
+
+    private const int MinBitCount = 1;
     private const int MaxBitCount = 255;
+    private const int MinWordCount = 1;
     private const int MaxWordCount = 64;
     private const int BytesPerWord = 2;
     private const int HexCharsPerWord = 4;
-    private const int ByteShift = 8;
-    private const int ChecksumMask = 0xFF;
-    private const int BaseBodyBufferLength = 10;
-    private const int FrameEnvelopeLength = 4; // STX(1) + LRC(2) + ETX(1)
-    private const int LrcTrailingOffset = 3;
+    private const int BytesPerDWord = 4;
+    private const int HexCharsPerDWord = 8;
+    private const int BaseBodyHeaderCapacity = 10;
+    private const int ChecksumHexLength = 2;
+    private const int ChecksumByteMask = 0xFF;
+    private const int FrameWrapperLength = 1 + ChecksumHexLength + 1;
+    private const char BitTrueDigit = '1';
+    private const char BitFalseDigit = '0';
+
+    private const string CommandReadStatus = "40";
+    private const string CommandRun = "411";
+    private const string CommandStop = "410";
     private const string CommandReadBits = "44";
     private const string CommandWriteBits = "45";
     private const string CommandReadWords = "46";
     private const string CommandWriteWords = "47";
-    private const string CommandReadStatus = "40";
-    private const string CommandRun = "411";
-    private const string CommandStop = "410";
 
     /// <summary>연속 비트 읽기(명령 44) 프레임을 빌드합니다.</summary>
     /// <param name="station">PLC 슬레이브 국번(0~255)입니다.</param>
@@ -39,9 +45,12 @@ public static class FatekRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (bitCount is < MinCount or > MaxBitCount)
+        if (bitCount < MinBitCount || bitCount > MaxBitCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(bitCount), $"비트 읽기 개수는 {MinCount}~{MaxBitCount} 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(
+                nameof(bitCount),
+                bitCount,
+                $"비트 읽기 개수는 {MinBitCount}~{MaxBitCount} 사이여야 합니다.");
         }
 
         string body = $"{CommandReadBits}{bitCount:X2}{address.WireString}";
@@ -60,9 +69,12 @@ public static class FatekRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (wordCount is < MinCount or > MaxWordCount)
+        if (wordCount < MinWordCount || wordCount > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 읽기 개수는 {MinCount}~{MaxWordCount} 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(
+                nameof(wordCount),
+                wordCount,
+                $"워드 읽기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
         }
 
         string body = $"{CommandReadWords}{wordCount:X2}{address.WireString}";
@@ -82,9 +94,12 @@ public static class FatekRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (bitCount is < MinCount or > MaxBitCount)
+        if (bitCount < MinBitCount || bitCount > MaxBitCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(bitCount), $"비트 쓰기 개수는 {MinCount}~{MaxBitCount} 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(
+                nameof(bitCount),
+                bitCount,
+                $"비트 쓰기 개수는 {MinBitCount}~{MaxBitCount} 사이여야 합니다.");
         }
 
         if (bitValues is null)
@@ -97,17 +112,17 @@ public static class FatekRequestBuilder
             throw new ArgumentException("비트 데이터 배열 길이가 요청 개수보다 작습니다.", nameof(bitValues));
         }
 
-        var sb = new StringBuilder(BaseBodyBufferLength + bitCount);
-        sb.Append(CommandWriteBits);
-        sb.Append(bitCount.ToString("X2"));
-        sb.Append(address.WireString);
+        var bodyBuilder = new StringBuilder(BaseBodyHeaderCapacity + bitCount);
+        bodyBuilder.Append(CommandWriteBits);
+        bodyBuilder.Append(bitCount.ToString("X2"));
+        bodyBuilder.Append(address.WireString);
 
         for (int i = 0; i < bitCount; i++)
         {
-            sb.Append(bitValues[i] != 0 ? '1' : '0');
+            bodyBuilder.Append(bitValues[i] != 0 ? BitTrueDigit : BitFalseDigit);
         }
 
-        return BuildFrame(station, sb.ToString());
+        return BuildFrame(station, bodyBuilder.ToString());
     }
 
     /// <summary>연속 워드 쓰기(명령 47) 프레임을 빌드합니다.</summary>
@@ -123,9 +138,12 @@ public static class FatekRequestBuilder
             throw new ArgumentNullException(nameof(address));
         }
 
-        if (wordCount is < MinCount or > MaxWordCount)
+        if (wordCount < MinWordCount || wordCount > MaxWordCount)
         {
-            throw new ArgumentOutOfRangeException(nameof(wordCount), $"워드 쓰기 개수는 {MinCount}~{MaxWordCount} 사이여야 합니다.");
+            throw new ArgumentOutOfRangeException(
+                nameof(wordCount),
+                wordCount,
+                $"워드 쓰기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
         }
 
         if (wordData is null)
@@ -138,20 +156,65 @@ public static class FatekRequestBuilder
             throw new ArgumentException("데이터 길이가 워드 개수와 일치하지 않습니다.", nameof(wordData));
         }
 
-        var sb = new StringBuilder(BaseBodyBufferLength + (wordCount * HexCharsPerWord));
-        sb.Append(CommandWriteWords);
-        sb.Append(wordCount.ToString("X2"));
-        sb.Append(address.WireString);
+        var bodyBuilder = new StringBuilder(BaseBodyHeaderCapacity + (wordCount * HexCharsPerWord));
+        bodyBuilder.Append(CommandWriteWords);
+        bodyBuilder.Append(wordCount.ToString("X2"));
+        bodyBuilder.Append(address.WireString);
 
         for (int i = 0; i < wordCount; i++)
         {
-            byte lo = wordData[i * BytesPerWord];
-            byte hi = wordData[(i * BytesPerWord) + 1];
-            ushort value = (ushort)((hi << ByteShift) | lo);
-            sb.Append(value.ToString("X4"));
+            int byteOffset = i * BytesPerWord;
+            ushort wordValue = BinaryBuffer.ReadUInt16LittleEndian(wordData, byteOffset);
+            bodyBuilder.Append(wordValue.ToString("X4"));
         }
 
-        return BuildFrame(station, sb.ToString());
+        return BuildFrame(station, bodyBuilder.ToString());
+    }
+
+    /// <summary>연속 32비트 레지스터(DRC) 쓰기(명령 47) 프레임을 빌드합니다.</summary>
+    /// <param name="station">PLC 슬레이브 국번(0~255)입니다.</param>
+    /// <param name="address">대상 32비트 레지스터 주소입니다.</param>
+    /// <param name="dwordCount">쓸 32비트 레지스터 수입니다. 1~64.</param>
+    /// <param name="dwordData">기록할 32비트 데이터 바이트 배열(리틀 엔디언)입니다.</param>
+    /// <returns>생성된 ASCII 프레임 바이트 배열입니다.</returns>
+    public static byte[] BuildWriteDWords(byte station, FatekAddress address, ushort dwordCount, byte[] dwordData)
+    {
+        if (address is null)
+        {
+            throw new ArgumentNullException(nameof(address));
+        }
+
+        if (dwordCount < MinWordCount || dwordCount > MaxWordCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(dwordCount),
+                dwordCount,
+                $"32비트 레지스터 쓰기 개수는 {MinWordCount}~{MaxWordCount} 사이여야 합니다.");
+        }
+
+        if (dwordData is null)
+        {
+            throw new ArgumentNullException(nameof(dwordData));
+        }
+
+        if (dwordData.Length != dwordCount * BytesPerDWord)
+        {
+            throw new ArgumentException("데이터 길이가 32비트 레지스터 개수와 일치하지 않습니다.", nameof(dwordData));
+        }
+
+        var bodyBuilder = new StringBuilder(BaseBodyHeaderCapacity + (dwordCount * HexCharsPerDWord));
+        bodyBuilder.Append(CommandWriteWords);
+        bodyBuilder.Append(dwordCount.ToString("X2"));
+        bodyBuilder.Append(address.WireString);
+
+        for (int i = 0; i < dwordCount; i++)
+        {
+            int byteOffset = i * BytesPerDWord;
+            uint dwordValue = BinaryBuffer.ReadUInt32LittleEndian(dwordData, byteOffset);
+            bodyBuilder.Append(dwordValue.ToString("X8"));
+        }
+
+        return BuildFrame(station, bodyBuilder.ToString());
     }
 
     /// <summary>PLC RUN/STOP 제어(명령 41) 프레임을 빌드합니다.</summary>
@@ -167,22 +230,22 @@ public static class FatekRequestBuilder
     public static byte[] BuildReadStatus(byte station) =>
         BuildFrame(station, CommandReadStatus);
 
-    private static byte[] BuildFrame(byte station, string body)
+    private static byte[] BuildFrame(byte station, string commandAndData)
     {
-        string headerAndBody = $"{station:X2}{body}";
-        byte[] asciiBytes = Encoding.ASCII.GetBytes(headerAndBody);
+        string content = $"{station:X2}{commandAndData}";
+        byte[] asciiBytes = Encoding.ASCII.GetBytes(content);
 
-        int sum = Stx;
+        int checksumTotal = Stx;
         for (int i = 0; i < asciiBytes.Length; i++)
         {
-            sum += asciiBytes[i];
+            checksumTotal += asciiBytes[i];
         }
 
-        byte lrc = (byte)(sum & ChecksumMask);
-        byte[] frame = new byte[asciiBytes.Length + FrameEnvelopeLength];
+        byte lrc = (byte)(checksumTotal & ChecksumByteMask);
+        byte[] frame = new byte[asciiBytes.Length + FrameWrapperLength];
         frame[0] = Stx;
         Buffer.BlockCopy(asciiBytes, 0, frame, 1, asciiBytes.Length);
-        BinaryBuffer.WriteAsciiHexByte(frame, frame.Length - LrcTrailingOffset, lrc);
+        BinaryBuffer.WriteAsciiHexByte(frame, frame.Length - (ChecksumHexLength + 1), lrc);
         frame[frame.Length - 1] = Etx;
 
         return frame;

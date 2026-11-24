@@ -9,27 +9,32 @@ namespace FieldLink.Plc.Protocols.Keyence;
 public static class KeyenceHostLinkResponseParser
 {
     private const int MinimumFrameLength = 2;
-    private const int BytesPerWord = 2;
     private const int ErrorCodeLength = 2;
-    private const int InvalidErrorNumber = -1;
-    private const string ConnectSuccessResponse = "CC";
-    private const string WriteSuccessResponse = "OK";
-    private const string ErrorPrefix = "E";
-    private const string BitOnToken = "1";
-    private const string BitOffToken = "0";
-    private const byte BitOnValue = 1;
-    private const byte BitOffValue = 0;
+    private const int BytesPerWord = 2;
+    private const int BytesPerDWord = 4;
 
     private static readonly char[] SpaceSeparator = [' '];
+    private static readonly char[] CommaSeparator = [','];
 
     /// <summary>상위 링크 통신 접속(CR) 응답이 "CC"인지 검증합니다.</summary>
     /// <param name="frame">수신된 응답 프레임입니다.</param>
     public static void VerifyConnectResponse(byte[] frame)
     {
         string text = ExtractText(frame);
-        if (!string.Equals(text, ConnectSuccessResponse, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(text, "CC", StringComparison.OrdinalIgnoreCase))
         {
             throw new PlcException(PlcErrorKind.ConnectionFailed, $"상위 링크 연결 실패: {text}");
+        }
+    }
+
+    /// <summary>상위 링크 통신 종료(CQ) 응답이 "CF"인지 검증합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    public static void VerifyDisconnectResponse(byte[] frame)
+    {
+        string text = ExtractText(frame);
+        if (!string.Equals(text, "CF", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"상위 링크 종료 응답 불일치: {text}");
         }
     }
 
@@ -38,7 +43,7 @@ public static class KeyenceHostLinkResponseParser
     public static void VerifyWriteResponse(byte[] frame)
     {
         string text = ExtractText(frame);
-        if (!string.Equals(text, WriteSuccessResponse, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(text, "OK", StringComparison.OrdinalIgnoreCase))
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"상위 링크 쓰기 확인 실패: {text}");
         }
@@ -57,20 +62,63 @@ public static class KeyenceHostLinkResponseParser
 
         string text = ExtractText(frame);
         string[] tokens = text.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length != expectedCount)
+        if (tokens.Length < expectedCount)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 응답 토큰 수 불일치 (예상: {expectedCount}, 수신: {tokens.Length})");
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"워드 응답 토큰 수 부족 (예상: {expectedCount}, 수신: {tokens.Length})");
         }
 
         byte[] result = new byte[expectedCount * BytesPerWord];
         for (int i = 0; i < expectedCount; i++)
         {
-            if (!ushort.TryParse(tokens[i], NumberStyles.None, CultureInfo.InvariantCulture, out ushort value))
+            string valueToken = ExtractValueToken(tokens[i]);
+            if (!ushort.TryParse(valueToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out ushort wordValue))
             {
                 throw new PlcException(PlcErrorKind.InvalidResponse, $"워드 값 파싱 실패: {tokens[i]}");
             }
 
-            BinaryBuffer.WriteUInt16LE(result, i * BytesPerWord, value);
+            BinaryBuffer.WriteUInt16LittleEndian(result, i * BytesPerWord, wordValue);
+        }
+
+        return result;
+    }
+
+    /// <summary>32비트 디바이스(Z, AT, TC, TS, CC, CS) 또는 복합 디바이스(T, C, CTH, CTC) 응답에서 32비트 리틀 엔디언 바이트 배열을 추출합니다.</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedCount">기대하는 32비트 디바이스 요소 수입니다.</param>
+    /// <returns>추출된 32비트 데이터 바이트 배열(리틀 엔디언)입니다.</returns>
+    public static byte[] ParseReadDWords(byte[] frame, ushort expectedCount)
+    {
+        if (expectedCount == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedCount), expectedCount, "기대 32비트 요소 수는 1 이상이어야 합니다.");
+        }
+
+        string text = ExtractText(frame);
+        string[] tokens = text.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length < expectedCount)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"32비트 응답 토큰 수 부족 (예상: {expectedCount}, 수신: {tokens.Length})");
+        }
+
+        byte[] result = new byte[expectedCount * BytesPerDWord];
+        for (int i = 0; i < expectedCount; i++)
+        {
+            string valueToken = ExtractValueToken(tokens[i]);
+            if (!uint.TryParse(valueToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint dwordValue))
+            {
+                if (!int.TryParse(valueToken, NumberStyles.Integer, CultureInfo.InvariantCulture, out int signedValue))
+                {
+                    throw new PlcException(PlcErrorKind.InvalidResponse, $"32비트 값 파싱 실패: {tokens[i]}");
+                }
+
+                dwordValue = unchecked((uint)signedValue);
+            }
+
+            BinaryBuffer.WriteUInt32LittleEndian(result, i * BytesPerDWord, dwordValue);
         }
 
         return result;
@@ -89,23 +137,54 @@ public static class KeyenceHostLinkResponseParser
 
         string text = ExtractText(frame);
         string[] tokens = text.Split(SpaceSeparator, StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length != expectedCount)
+        if (tokens.Length < expectedCount)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, $"비트 응답 토큰 수 불일치 (예상: {expectedCount}, 수신: {tokens.Length})");
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"비트 응답 토큰 수 부족 (예상: {expectedCount}, 수신: {tokens.Length})");
         }
 
         byte[] result = new byte[expectedCount];
         for (int i = 0; i < expectedCount; i++)
         {
-            result[i] = tokens[i] switch
+            string bitToken = ExtractBitToken(tokens[i]);
+            result[i] = bitToken switch
             {
-                BitOnToken => BitOnValue,
-                BitOffToken => BitOffValue,
-                _ => throw new PlcException(PlcErrorKind.InvalidResponse, $"유효하지 않은 비트 응답 토큰: {tokens[i]}")
+                "1" => 1,
+                "0" => 0,
+                _ => throw new PlcException(PlcErrorKind.InvalidResponse, $"유효하지 않은 비트 응답 토큰: {tokens[i]}"),
             };
         }
 
         return result;
+    }
+
+    private static string ExtractValueToken(string token)
+    {
+        int commaIndex = token.IndexOf(',');
+        if (commaIndex < 0)
+        {
+            return token;
+        }
+
+        string[] parts = token.Split(CommaSeparator, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"복합 디바이스 응답 형식이 올바르지 않습니다: {token}");
+        }
+
+        return parts[1];
+    }
+
+    private static string ExtractBitToken(string token)
+    {
+        int commaIndex = token.IndexOf(',');
+        if (commaIndex < 0)
+        {
+            return token;
+        }
+
+        return token.Substring(0, commaIndex);
     }
 
     private static string ExtractText(byte[] frame)
@@ -115,25 +194,21 @@ public static class KeyenceHostLinkResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, "응답 프레임이 너무 짧습니다.");
         }
 
-        string full = Encoding.ASCII.GetString(frame).TrimEnd('\r', '\n');
-        if (full.Length >= ErrorCodeLength && full.StartsWith(ErrorPrefix, StringComparison.OrdinalIgnoreCase))
+        string fullText = Encoding.ASCII.GetString(frame).TrimEnd('\r', '\n');
+        if (fullText.StartsWith("E", StringComparison.OrdinalIgnoreCase) && fullText.Length >= ErrorCodeLength)
         {
-            string errCode = full.Substring(0, ErrorCodeLength).ToUpperInvariant();
-            string message = GetErrorMessage(errCode);
-            int codeNum = int.TryParse(
-                errCode.Substring(ErrorPrefix.Length),
-                NumberStyles.None,
-                CultureInfo.InvariantCulture,
-                out int parsedCode)
+            string errorCodeText = fullText.Substring(0, ErrorCodeLength).ToUpperInvariant();
+            string message = GetErrorMessage(errorCodeText);
+            int errorCodeNumber = int.TryParse(fullText.Substring(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedCode)
                 ? parsedCode
-                : InvalidErrorNumber;
-            throw new PlcDeviceException(codeNum, $"상위 링크 에러 ({errCode}): {message}");
+                : -1;
+            throw new PlcDeviceException(errorCodeNumber, $"상위 링크 에러 ({errorCodeText}): {message}");
         }
 
-        return full;
+        return fullText;
     }
 
-    private static string GetErrorMessage(string code) => code switch
+    private static string GetErrorMessage(string errorCodeText) => errorCodeText switch
     {
         "E0" => "디바이스 번호 이상 (범위 초과 또는 미등록 디바이스)",
         "E1" => "커맨드 이상 (미지원 명령 또는 파라미터 형식 오류)",

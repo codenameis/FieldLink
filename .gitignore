@@ -1,20 +1,19 @@
 bin/
 obj/
 .vs/
+.vscode/
+.idea/
 *.user
+*.suo
+*.userosscache
+*.sln.docstates
 TestResults/
 docs/
+desktop.ini
+Thumbs.db
+.DS_Store
 
-# AI 에이전트 관련 파일 (README.md 제외)
-AGENTS.md
-CLAUDE.md
-GEMINI.md
-.agents/
-.agent/
-.gemini/
-.claude/
-.cursor/
-.cursorrules
-.windsurf/
-.aider*
-.github/copilot-instructions.md
+*.md
+!README.md
+!README.ko.md
+!THIRD-PARTY-NOTICES.md

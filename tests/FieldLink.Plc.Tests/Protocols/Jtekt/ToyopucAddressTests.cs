@@ -23,4 +23,21 @@ public class ToyopucAddressTests
         Assert.Equal(expectedPrg, parsedAddress.Prg);
         Assert.Equal(isBit, parsedAddress.IsBit);
     }
+
+    [Theory]
+    [InlineData("EM0", 0x0600, 0)]
+    [InlineData("EM15", 0x0601, 5)]
+    [InlineData("EK1F", 0x0101, 15)]
+    [InlineData("EM1.A", 0x0601, 10)]
+    public void Parse_ExtendedBitAddresses_CalculatesWordWireAddressAndBitOffset(
+        string input,
+        ushort expectedWordWireAddress,
+        byte expectedBitOffset)
+    {
+        var parsedAddress = ToyopucAddress.Parse(input, isBitAccess: true);
+        Assert.Equal((byte)0x00, parsedAddress.Prg);
+        Assert.True(parsedAddress.IsBit);
+        Assert.Equal(expectedWordWireAddress, parsedAddress.WireAddress);
+        Assert.Equal(expectedBitOffset, parsedAddress.BitOffset);
+    }
 }

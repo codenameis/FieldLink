@@ -3,9 +3,6 @@
 FieldLink is licensed under the MIT License. This file lists third-party material whose
 expression was consulted or adapted, as required by the licenses of that material.
 
-Policy: see `AGENTS.md` §1-7 and `docs/clean-room/README.md` §9.
-Register of consulted sources: `docs/clean-room/provenance-log.md` §7.
-
 ## Entries
 
 ### OPC Foundation .NET Standard Reference Stack (`OPCFoundation.NetStandard.Opc.Ua.Client`)

@@ -93,35 +93,35 @@ public static class MCBinaryRequestBuilder
         int offset = 0;
 
         // 1. 서브헤더 (3E: 50 00, 4E: 54 00 + Serial + Reserved)
-        BinaryBuffer.WriteUInt16LE(frame, offset, is4E ? Request4ESubheader : Request3ESubheader);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset, is4E ? Request4ESubheader : Request3ESubheader);
         offset += FieldByteSize;
 
         if (is4E)
         {
-            BinaryBuffer.WriteUInt16LE(frame, offset, serialNumber);
-            BinaryBuffer.WriteUInt16LE(frame, offset + FieldByteSize, ReservedWordZero);
+            BinaryBuffer.WriteUInt16LittleEndian(frame, offset, serialNumber);
+            BinaryBuffer.WriteUInt16LittleEndian(frame, offset + FieldByteSize, ReservedWordZero);
             offset += SerialBlockSize;
         }
 
         // 2. 액세스 경로 (5 Bytes) 및 요청 데이터 길이 (2 Bytes)
         frame[offset++] = options.NetworkNumber;
         frame[offset++] = options.PcNumber;
-        BinaryBuffer.WriteUInt16LE(frame, offset, options.ModuleIoNumber);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset, options.ModuleIoNumber);
         offset += FieldByteSize;
         frame[offset++] = options.ModuleStationNumber;
-        BinaryBuffer.WriteUInt16LE(frame, offset, (ushort)bodyLength);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset, (ushort)bodyLength);
         offset += FieldByteSize;
 
         // 3. 감시 타이머, 커맨드, 서브커맨드 (6 Bytes)
-        BinaryBuffer.WriteUInt16LE(frame, offset, options.MonitoringTimer);
-        BinaryBuffer.WriteUInt16LE(frame, offset + FieldByteSize, (ushort)command);
-        BinaryBuffer.WriteUInt16LE(frame, offset + (FieldByteSize * 2), (ushort)options.Series.GetSubcommand(address.IsBit));
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset, options.MonitoringTimer);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + FieldByteSize, (ushort)command);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset + (FieldByteSize * 2), (ushort)options.Series.GetSubcommand(address.IsBit));
         offset += FixedCommandHeaderBytes;
 
         // 4. 선두 디바이스 번호, 디바이스 코드, 디바이스 점수
         WriteLittleEndian(frame, ref offset, address.DeviceNumber, devNumBytes);
         WriteLittleEndian(frame, ref offset, address.Device.Code, devCodeBytes);
-        BinaryBuffer.WriteUInt16LE(frame, offset, pointCount);
+        BinaryBuffer.WriteUInt16LittleEndian(frame, offset, pointCount);
         offset += PointCountByteSize;
 
         // 5. 쓰기 데이터 페이로드

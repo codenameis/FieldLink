@@ -13,13 +13,13 @@ public class MewtocolProtocolTests
     {
         string prefix = $"%{station:X2}{status}{body}";
         byte bcc = 0;
-        foreach (char c in prefix)
+        foreach (char character in prefix)
         {
-            bcc ^= (byte)c;
+            bcc ^= (byte)character;
         }
 
-        string full = $"{prefix}{bcc:X2}\r";
-        return Encoding.ASCII.GetBytes(full);
+        string fullFrame = $"{prefix}{bcc:X2}\r";
+        return Encoding.ASCII.GetBytes(fullFrame);
     }
 
     [Fact]
@@ -42,6 +42,63 @@ public class MewtocolProtocolTests
         string sent = Encoding.ASCII.GetString(transport.SentFrames[0]);
         // Exact vector from §4: %01#RCSX00001D\r
         Assert.Equal("%01#RCSX00001D\r", sent);
+    }
+
+    [Fact]
+    public async Task ReadAsync_MultipleCoils_SequentiallyReadsWithRcsAcrossWordBoundary()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = 0xEE });
+
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "RC1"));
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "RC0"));
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "RC1"));
+
+        var request = new PlcReadRequest("R10E", PlcDataType.Boolean, 3);
+        byte[] result = await protocol.ReadAsync(request, default);
+
+        Assert.Equal(new byte[] { 1, 0, 1 }, result);
+        Assert.Equal(3, transport.SentFrames.Count);
+        Assert.StartsWith("%EE#RCSR010E", Encoding.ASCII.GetString(transport.SentFrames[0]));
+        Assert.StartsWith("%EE#RCSR010F", Encoding.ASCII.GetString(transport.SentFrames[1]));
+        Assert.StartsWith("%EE#RCSR0110", Encoding.ASCII.GetString(transport.SentFrames[2]));
+    }
+
+    [Fact]
+    public async Task WriteAsync_MultipleCoils_SequentiallyWritesWithWcs()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = 0xEE });
+
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "WC"));
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "WC"));
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "WC"));
+
+        byte[] bitData = [1, 0, 1];
+        var request = new PlcWriteRequest("R10E", PlcDataType.Boolean, bitData);
+        await protocol.WriteAsync(request, default);
+
+        Assert.Equal(3, transport.SentFrames.Count);
+        Assert.StartsWith("%EE#WCSR010E1", Encoding.ASCII.GetString(transport.SentFrames[0]));
+        Assert.StartsWith("%EE#WCSR010F0", Encoding.ASCII.GetString(transport.SentFrames[1]));
+        Assert.StartsWith("%EE#WCSR01101", Encoding.ASCII.GetString(transport.SentFrames[2]));
+    }
+
+    [Fact]
+    public async Task WriteAsync_MultipleCoils_FailureOnSecondCoil_PreservesCompletedCount()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = 0xEE });
+
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "WC"));
+        transport.EnqueueResponse(MakeResponse(0xEE, '!', "65"));
+
+        byte[] bitData = [1, 1, 0];
+        var request = new PlcWriteRequest("R0", PlcDataType.Boolean, bitData);
+        var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(request, default));
+
+        Assert.Equal(65, exception.DeviceErrorCode);
+        Assert.Equal(1, exception.CompletedCount);
     }
 
     [Fact]
@@ -70,6 +127,29 @@ public class MewtocolProtocolTests
     }
 
     [Fact]
+    public async Task ReadAsync_Int32MultiChunk_ChunksAlignedByElementAndAdvancesWords()
+    {
+        var transport = new ScriptedTransport();
+        // MaxReadWords = 5 -> wordsPerElement(Int32) = 2 -> maxElementsPerChunk = 2 (4 words per chunk)
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = 0xEE, MaxReadWords = 5 });
+
+        // Chunk 1: 2 Int32 elements (4 words = 16 hex chars)
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "RD0100020003000400"));
+        // Chunk 2: 1 Int32 element (2 words = 8 hex chars)
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "RD05000600"));
+
+        var request = new PlcReadRequest("DT100", PlcDataType.Int32, 3);
+        byte[] result = await protocol.ReadAsync(request, default);
+
+        Assert.Equal(12, result.Length);
+        Assert.Equal(new byte[] { 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0 }, result);
+
+        Assert.Equal(2, transport.SentFrames.Count);
+        Assert.StartsWith("%EE#RDD0010000103", Encoding.ASCII.GetString(transport.SentFrames[0]));
+        Assert.StartsWith("%EE#RDD0010400105", Encoding.ASCII.GetString(transport.SentFrames[1]));
+    }
+
+    [Fact]
     public async Task WriteAsync_DT100_2Words_BuildsExpectedRequest()
     {
         var transport = new ScriptedTransport();
@@ -89,6 +169,27 @@ public class MewtocolProtocolTests
     }
 
     [Fact]
+    public async Task WriteAsync_Int32MultiChunk_FailureOnSecondChunk_PreservesCompletedCount()
+    {
+        var transport = new ScriptedTransport();
+        // MaxWriteWords = 5 -> wordsPerElement(Int32) = 2 -> maxElementsPerChunk = 2 (4 words per chunk)
+        var protocol = new MewtocolProtocol(transport, new MewtocolOptions { Station = 0xEE, MaxWriteWords = 5 });
+
+        transport.EnqueueResponse(MakeResponse(0xEE, '$', "WD"));
+        transport.EnqueueResponse(MakeResponse(0xEE, '!', "61"));
+
+        byte[] data = new byte[12]; // 3 Int32 elements
+        var request = new PlcWriteRequest("DT100", PlcDataType.Int32, data);
+        var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.WriteAsync(request, default));
+
+        Assert.Equal(61, exception.DeviceErrorCode);
+        Assert.Equal(2, exception.CompletedCount);
+        Assert.Equal(2, transport.SentFrames.Count);
+        Assert.StartsWith("%EE#WDD0010000103", Encoding.ASCII.GetString(transport.SentFrames[0]));
+        Assert.StartsWith("%EE#WDD0010400105", Encoding.ASCII.GetString(transport.SentFrames[1]));
+    }
+
+    [Fact]
     public async Task ReadAsync_ErrorResponse_ThrowsPlcDeviceException()
     {
         var transport = new ScriptedTransport();
@@ -99,9 +200,9 @@ public class MewtocolProtocolTests
         transport.EnqueueResponse(response);
 
         var request = new PlcReadRequest("X0", PlcDataType.Boolean, 1);
-        var ex = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.ReadAsync(request, default));
+        var exception = await Assert.ThrowsAsync<PlcDeviceException>(() => protocol.ReadAsync(request, default));
 
-        Assert.Equal(40, ex.DeviceErrorCode);
-        Assert.Contains("BCC", ex.Message);
+        Assert.Equal(40, exception.DeviceErrorCode);
+        Assert.Contains("BCC", exception.Message);
     }
 }

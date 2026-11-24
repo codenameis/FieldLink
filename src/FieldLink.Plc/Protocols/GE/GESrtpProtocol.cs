@@ -12,20 +12,24 @@ namespace FieldLink.Plc.Protocols.GE;
 /// <summary>GE Fanuc / Emerson SRTP 프로토콜 드라이버입니다. (사양서 §1~§3)</summary>
 public sealed class GESrtpProtocol : IPlcProtocol
 {
-    private const int BytesPerWord = 2;
     private const int BitsPerByte = 8;
-    private const int SequenceMask = 0x7FFF;
-    private const ushort InitialSequenceId = 1;
+    private const int BytesPerWord = 2;
+    private const int SequenceMask = 0xFFFF;
+
     private static readonly PaddedStringFormat DefaultStringFormat = new(paddingByte: 0x00, wordSize: BytesPerWord);
 
     private readonly ITransport _transport;
     private readonly GESrtpOptions _options;
     private readonly GESrtpFrameDecoder _frameDecoder;
-    private readonly object _seqLock = new();
+    private readonly object _sessionLock = new();
+
+    private long? _initializedConnectionId;
     private int _sequenceCounter;
-    private long _lastConnectionId = -1;
 
     /// <summary>전송 및 옵션으로 <see cref="GESrtpProtocol"/>을 초기화합니다.</summary>
+    /// <param name="transport">바이트 프레임을 주고받는 전송 구현체입니다.</param>
+    /// <param name="options">최대 분할 크기 등의 프로토콜 설정입니다.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="transport"/>가 null일 때.</exception>
     public GESrtpProtocol(ITransport transport, GESrtpOptions? options = null)
     {
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
@@ -40,14 +44,13 @@ public sealed class GESrtpProtocol : IPlcProtocol
     /// <inheritdoc />
     public async Task ConnectAsync(CancellationToken cancellationToken)
     {
-        byte[] initReq = GESrtpRequestBuilder.BuildInitSession();
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            ResetSequenceIfNewConnection(session.ConnectionId);
-            byte[] initRes = await session.ExchangeAsync(initReq, _frameDecoder).ConfigureAwait(false);
-            GESrtpResponseParser.ValidateInitResponse(initRes);
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+        await _transport.RunExclusiveAsync(
+            async session =>
+            {
+                await SendSessionHandshakeAsync(session).ConfigureAwait(false);
+                return true;
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -63,52 +66,37 @@ public sealed class GESrtpProtocol : IPlcProtocol
 
         bool isBitAccess = request.DataType == PlcDataType.Boolean;
         var address = GESrtpAddress.Parse(request.Address, isBitAccess);
-        int elementSize = request.DataType.GetElementSize();
-        ValidateAddressAndDataType(address, request.DataType, elementSize);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        int unitsPerElement = GetAddressUnitsPerElement(address, elementSize);
-        int maxElements = GetMaxElements(address, _options.MaxReadBytes, elementSize, unitsPerElement);
+        int requestedByteCount = request.ByteCount;
+        PlcReadRequest effectiveRequest = address.IsWord
+            ? ProtocolExecutionGuard.NormalizeWordReadRequest(request)
+            : request;
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
-        byte[] combinedBuffer = new byte[request.ByteCount];
+        int elementByteSize = effectiveRequest.DataType.GetElementSize();
+        int unitsPerElement = CalculateUnitsPerElement(address, elementByteSize);
+        int maxElements = CalculateMaxReadElements(address, elementByteSize, unitsPerElement);
 
-        await _transport.RunExclusiveAsync<bool>(async session =>
-        {
-            ResetSequenceIfNewConnection(session.ConnectionId);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElements);
+        byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
 
-            foreach (RequestChunker.Chunk chunk in chunks)
+        await _transport.RunExclusiveAsync(
+            async session =>
             {
-                GESrtpAddress chunkAddress = address.Offset(chunk.ElementOffset * unitsPerElement);
-                ushort requestCount = (ushort)(chunk.ElementCount * unitsPerElement);
-                ushort seq = NextSequenceId();
+                await EnsureSessionInitializedAsync(session).ConfigureAwait(false);
 
-                byte[] requestFrame = GESrtpRequestBuilder.BuildReadRequest(seq, chunkAddress, requestCount);
-                byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-
-                int expectedBytes = address.IsBit
-                    ? BitPacking.GetPackedByteCount(requestCount)
-                    : chunk.ElementCount * elementSize;
-                byte[] rawData = GESrtpResponseParser.ParseReadResponse(responseFrame, seq, expectedBytes);
-
-                if (address.IsBit)
+                foreach (RequestChunker.Chunk chunk in chunks)
                 {
-                    bool[] bits = BitPacking.Unpack(rawData, 0, requestCount);
-                    for (int i = 0; i < requestCount; i++)
-                    {
-                        combinedBuffer[chunk.ElementOffset + i] = (byte)(bits[i] ? 1 : 0);
-                    }
+                    byte[] chunkData = await ReadChunkAsync(session, address, chunk, elementByteSize).ConfigureAwait(false);
+                    int destinationOffset = chunk.ElementOffset * elementByteSize;
+                    Array.Copy(chunkData, 0, combinedBuffer, destinationOffset, chunkData.Length);
                 }
-                else
-                {
-                    int destOffset = chunk.ElementOffset * elementSize;
-                    Array.Copy(rawData, 0, combinedBuffer, destOffset, rawData.Length);
-                }
-            }
 
-            return true;
-        }, cancellationToken).ConfigureAwait(false);
+                return true;
+            },
+            cancellationToken).ConfigureAwait(false);
 
-        return combinedBuffer;
+        return ProtocolExecutionGuard.TrimReadResult(combinedBuffer, requestedByteCount);
     }
 
     /// <inheritdoc />
@@ -121,124 +109,205 @@ public sealed class GESrtpProtocol : IPlcProtocol
 
         bool isBitAccess = request.DataType == PlcDataType.Boolean;
         var address = GESrtpAddress.Parse(request.Address, isBitAccess);
-        int elementSize = request.DataType.GetElementSize();
-        ValidateAddressAndDataType(address, request.DataType, elementSize);
+        ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
 
-        int unitsPerElement = GetAddressUnitsPerElement(address, elementSize);
-        int maxElements = GetMaxElements(address, _options.MaxWriteBytes, elementSize, unitsPerElement);
+        int totalOriginalCount = request.Count;
+        int originalElementsPerUnit = 1;
+        PlcWriteRequest effectiveRequest = address.IsWord
+            ? ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit)
+            : request;
 
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
+        int elementByteSize = effectiveRequest.DataType.GetElementSize();
+        int unitsPerElement = CalculateUnitsPerElement(address, elementByteSize);
+        int maxElements = CalculateMaxWriteElements(address, elementByteSize, unitsPerElement);
+
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElements);
         int completedElements = 0;
 
         try
         {
-            await _transport.RunExclusiveAsync<bool>(async session =>
-            {
-                ResetSequenceIfNewConnection(session.ConnectionId);
-
-                foreach (RequestChunker.Chunk chunk in chunks)
+            await _transport.RunExclusiveAsync(
+                async session =>
                 {
-                    GESrtpAddress chunkAddress = address.Offset(chunk.ElementOffset * unitsPerElement);
-                    ushort requestCount = (ushort)(chunk.ElementCount * unitsPerElement);
-                    byte[] rawChunkData = request.GetData(chunk.ElementOffset, chunk.ElementCount);
-                    byte[] payload = address.IsBit ? PackBits(rawChunkData) : rawChunkData;
-                    ushort seq = NextSequenceId();
+                    await EnsureSessionInitializedAsync(session).ConfigureAwait(false);
 
-                    byte[] requestFrame = GESrtpRequestBuilder.BuildWriteRequest(seq, chunkAddress, requestCount, payload);
-                    byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-                    GESrtpResponseParser.VerifyWriteResponse(responseFrame, seq);
-                    completedElements += chunk.ElementCount;
-                }
+                    foreach (RequestChunker.Chunk chunk in chunks)
+                    {
+                        await WriteChunkAsync(session, address, chunk, effectiveRequest).ConfigureAwait(false);
+                        completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
+                            completedElements,
+                            chunk.ElementCount,
+                            originalElementsPerUnit,
+                            totalOriginalCount);
+                    }
 
-                return true;
-            }, cancellationToken).ConfigureAwait(false);
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
         }
-        catch (PlcDeviceException deviceException)
+        catch (Exception exception) when (ProtocolExecutionGuard.ShouldWrapWriteException(exception, completedElements))
         {
-            throw new PlcDeviceException(deviceException.DeviceErrorCode, deviceException.Message) { CompletedCount = completedElements };
-        }
-        catch (PlcException exception)
-        {
-            throw new PlcException(exception.Kind, exception.Message, exception.InnerException)
-            {
-                CompletedCount = completedElements
-            };
+            throw ProtocolExecutionGuard.WrapWriteException(exception, completedElements);
         }
     }
 
-    private static int GetAddressUnitsPerElement(GESrtpAddress address, int elementSize)
+    private static int CalculateUnitsPerElement(GESrtpAddress address, int elementByteSize)
     {
         if (address.IsBit)
         {
             return 1;
         }
 
-        return address.IsWord ? elementSize / BytesPerWord : elementSize;
-    }
-
-    private static int GetMaxElements(GESrtpAddress address, int maxBytes, int elementSize, int unitsPerElement)
-    {
-        if (address.IsBit)
-        {
-            return maxBytes * BitsPerByte;
-        }
-
         if (address.IsWord)
         {
-            return RequestChunker.CalculateElementLimit(maxBytes / BytesPerWord, unitsPerElement);
+            return Math.Max(1, elementByteSize / BytesPerWord);
         }
 
-        return RequestChunker.CalculateElementLimit(maxBytes, elementSize);
+        return Math.Max(1, elementByteSize);
     }
 
-    private static void ValidateAddressAndDataType(GESrtpAddress address, PlcDataType dataType, int elementSize)
+    private static byte[] UnpackReadBits(byte[] packedBytes, int bitOffsetInByte, int bitCount)
     {
-        if (dataType == PlcDataType.Boolean && !address.IsBit)
+        bool[] unpackedFlags = BitPacking.Unpack(packedBytes, bitOffsetInByte + bitCount);
+        byte[] elementBytes = new byte[bitCount];
+
+        for (int i = 0; i < bitCount; i++)
         {
-            throw new ArgumentException($"워드 전용 영역 '{address.Original}'에는 Boolean 자료형을 사용할 수 없습니다.", nameof(dataType));
+            elementBytes[i] = unpackedFlags[bitOffsetInByte + i] ? (byte)1 : (byte)0;
         }
 
-        if (address.IsWord && elementSize % BytesPerWord != 0)
-        {
-            throw new ArgumentException($"워드 영역 '{address.Original}'에는 2바이트 배수 자료형만 사용할 수 있습니다.", nameof(dataType));
-        }
+        return elementBytes;
     }
 
-    private static byte[] PackBits(byte[] rawBits)
+    private static byte[] PackWriteBits(ushort startWireAddress, byte[] bitElements)
     {
-        bool[] bits = new bool[rawBits.Length];
-        for (int i = 0; i < rawBits.Length; i++)
+        // 사양서 §1.6: 오프셋 (0-based 시작주소 % 8)부터 쓰기 비트를 배치하고 LSB 우선으로 8비트씩 패킹한다.
+        int bitOffsetInByte = startWireAddress % BitsPerByte;
+        int totalBitSpan = bitOffsetInByte + bitElements.Length;
+        int packedByteCount = (totalBitSpan + (BitsPerByte - 1)) / BitsPerByte;
+        byte[] packedBytes = new byte[packedByteCount];
+
+        for (int i = 0; i < bitElements.Length; i++)
         {
-            bits[i] = rawBits[i] != 0;
+            if (bitElements[i] != 0)
+            {
+                int targetBitPosition = bitOffsetInByte + i;
+                int byteIndex = targetBitPosition / BitsPerByte;
+                int bitShift = targetBitPosition % BitsPerByte;
+                packedBytes[byteIndex] |= (byte)(1 << bitShift);
+            }
         }
 
-        return BitPacking.Pack(bits);
+        return packedBytes;
+    }
+
+    private int CalculateMaxReadElements(GESrtpAddress address, int elementByteSize, int unitsPerElement)
+    {
+        if (address.IsWord)
+        {
+            int effectiveMaxWords = Math.Min(_options.MaxWordsPerRequest, Math.Max(1, _options.MaxReadBytes / BytesPerWord));
+            return RequestChunker.CalculateElementLimit(effectiveMaxWords, unitsPerElement);
+        }
+
+        if (address.IsBit)
+        {
+            return Math.Max(1, (_options.MaxReadBytes * BitsPerByte) - (BitsPerByte - 1));
+        }
+
+        return Math.Max(1, _options.MaxReadBytes / elementByteSize);
+    }
+
+    private int CalculateMaxWriteElements(GESrtpAddress address, int elementByteSize, int unitsPerElement)
+    {
+        if (address.IsWord)
+        {
+            int effectiveMaxWords = Math.Min(_options.MaxWordsPerRequest, Math.Max(1, _options.MaxWriteBytes / BytesPerWord));
+            return RequestChunker.CalculateElementLimit(effectiveMaxWords, unitsPerElement);
+        }
+
+        if (address.IsBit)
+        {
+            return Math.Max(1, (_options.MaxWriteBytes * BitsPerByte) - (BitsPerByte - 1));
+        }
+
+        return Math.Max(1, _options.MaxWriteBytes / elementByteSize);
+    }
+
+    private async Task<byte[]> ReadChunkAsync(
+        ITransportSession session,
+        GESrtpAddress baseAddress,
+        RequestChunker.Chunk chunk,
+        int elementByteSize)
+    {
+        int unitsPerElement = CalculateUnitsPerElement(baseAddress, elementByteSize);
+        GESrtpAddress chunkAddress = baseAddress.Offset(chunk.ElementOffset * unitsPerElement);
+        ushort wireQuantity = (ushort)(chunk.ElementCount * unitsPerElement);
+        ushort sequenceId = NextSequenceId();
+
+        byte[] requestFrame = GESrtpRequestBuilder.BuildReadRequest(sequenceId, chunkAddress, wireQuantity);
+        byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+
+        if (chunkAddress.IsBit)
+        {
+            int bitOffsetInByte = chunkAddress.WireAddress % BitsPerByte;
+            int totalBitSpan = bitOffsetInByte + chunk.ElementCount;
+            int expectedPackedBytes = (totalBitSpan + (BitsPerByte - 1)) / BitsPerByte;
+            byte[] packedBytes = GESrtpResponseParser.ParseReadResponse(responseFrame, sequenceId, expectedPackedBytes);
+            return UnpackReadBits(packedBytes, bitOffsetInByte, chunk.ElementCount);
+        }
+
+        int expectedByteCount = chunk.ElementCount * elementByteSize;
+        return GESrtpResponseParser.ParseReadResponse(responseFrame, sequenceId, expectedByteCount);
+    }
+
+    private async Task WriteChunkAsync(
+        ITransportSession session,
+        GESrtpAddress baseAddress,
+        RequestChunker.Chunk chunk,
+        PlcWriteRequest request)
+    {
+        int unitsPerElement = CalculateUnitsPerElement(baseAddress, request.DataType.GetElementSize());
+        GESrtpAddress chunkAddress = baseAddress.Offset(chunk.ElementOffset * unitsPerElement);
+        ushort wireQuantity = (ushort)(chunk.ElementCount * unitsPerElement);
+        byte[] rawSlice = request.GetData(chunk.ElementOffset, chunk.ElementCount);
+        byte[] payloadBytes = chunkAddress.IsBit
+            ? PackWriteBits(chunkAddress.WireAddress, rawSlice)
+            : rawSlice;
+
+        ushort sequenceId = NextSequenceId();
+        byte[] requestFrame = GESrtpRequestBuilder.BuildWriteRequest(sequenceId, chunkAddress, wireQuantity, payloadBytes);
+        byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
+        GESrtpResponseParser.VerifyWriteResponse(responseFrame, sequenceId);
+    }
+
+    private async Task EnsureSessionInitializedAsync(ITransportSession session)
+    {
+        lock (_sessionLock)
+        {
+            if (_initializedConnectionId == session.ConnectionId)
+            {
+                return;
+            }
+        }
+
+        await SendSessionHandshakeAsync(session).ConfigureAwait(false);
+    }
+
+    private async Task SendSessionHandshakeAsync(ITransportSession session)
+    {
+        byte[] initRequest = GESrtpRequestBuilder.BuildInitSession();
+        byte[] initResponse = await session.ExchangeAsync(initRequest, _frameDecoder).ConfigureAwait(false);
+        GESrtpResponseParser.ValidateInitResponse(initResponse);
+
+        lock (_sessionLock)
+        {
+            _initializedConnectionId = session.ConnectionId;
+        }
     }
 
     private ushort NextSequenceId()
     {
-        lock (_seqLock)
-        {
-            int next = _sequenceCounter + 1;
-            if (next > SequenceMask)
-            {
-                next = InitialSequenceId;
-            }
-
-            _sequenceCounter = next;
-            return (ushort)next;
-        }
-    }
-
-    private void ResetSequenceIfNewConnection(long connectionId)
-    {
-        lock (_seqLock)
-        {
-            if (_lastConnectionId != connectionId)
-            {
-                _lastConnectionId = connectionId;
-                _sequenceCounter = 0;
-            }
-        }
+        int next = Interlocked.Increment(ref _sequenceCounter);
+        return (ushort)(next & SequenceMask);
     }
 }

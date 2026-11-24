@@ -22,12 +22,12 @@ public static partial class PlcValueConverter
     public static ushort ToUInt16(byte[] buffer, int offset = 0, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateBuffer(buffer, offset, 2);
-        byte b0 = buffer[offset];
-        byte b1 = buffer[offset + 1];
+        byte firstByte = buffer[offset];
+        byte secondByte = buffer[offset + 1];
 
-        return byteOrder is ByteOrder.LittleEndian or ByteOrder.LittleEndianWordSwap
-            ? (ushort)(b0 | (b1 << 8))
-            : (ushort)((b0 << 8) | b1);
+        return IsLittleEndianWithinWord(byteOrder)
+            ? (ushort)(firstByte | (secondByte << 8))
+            : (ushort)((firstByte << 8) | secondByte);
     }
 
     /// <summary>버퍼에서 32비트 부호 있는 정수를 읽습니다.</summary>
@@ -40,19 +40,14 @@ public static partial class PlcValueConverter
     public static uint ToUInt32(byte[] buffer, int offset = 0, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateBuffer(buffer, offset, 4);
-        byte b0 = buffer[offset];
-        byte b1 = buffer[offset + 1];
-        byte b2 = buffer[offset + 2];
-        byte b3 = buffer[offset + 3];
+        EnsureDefinedByteOrder(byteOrder);
 
-        return byteOrder switch
-        {
-            ByteOrder.BigEndian => ((uint)b0 << 24) | ((uint)b1 << 16) | ((uint)b2 << 8) | b3,
-            ByteOrder.BigEndianWordSwap => ((uint)b2 << 24) | ((uint)b3 << 16) | ((uint)b0 << 8) | b1,
-            ByteOrder.LittleEndian => ((uint)b3 << 24) | ((uint)b2 << 16) | ((uint)b1 << 8) | b0,
-            ByteOrder.LittleEndianWordSwap => ((uint)b1 << 24) | ((uint)b0 << 16) | ((uint)b3 << 8) | b2,
-            _ => throw new ArgumentOutOfRangeException(nameof(byteOrder), byteOrder, "지원하지 않는 바이트 순서입니다.")
-        };
+        ushort firstWord = ToUInt16(buffer, offset, byteOrder);
+        ushort secondWord = ToUInt16(buffer, offset + 2, byteOrder);
+
+        return IsLowWordFirst(byteOrder)
+            ? ((uint)secondWord << 16) | firstWord
+            : ((uint)firstWord << 16) | secondWord;
     }
 
     /// <summary>버퍼에서 64비트 부호 있는 정수를 읽습니다.</summary>
@@ -65,31 +60,16 @@ public static partial class PlcValueConverter
     public static ulong ToUInt64(byte[] buffer, int offset = 0, ByteOrder byteOrder = ByteOrder.BigEndian)
     {
         ValidateBuffer(buffer, offset, 8);
-        byte b0 = buffer[offset];
-        byte b1 = buffer[offset + 1];
-        byte b2 = buffer[offset + 2];
-        byte b3 = buffer[offset + 3];
-        byte b4 = buffer[offset + 4];
-        byte b5 = buffer[offset + 5];
-        byte b6 = buffer[offset + 6];
-        byte b7 = buffer[offset + 7];
+        EnsureDefinedByteOrder(byteOrder);
 
-        return byteOrder switch
-        {
-            ByteOrder.BigEndian =>
-                ((ulong)b0 << 56) | ((ulong)b1 << 48) | ((ulong)b2 << 40) | ((ulong)b3 << 32) |
-                ((ulong)b4 << 24) | ((ulong)b5 << 16) | ((ulong)b6 << 8) | b7,
-            ByteOrder.BigEndianWordSwap =>
-                ((ulong)b6 << 56) | ((ulong)b7 << 48) | ((ulong)b4 << 40) | ((ulong)b5 << 32) |
-                ((ulong)b2 << 24) | ((ulong)b3 << 16) | ((ulong)b0 << 8) | b1,
-            ByteOrder.LittleEndian =>
-                ((ulong)b7 << 56) | ((ulong)b6 << 48) | ((ulong)b5 << 40) | ((ulong)b4 << 32) |
-                ((ulong)b3 << 24) | ((ulong)b2 << 16) | ((ulong)b1 << 8) | b0,
-            ByteOrder.LittleEndianWordSwap =>
-                ((ulong)b1 << 56) | ((ulong)b0 << 48) | ((ulong)b3 << 40) | ((ulong)b2 << 32) |
-                ((ulong)b5 << 24) | ((ulong)b4 << 16) | ((ulong)b7 << 8) | b6,
-            _ => throw new ArgumentOutOfRangeException(nameof(byteOrder), byteOrder, "지원하지 않는 바이트 순서입니다.")
-        };
+        ushort word0 = ToUInt16(buffer, offset, byteOrder);
+        ushort word1 = ToUInt16(buffer, offset + 2, byteOrder);
+        ushort word2 = ToUInt16(buffer, offset + 4, byteOrder);
+        ushort word3 = ToUInt16(buffer, offset + 6, byteOrder);
+
+        return IsLowWordFirst(byteOrder)
+            ? ((ulong)word3 << 48) | ((ulong)word2 << 32) | ((ulong)word1 << 16) | word0
+            : ((ulong)word0 << 48) | ((ulong)word1 << 32) | ((ulong)word2 << 16) | word3;
     }
 
     /// <summary>버퍼에서 단정밀도 부동소수점(float)을 읽습니다.</summary>
@@ -195,18 +175,19 @@ public static partial class PlcValueConverter
 
     internal static void WriteUInt16(byte[] destination, int offset, ushort value, ByteOrder byteOrder)
     {
-        byte b0 = (byte)((value >> 8) & 0xFF);
-        byte b1 = (byte)(value & 0xFF);
+        EnsureDefinedByteOrder(byteOrder);
+        byte highByte = (byte)((value >> 8) & 0xFF);
+        byte lowByte = (byte)(value & 0xFF);
 
-        if (byteOrder is ByteOrder.LittleEndian or ByteOrder.LittleEndianWordSwap)
+        if (IsLittleEndianWithinWord(byteOrder))
         {
-            destination[offset] = b1;
-            destination[offset + 1] = b0;
+            destination[offset] = lowByte;
+            destination[offset + 1] = highByte;
         }
         else
         {
-            destination[offset] = b0;
-            destination[offset + 1] = b1;
+            destination[offset] = highByte;
+            destination[offset + 1] = lowByte;
         }
     }
 
@@ -217,19 +198,20 @@ public static partial class PlcValueConverter
 
     internal static void WriteUInt32(byte[] destination, int offset, uint value, ByteOrder byteOrder)
     {
-        byte a = (byte)((value >> 24) & 0xFF);
-        byte b = (byte)((value >> 16) & 0xFF);
-        byte c = (byte)((value >> 8) & 0xFF);
-        byte d = (byte)(value & 0xFF);
+        EnsureDefinedByteOrder(byteOrder);
+        ushort highWord = (ushort)(value >> 16);
+        ushort lowWord = (ushort)(value & 0xFFFF);
 
-        (destination[offset], destination[offset + 1], destination[offset + 2], destination[offset + 3]) = byteOrder switch
+        if (IsLowWordFirst(byteOrder))
         {
-            ByteOrder.BigEndian => (a, b, c, d),
-            ByteOrder.BigEndianWordSwap => (c, d, a, b),
-            ByteOrder.LittleEndian => (d, c, b, a),
-            ByteOrder.LittleEndianWordSwap => (b, a, d, c),
-            _ => throw new ArgumentOutOfRangeException(nameof(byteOrder), byteOrder, "지원하지 않는 바이트 순서입니다.")
-        };
+            WriteUInt16(destination, offset, lowWord, byteOrder);
+            WriteUInt16(destination, offset + 2, highWord, byteOrder);
+        }
+        else
+        {
+            WriteUInt16(destination, offset, highWord, byteOrder);
+            WriteUInt16(destination, offset + 2, lowWord, byteOrder);
+        }
     }
 
     internal static void WriteInt64(byte[] destination, int offset, long value, ByteOrder byteOrder)
@@ -239,25 +221,43 @@ public static partial class PlcValueConverter
 
     internal static void WriteUInt64(byte[] destination, int offset, ulong value, ByteOrder byteOrder)
     {
-        byte a = (byte)((value >> 56) & 0xFF);
-        byte b = (byte)((value >> 48) & 0xFF);
-        byte c = (byte)((value >> 40) & 0xFF);
-        byte d = (byte)((value >> 32) & 0xFF);
-        byte e = (byte)((value >> 24) & 0xFF);
-        byte f = (byte)((value >> 16) & 0xFF);
-        byte g = (byte)((value >> 8) & 0xFF);
-        byte h = (byte)(value & 0xFF);
+        EnsureDefinedByteOrder(byteOrder);
+        ushort highestWord = (ushort)(value >> 48);
+        ushort upperMiddleWord = (ushort)(value >> 32);
+        ushort lowerMiddleWord = (ushort)(value >> 16);
+        ushort lowestWord = (ushort)value;
 
-        byte[] ordered = byteOrder switch
+        if (IsLowWordFirst(byteOrder))
         {
-            ByteOrder.BigEndian => new[] { a, b, c, d, e, f, g, h },
-            ByteOrder.BigEndianWordSwap => new[] { g, h, e, f, c, d, a, b },
-            ByteOrder.LittleEndian => new[] { h, g, f, e, d, c, b, a },
-            ByteOrder.LittleEndianWordSwap => new[] { b, a, d, c, f, e, h, g },
-            _ => throw new ArgumentOutOfRangeException(nameof(byteOrder), byteOrder, "지원하지 않는 바이트 순서입니다.")
-        };
+            WriteUInt16(destination, offset, lowestWord, byteOrder);
+            WriteUInt16(destination, offset + 2, lowerMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + 4, upperMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + 6, highestWord, byteOrder);
+        }
+        else
+        {
+            WriteUInt16(destination, offset, highestWord, byteOrder);
+            WriteUInt16(destination, offset + 2, upperMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + 4, lowerMiddleWord, byteOrder);
+            WriteUInt16(destination, offset + 6, lowestWord, byteOrder);
+        }
+    }
 
-        Array.Copy(ordered, 0, destination, offset, 8);
+    private static bool IsLittleEndianWithinWord(ByteOrder byteOrder) =>
+        byteOrder is ByteOrder.LittleEndian or ByteOrder.LittleEndianWordSwap;
+
+    private static bool IsLowWordFirst(ByteOrder byteOrder) =>
+        byteOrder is ByteOrder.BigEndianWordSwap or ByteOrder.LittleEndian;
+
+    private static void EnsureDefinedByteOrder(ByteOrder byteOrder)
+    {
+        if (byteOrder is not (ByteOrder.BigEndian
+            or ByteOrder.BigEndianWordSwap
+            or ByteOrder.LittleEndian
+            or ByteOrder.LittleEndianWordSwap))
+        {
+            throw new ArgumentOutOfRangeException(nameof(byteOrder), byteOrder, "지원하지 않는 바이트 순서입니다.");
+        }
     }
 
     private static void ValidateBuffer(byte[] buffer, int offset, int requiredBytes)

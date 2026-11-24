@@ -11,9 +11,13 @@ public sealed class InovanceAddress
     private const int OctalRadix = 8;
     private const int BitsPerByte = 8;
     private const int BytesPerWord = 2;
-    private const int MaxBitIndexInByte = 7;
+    private const int BitsPerWord = 16;
+    private const int WordsPer32BitCounter = 2;
+    private const int MaxBitIndexInByte = BitsPerByte - 1;
     private const int SingleCharPrefixLength = 1;
     private const int TwoCharPrefixLength = 2;
+    private const int AmMdMaxIndex = 32767;
+    private const int AmMwMaxIndex = 65535;
     private const ushort H3uXBasePdu = 0xF800;
     private const ushort H3uYBasePdu = 0xFC00;
     private const ushort H3uSmSdBasePdu = 0x2400;
@@ -23,13 +27,14 @@ public sealed class InovanceAddress
     private const ushort H3uRBasePdu = 0x3000;
     private const ushort H3uTBasePdu = 0xF000;
     private const ushort H3uCBasePdu = 0xF400;
-    private const int H3uCWordBoundary = 200;
+    private const int H3uCounter32Start = 200;
     private const ushort H3uCDoubleWordBasePdu = 0xF700;
     private const ushort H5uBBasePdu = 0x3000;
     private const ushort H5uSBasePdu = 0xE000;
     private const ushort H5uRBasePdu = 0x3000;
     private const char MinOctalDigit = '0';
     private const char MaxOctalDigit = '7';
+    private const char BitSeparator = '.';
 
     private InovanceAddress(
         string originalAddress,
@@ -37,7 +42,9 @@ public sealed class InovanceAddress
         ModbusArea area,
         ushort pduAddress,
         bool isBit,
-        byte? bitIndexInWord = null)
+        byte? bitIndexInWord = null,
+        string deviceType = "",
+        int number = 0)
     {
         OriginalAddress = originalAddress;
         Series = series;
@@ -45,6 +52,8 @@ public sealed class InovanceAddress
         PduAddress = pduAddress;
         IsBit = isBit;
         BitIndexInWord = bitIndexInWord;
+        DeviceType = deviceType;
+        Number = number;
     }
 
     /// <summary>해석 전 원본 주소 문자열입니다.</summary>
@@ -53,17 +62,29 @@ public sealed class InovanceAddress
     /// <summary>PLC 시리즈 구분입니다.</summary>
     public InovanceSeries Series { get; }
 
-    /// <summary>매핑되는 Modbus 영역입니다.</summary>
+    /// <summary>매핑된 Modbus 메모리 영역입니다.</summary>
     public ModbusArea Area { get; }
 
-    /// <summary>Modbus PDU 16비트 주소입니다.</summary>
+    /// <summary>16비트 Modbus PDU 주소입니다.</summary>
     public ushort PduAddress { get; }
 
-    /// <summary>비트 디바이스 또는 비트 접근 여부입니다.</summary>
+    /// <summary>비트 접근 여부입니다.</summary>
     public bool IsBit { get; }
 
     /// <summary>워드 내 비트 인덱스 (AM %MX 접근 시 0~15)입니다.</summary>
     public byte? BitIndexInWord { get; }
+
+    /// <summary>디바이스 종류 문자열입니다. (예: "D", "M", "C")</summary>
+    public string DeviceType { get; }
+
+    /// <summary>파싱된 디바이스 번호입니다.</summary>
+    public int Number { get; }
+
+    /// <summary>32비트 워드 디바이스(AM MD 또는 H3U C200~C255) 여부입니다.</summary>
+    public bool Is32BitWord =>
+        !IsBit &&
+        ((Series == InovanceSeries.AM && DeviceType == "MD") ||
+         (Series == InovanceSeries.H3u && DeviceType == "C" && Number >= H3uCounter32Start));
 
     /// <summary>주소 문자열을 파싱합니다.</summary>
     public static InovanceAddress Parse(string address, InovanceSeries series, bool isBitAccess = false)
@@ -92,13 +113,13 @@ public sealed class InovanceAddress
         result = null;
         errorMessage = null;
 
-        if (address is null || string.IsNullOrWhiteSpace(address))
+        if (string.IsNullOrWhiteSpace(address))
         {
             errorMessage = "주소 문자열이 비어 있습니다.";
             return false;
         }
 
-        string trimmed = address.Trim().ToUpperInvariant();
+        string trimmed = address!.Trim().ToUpperInvariant();
         if (trimmed.StartsWith("%", StringComparison.Ordinal))
         {
             trimmed = trimmed.Substring(SingleCharPrefixLength);
@@ -115,14 +136,8 @@ public sealed class InovanceAddress
             InovanceSeries.AM => TryParseAm(trimmed, isBitAccess, out result, out errorMessage),
             InovanceSeries.H3u => TryParseH3u(trimmed, isBitAccess, out result, out errorMessage),
             InovanceSeries.H5u => TryParseH5u(trimmed, out result, out errorMessage),
-            _ => FailUnsupportedSeries(series, out errorMessage),
+            _ => throw new ArgumentOutOfRangeException(nameof(series), series, "지원하지 않는 시리즈입니다."),
         };
-    }
-
-    private static bool FailUnsupportedSeries(InovanceSeries series, out string? errorMessage)
-    {
-        errorMessage = $"지원하지 않는 Inovance 시리즈입니다: {series}";
-        return false;
     }
 
     private static bool TryParseAm(
@@ -136,12 +151,14 @@ public sealed class InovanceAddress
 
         if (trimmed.StartsWith("QX", StringComparison.Ordinal) || trimmed.StartsWith("Q", StringComparison.Ordinal))
         {
-            return ParseAmBitArea(trimmed, trimmed.StartsWith("QX", StringComparison.Ordinal) ? TwoCharPrefixLength : SingleCharPrefixLength, ModbusArea.Coil, out result, out errorMessage);
+            int prefixLen = trimmed.StartsWith("QX", StringComparison.Ordinal) ? TwoCharPrefixLength : SingleCharPrefixLength;
+            return ParseAmBitArea(trimmed, prefixLen, ModbusArea.Coil, out result, out errorMessage);
         }
 
         if (trimmed.StartsWith("IX", StringComparison.Ordinal) || trimmed.StartsWith("I", StringComparison.Ordinal))
         {
-            return ParseAmBitArea(trimmed, trimmed.StartsWith("IX", StringComparison.Ordinal) ? TwoCharPrefixLength : SingleCharPrefixLength, ModbusArea.DiscreteInput, out result, out errorMessage);
+            int prefixLen = trimmed.StartsWith("IX", StringComparison.Ordinal) ? TwoCharPrefixLength : SingleCharPrefixLength;
+            return ParseAmBitArea(trimmed, prefixLen, ModbusArea.DiscreteInput, out result, out errorMessage);
         }
 
         if (trimmed.StartsWith("MX", StringComparison.Ordinal))
@@ -151,41 +168,48 @@ public sealed class InovanceAddress
 
         if (trimmed.StartsWith("MD", StringComparison.Ordinal))
         {
-            return ParseAmNumber(trimmed, TwoCharPrefixLength, BytesPerWord, ModbusArea.HoldingRegister, false, out result, out errorMessage);
+            return ParseAmNumber(trimmed, TwoCharPrefixLength, "MD", AmMdMaxIndex, n => (ushort)(n * WordsPer32BitCounter), ModbusArea.HoldingRegister, isBit: false, out result, out errorMessage);
         }
 
         if (trimmed.StartsWith("MW", StringComparison.Ordinal) || trimmed.StartsWith("M", StringComparison.Ordinal))
         {
-            int pLen = trimmed.StartsWith("MW", StringComparison.Ordinal) ? TwoCharPrefixLength : SingleCharPrefixLength;
-            return ParseAmNumber(trimmed, pLen, 1, ModbusArea.HoldingRegister, false, out result, out errorMessage);
+            int prefixLen = trimmed.StartsWith("MW", StringComparison.Ordinal) ? TwoCharPrefixLength : SingleCharPrefixLength;
+            return ParseAmNumber(trimmed, prefixLen, "MW", AmMwMaxIndex, n => (ushort)n, ModbusArea.HoldingRegister, isBit: false, out result, out errorMessage);
         }
 
         errorMessage = $"지원하지 않는 Inovance AM 주소입니다: {trimmed}";
         return false;
     }
 
-    private static bool ParseAmBitArea(string original, int prefixLen, ModbusArea area, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool ParseAmBitArea(
+        string original,
+        int prefixLen,
+        ModbusArea area,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
         string numberText = original.Substring(prefixLen);
-        int dot = numberText.IndexOf('.');
+        int dot = numberText.IndexOf(BitSeparator);
         if (dot >= 0)
         {
-            if (!int.TryParse(numberText.Substring(0, dot), NumberStyles.None, CultureInfo.InvariantCulture, out int n) ||
-                !byte.TryParse(numberText.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out byte b) ||
-                b > MaxBitIndexInByte ||
-                ((long)n * BitsPerByte) + b > ushort.MaxValue)
+            if (!int.TryParse(numberText.Substring(0, dot), NumberStyles.None, CultureInfo.InvariantCulture, out int byteIndex) ||
+                !byte.TryParse(numberText.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out byte bitOffset) ||
+                bitOffset > MaxBitIndexInByte ||
+                ((long)byteIndex * BitsPerByte) + bitOffset > ushort.MaxValue)
             {
                 errorMessage = $"유효하지 않은 AM 비트 주소: {original}";
                 return false;
             }
 
-            result = new InovanceAddress(original, InovanceSeries.AM, area, (ushort)((n * BitsPerByte) + b), isBit: true);
+            ushort bitPdu = (ushort)((byteIndex * BitsPerByte) + bitOffset);
+            result = new InovanceAddress(original, InovanceSeries.AM, area, bitPdu, isBit: true);
             return true;
         }
 
-        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int singleNum) || singleNum > ushort.MaxValue)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int singleNum) ||
+            singleNum > ushort.MaxValue)
         {
             errorMessage = $"유효하지 않은 AM 주소 번호: {original}";
             return false;
@@ -195,37 +219,50 @@ public sealed class InovanceAddress
         return true;
     }
 
-    private static bool ParseAmMx(string original, bool isBitAccess, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool ParseAmMx(
+        string original,
+        bool isBitAccess,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
         string numberText = original.Substring(TwoCharPrefixLength);
-        int dot = numberText.IndexOf('.');
+        int dot = numberText.IndexOf(BitSeparator);
         if (dot >= 0 || isBitAccess)
         {
             string bytePart = dot >= 0 ? numberText.Substring(0, dot) : numberText;
-            if (!int.TryParse(bytePart, NumberStyles.None, CultureInfo.InvariantCulture, out int byteNum) || byteNum / BytesPerWord > ushort.MaxValue)
+            if (!int.TryParse(bytePart, NumberStyles.None, CultureInfo.InvariantCulture, out int byteNum))
             {
-                errorMessage = $"유효하지 않은 AM MX 주소: {original}";
+                errorMessage = $"유효하지 않은 AM MX 바이트 번호: {original}";
                 return false;
             }
 
             byte bitNum = 0;
-            if (dot >= 0 && (!byte.TryParse(numberText.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out bitNum) || bitNum > MaxBitIndexInByte))
+            if (dot >= 0 &&
+                (!byte.TryParse(numberText.Substring(dot + 1), NumberStyles.None, CultureInfo.InvariantCulture, out bitNum) || bitNum > MaxBitIndexInByte))
             {
-                errorMessage = $"유효하지 않은 AM MX 비트 인덱스: {original}";
+                errorMessage = $"유효하지 않은 AM MX 비트 번호(0~{MaxBitIndexInByte}): {original}";
                 return false;
             }
 
-            ushort wordAddr = (ushort)(byteNum / BytesPerWord);
+            int wordIndex = byteNum / BytesPerWord;
+            if (wordIndex > ushort.MaxValue)
+            {
+                errorMessage = $"AM MX 주소 범위 초과: {original}";
+                return false;
+            }
+
+            ushort wordAddr = (ushort)wordIndex;
             byte bitInWord = (byte)(((byteNum % BytesPerWord) * BitsPerByte) + bitNum);
             result = new InovanceAddress(original, InovanceSeries.AM, ModbusArea.HoldingRegister, wordAddr, isBit: true, bitInWord);
             return true;
         }
 
-        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int byteOffset) || byteOffset / BytesPerWord > ushort.MaxValue)
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int byteOffset) ||
+            byteOffset / BytesPerWord > ushort.MaxValue)
         {
-            errorMessage = $"유효하지 않은 AM MX 주소: {original}";
+            errorMessage = $"유효하지 않은 AM MX 주소 번호: {original}";
             return false;
         }
 
@@ -233,19 +270,29 @@ public sealed class InovanceAddress
         return true;
     }
 
-    private static bool ParseAmNumber(string original, int prefixLen, int multiplier, ModbusArea area, bool isBit, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool ParseAmNumber(
+        string original,
+        int prefixLen,
+        string deviceType,
+        int maxVal,
+        Func<int, ushort> toPdu,
+        ModbusArea area,
+        bool isBit,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
-        if (!int.TryParse(original.Substring(prefixLen), NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber)
-            || parsedNumber < 0
-            || (long)parsedNumber * multiplier > ushort.MaxValue)
+        string numberText = original.Substring(prefixLen);
+        if (!int.TryParse(numberText, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber) ||
+            parsedNumber < 0 ||
+            parsedNumber > maxVal)
         {
-            errorMessage = $"유효하지 않은 AM 주소 번호: {original}";
+            errorMessage = $"AM 주소 범위(0~{maxVal}) 초과 또는 오류: {original}";
             return false;
         }
 
-        result = new InovanceAddress(original, InovanceSeries.AM, area, (ushort)(parsedNumber * multiplier), isBit);
+        result = new InovanceAddress(original, InovanceSeries.AM, area, toPdu(parsedNumber), isBit, deviceType: deviceType, number: parsedNumber);
         return true;
     }
 
@@ -270,6 +317,12 @@ public sealed class InovanceAddress
             }
 
             ushort basePdu = p1 == 'X' ? H3uXBasePdu : H3uYBasePdu;
+            if ((long)basePdu + octVal > ushort.MaxValue)
+            {
+                errorMessage = $"H3U {p1} 주소 범위 초과: {trimmed}";
+                return false;
+            }
+
             result = new InovanceAddress(trimmed, InovanceSeries.H3u, ModbusArea.Coil, (ushort)(basePdu + octVal), isBit: true);
             return true;
         }
@@ -277,22 +330,28 @@ public sealed class InovanceAddress
         if (trimmed.StartsWith("SM", StringComparison.Ordinal) || trimmed.StartsWith("SD", StringComparison.Ordinal))
         {
             bool isSm = trimmed.StartsWith("SM", StringComparison.Ordinal);
-            if (!int.TryParse(trimmed.Substring(TwoCharPrefixLength), NumberStyles.None, CultureInfo.InvariantCulture, out int n) ||
-                H3uSmSdBasePdu + (long)n > ushort.MaxValue)
+            if (!int.TryParse(trimmed.Substring(TwoCharPrefixLength), NumberStyles.None, CultureInfo.InvariantCulture, out int parsedNumber) ||
+                (long)H3uSmSdBasePdu + parsedNumber > ushort.MaxValue)
             {
-                errorMessage = $"유효하지 않은 H3U 특수 디바이스 주소: {trimmed}";
+                errorMessage = $"유효하지 않은 H3U 주소 번호: {trimmed}";
                 return false;
             }
 
-            ModbusArea a = isSm ? ModbusArea.Coil : ModbusArea.HoldingRegister;
-            result = new InovanceAddress(trimmed, InovanceSeries.H3u, a, (ushort)(H3uSmSdBasePdu + n), isBit: isSm);
+            ModbusArea area = isSm ? ModbusArea.Coil : ModbusArea.HoldingRegister;
+            result = new InovanceAddress(trimmed, InovanceSeries.H3u, area, (ushort)(H3uSmSdBasePdu + parsedNumber), isBit: isSm);
             return true;
         }
 
         return TryParseH3uGeneral(trimmed, p1, numberText, isBitAccess, out result, out errorMessage);
     }
 
-    private static bool TryParseH3uGeneral(string original, char p1, string numberText, bool isBitAccess, [NotNullWhen(true)] out InovanceAddress? result, out string? errorMessage)
+    private static bool TryParseH3uGeneral(
+        string original,
+        char p1,
+        string numberText,
+        bool isBitAccess,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
     {
         result = null;
         errorMessage = null;
@@ -305,76 +364,27 @@ public sealed class InovanceAddress
         switch (p1)
         {
             case 'M':
-                long mPduLong = parsedNumber < H3uMHighBoundary ? parsedNumber : (parsedNumber - (long)H3uMHighBoundary) + H3uMHighBasePdu;
-                if (mPduLong > ushort.MaxValue)
-                {
-                    errorMessage = $"H3U M 주소 범위를 초과했습니다: {original}";
-                    return false;
-                }
-
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (ushort)mPduLong, isBit: true);
-                return true;
+                long mPdu = parsedNumber < H3uMHighBoundary ? parsedNumber : (parsedNumber - H3uMHighBoundary) + H3uMHighBasePdu;
+                return TryCreateAddress(original, InovanceSeries.H3u, ModbusArea.Coil, mPdu, isBit: true, "M", parsedNumber, out result, out errorMessage);
             case 'S':
-                if (H3uSBasePdu + (long)parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H3U S 주소 범위를 초과했습니다: {original}";
-                    return false;
-                }
-
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (ushort)(H3uSBasePdu + parsedNumber), isBit: true);
-                return true;
+                return TryCreateAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (long)H3uSBasePdu + parsedNumber, isBit: true, "S", parsedNumber, out result, out errorMessage);
             case 'D':
-                if (parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H3U D 주소 범위를 초과했습니다: {original}";
-                    return false;
-                }
-
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (ushort)parsedNumber, isBit: false);
-                return true;
+                return TryCreateAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, parsedNumber, isBit: false, "D", parsedNumber, out result, out errorMessage);
             case 'R':
-                if (H3uRBasePdu + (long)parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H3U R 주소 범위를 초과했습니다: {original}";
-                    return false;
-                }
-
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (ushort)(H3uRBasePdu + parsedNumber), isBit: false);
-                return true;
+                return TryCreateAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (long)H3uRBasePdu + parsedNumber, isBit: false, "R", parsedNumber, out result, out errorMessage);
             case 'T':
-                if (H3uTBasePdu + (long)parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H3U T 주소 범위를 초과했습니다: {original}";
-                    return false;
-                }
-
                 ModbusArea tArea = isBitAccess ? ModbusArea.Coil : ModbusArea.HoldingRegister;
-                result = new InovanceAddress(original, InovanceSeries.H3u, tArea, (ushort)(H3uTBasePdu + parsedNumber), isBit: isBitAccess);
-                return true;
+                return TryCreateAddress(original, InovanceSeries.H3u, tArea, (long)H3uTBasePdu + parsedNumber, isBit: isBitAccess, "T", parsedNumber, out result, out errorMessage);
             case 'C':
                 if (isBitAccess)
                 {
-                    if (H3uCBasePdu + (long)parsedNumber > ushort.MaxValue)
-                    {
-                        errorMessage = $"H3U C 비트 주소 범위를 초과했습니다: {original}";
-                        return false;
-                    }
-
-                    result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (ushort)(H3uCBasePdu + parsedNumber), isBit: true);
-                    return true;
+                    return TryCreateAddress(original, InovanceSeries.H3u, ModbusArea.Coil, (long)H3uCBasePdu + parsedNumber, isBit: true, "C", parsedNumber, out result, out errorMessage);
                 }
 
-                long cPduLong = parsedNumber < H3uCWordBoundary
-                    ? H3uCBasePdu + (long)parsedNumber
-                    : H3uCDoubleWordBasePdu + (((long)parsedNumber - H3uCWordBoundary) * BytesPerWord);
-                if (cPduLong > ushort.MaxValue)
-                {
-                    errorMessage = $"H3U C 워드 주소 범위를 초과했습니다: {original}";
-                    return false;
-                }
-
-                result = new InovanceAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, (ushort)cPduLong, isBit: false);
-                return true;
+                long cPdu = parsedNumber < H3uCounter32Start
+                    ? (long)H3uCBasePdu + parsedNumber
+                    : (long)H3uCDoubleWordBasePdu + (((long)parsedNumber - H3uCounter32Start) * WordsPer32BitCounter);
+                return TryCreateAddress(original, InovanceSeries.H3u, ModbusArea.HoldingRegister, cPdu, isBit: false, "C", parsedNumber, out result, out errorMessage);
             default:
                 errorMessage = $"지원하지 않는 H3U 디바이스입니다: {original}";
                 return false;
@@ -401,6 +411,12 @@ public sealed class InovanceAddress
             }
 
             ushort basePdu = p1 == 'X' ? H3uXBasePdu : H3uYBasePdu;
+            if ((long)basePdu + octVal > ushort.MaxValue)
+            {
+                errorMessage = $"H5U {p1} 주소 범위 초과: {trimmed}";
+                return false;
+            }
+
             result = new InovanceAddress(trimmed, InovanceSeries.H5u, ModbusArea.Coil, (ushort)(basePdu + octVal), isBit: true);
             return true;
         }
@@ -411,57 +427,45 @@ public sealed class InovanceAddress
             return false;
         }
 
-        switch (p1)
+        return p1 switch
         {
-            case 'M':
-                if (parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H5U M 주소 범위를 초과했습니다: {trimmed}";
-                    return false;
-                }
+            'M' => TryCreateAddress(trimmed, InovanceSeries.H5u, ModbusArea.Coil, parsedNumber, isBit: true, "M", parsedNumber, out result, out errorMessage),
+            'B' => TryCreateAddress(trimmed, InovanceSeries.H5u, ModbusArea.Coil, (long)H5uBBasePdu + parsedNumber, isBit: true, "B", parsedNumber, out result, out errorMessage),
+            'S' => TryCreateAddress(trimmed, InovanceSeries.H5u, ModbusArea.Coil, (long)H5uSBasePdu + parsedNumber, isBit: true, "S", parsedNumber, out result, out errorMessage),
+            'D' => TryCreateAddress(trimmed, InovanceSeries.H5u, ModbusArea.HoldingRegister, parsedNumber, isBit: false, "D", parsedNumber, out result, out errorMessage),
+            'R' => TryCreateAddress(trimmed, InovanceSeries.H5u, ModbusArea.HoldingRegister, (long)H5uRBasePdu + parsedNumber, isBit: false, "R", parsedNumber, out result, out errorMessage),
+            _ => FailH5uPrefix(trimmed, out errorMessage),
+        };
+    }
 
-                result = new InovanceAddress(trimmed, InovanceSeries.H5u, ModbusArea.Coil, (ushort)parsedNumber, isBit: true);
-                return true;
-            case 'B':
-                if (H5uBBasePdu + (long)parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H5U B 주소 범위를 초과했습니다: {trimmed}";
-                    return false;
-                }
+    private static bool TryCreateAddress(
+        string original,
+        InovanceSeries series,
+        ModbusArea area,
+        long pduValue,
+        bool isBit,
+        string deviceType,
+        int number,
+        [NotNullWhen(true)] out InovanceAddress? result,
+        out string? errorMessage)
+    {
+        result = null;
+        errorMessage = null;
 
-                result = new InovanceAddress(trimmed, InovanceSeries.H5u, ModbusArea.Coil, (ushort)(H5uBBasePdu + parsedNumber), isBit: true);
-                return true;
-            case 'S':
-                if (H5uSBasePdu + (long)parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H5U S 주소 범위를 초과했습니다: {trimmed}";
-                    return false;
-                }
-
-                result = new InovanceAddress(trimmed, InovanceSeries.H5u, ModbusArea.Coil, (ushort)(H5uSBasePdu + parsedNumber), isBit: true);
-                return true;
-            case 'D':
-                if (parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H5U D 주소 범위를 초과했습니다: {trimmed}";
-                    return false;
-                }
-
-                result = new InovanceAddress(trimmed, InovanceSeries.H5u, ModbusArea.HoldingRegister, (ushort)parsedNumber, isBit: false);
-                return true;
-            case 'R':
-                if (H5uRBasePdu + (long)parsedNumber > ushort.MaxValue)
-                {
-                    errorMessage = $"H5U R 주소 범위를 초과했습니다: {trimmed}";
-                    return false;
-                }
-
-                result = new InovanceAddress(trimmed, InovanceSeries.H5u, ModbusArea.HoldingRegister, (ushort)(H5uRBasePdu + parsedNumber), isBit: false);
-                return true;
-            default:
-                errorMessage = $"지원하지 않는 H5U 디바이스입니다: {trimmed}";
-                return false;
+        if (pduValue < 0 || pduValue > ushort.MaxValue)
+        {
+            errorMessage = $"주소({original})가 16비트 PDU 범위(0~{ushort.MaxValue})를 초과합니다.";
+            return false;
         }
+
+        result = new InovanceAddress(original, series, area, (ushort)pduValue, isBit, deviceType: deviceType, number: number);
+        return true;
+    }
+
+    private static bool FailH5uPrefix(string trimmed, out string? errorMessage)
+    {
+        errorMessage = $"지원하지 않는 H5U 디바이스입니다: {trimmed}";
+        return false;
     }
 
     private static bool TryParseOctal(string text, out ushort result)
@@ -472,7 +476,7 @@ public sealed class InovanceAddress
             return false;
         }
 
-        int value = 0;
+        long accumulated = 0;
         foreach (char c in text)
         {
             if (c < MinOctalDigit || c > MaxOctalDigit)
@@ -480,27 +484,35 @@ public sealed class InovanceAddress
                 return false;
             }
 
-            if (value > (ushort.MaxValue - (c - MinOctalDigit)) / OctalRadix)
+            accumulated = (accumulated * OctalRadix) + (c - MinOctalDigit);
+            if (accumulated > ushort.MaxValue)
             {
                 return false;
             }
-
-            value = (value * OctalRadix) + (c - MinOctalDigit);
         }
 
-        result = (ushort)value;
+        result = (ushort)accumulated;
         return true;
     }
 
     /// <summary>오프셋만큼 주소를 이동한 새 <see cref="InovanceAddress"/>를 반환합니다.</summary>
     public InovanceAddress Offset(int count)
     {
-        if (count < 0 || PduAddress + (long)count > ushort.MaxValue)
+        if (count < 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(count), count, "이동한 주소가 Modbus 16비트 주소 범위를 초과합니다.");
+            throw new ArgumentOutOfRangeException(nameof(count), count, "오프셋은 0 이상이어야 합니다.");
         }
 
-        ushort newPdu = (ushort)(PduAddress + count);
-        return new InovanceAddress($"{OriginalAddress}+{count}", Series, Area, newPdu, IsBit, BitIndexInWord);
+        if (BitIndexInWord.HasValue)
+        {
+            int totalBitIndex = checked((PduAddress * BitsPerWord) + BitIndexInWord.Value + count);
+            ushort nextWordPdu = checked((ushort)(totalBitIndex / BitsPerWord));
+            byte nextBitInWord = (byte)(totalBitIndex % BitsPerWord);
+            return new InovanceAddress($"{OriginalAddress}+{count}", Series, Area, nextWordPdu, IsBit, nextBitInWord, DeviceType, checked(Number + count));
+        }
+
+        int pduStep = Is32BitWord ? checked(count * WordsPer32BitCounter) : count;
+        ushort newPdu = checked((ushort)(PduAddress + pduStep));
+        return new InovanceAddress($"{OriginalAddress}+{count}", Series, Area, newPdu, IsBit, BitIndexInWord, DeviceType, checked(Number + count));
     }
 }

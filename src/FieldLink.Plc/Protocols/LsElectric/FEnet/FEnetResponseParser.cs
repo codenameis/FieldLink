@@ -38,7 +38,7 @@ public static class FEnetResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"FEnet 읽기 응답 길이가 너무 짧습니다. (길이: {responseFrame.Length})");
         }
 
-        ushort command = BinaryBuffer.ReadUInt16LE(responseFrame, offset);
+        ushort command = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, offset);
         if (command != CommandReadResponse)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"기대하지 않은 읽기 응답 명령어 코드: 0x{command:X4}");
@@ -54,15 +54,15 @@ public static class FEnetResponseParser
         // offset + 8 (2B): BlockCount (0x0001)
         // offset + 10 (2B): DataByteLength
         // offset + 12 (NB): Data
-        ushort blockCount = BinaryBuffer.ReadUInt16LE(responseFrame, offset + BlockCountFieldOffset);
+        ushort blockCount = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, offset + BlockCountFieldOffset);
         int dataLengthOffset = (blockCount == 0
             && responseFrame.Length >= offset + LegacyReadBodyLength
-            && BinaryBuffer.ReadUInt16LE(responseFrame, offset + DataLengthFieldOffset) == LegacySingleBlockMarker)
+            && BinaryBuffer.ReadUInt16LittleEndian(responseFrame, offset + DataLengthFieldOffset) == LegacySingleBlockMarker)
             ? offset + LegacyDataLengthFieldOffset // 레거시 14바이트 명령어 헤더 호환
             : offset + DataLengthFieldOffset; // 공식 XGT FEnet 매뉴얼 표준 (12바이트 명령어 헤더)
 
         int dataStartOffset = dataLengthOffset + LengthFieldBytes;
-        ushort dataLength = BinaryBuffer.ReadUInt16LE(responseFrame, dataLengthOffset);
+        ushort dataLength = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, dataLengthOffset);
 
         if (responseFrame.Length < dataStartOffset + dataLength)
         {
@@ -85,7 +85,7 @@ public static class FEnetResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"FEnet 쓰기 응답 길이가 너무 짧습니다. (길이: {responseFrame.Length})");
         }
 
-        ushort command = BinaryBuffer.ReadUInt16LE(responseFrame, offset);
+        ushort command = BinaryBuffer.ReadUInt16LittleEndian(responseFrame, offset);
         if (command != CommandWriteResponse)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"기대하지 않은 쓰기 응답 명령어 코드: 0x{command:X4}");
@@ -110,7 +110,7 @@ public static class FEnetResponseParser
             }
         }
 
-        ushort receivedInvokeId = BinaryBuffer.ReadUInt16LE(frame, InvokeIdOffset);
+        ushort receivedInvokeId = BinaryBuffer.ReadUInt16LittleEndian(frame, InvokeIdOffset);
         if (receivedInvokeId != expectedInvokeId)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, $"트랜잭션 ID 불일치: 기대={expectedInvokeId}, 수신={receivedInvokeId}");
@@ -130,7 +130,7 @@ public static class FEnetResponseParser
 
     private static void CheckErrorState(byte[] frame, int errorStateOffset)
     {
-        ushort errorState = BinaryBuffer.ReadUInt16LE(frame, errorStateOffset);
+        ushort errorState = BinaryBuffer.ReadUInt16LittleEndian(frame, errorStateOffset);
         if (errorState != SuccessErrorState)
         {
             if (frame.Length < errorStateOffset + ErrorStateAndCodeBytes)
@@ -138,7 +138,7 @@ public static class FEnetResponseParser
                 throw new PlcException(PlcErrorKind.InvalidResponse, "FEnet 에러 응답에 에러 코드 필드가 누락되었습니다.");
             }
 
-            ushort errorCode = BinaryBuffer.ReadUInt16LE(frame, errorStateOffset + ErrorCodeRelativeOffset);
+            ushort errorCode = BinaryBuffer.ReadUInt16LittleEndian(frame, errorStateOffset + ErrorCodeRelativeOffset);
             var feErrorCode = (FEnetErrorCode)errorCode;
             throw new PlcDeviceException(errorCode, feErrorCode.GetDescription());
         }
