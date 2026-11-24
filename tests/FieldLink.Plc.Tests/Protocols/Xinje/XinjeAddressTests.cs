@@ -57,4 +57,40 @@ public class XinjeAddressTests
             Assert.Throws<FormatException>(() => XinjeAddress.Parse(invalid));
         }
     }
+
+    [Theory]
+    [InlineData(XinjeSeries.XdXl, "SEM0", true)]
+    [InlineData(XinjeSeries.XdXl, "FS0", false)]
+    [InlineData(XinjeSeries.XdXl, "FSD0", false)]
+    [InlineData(XinjeSeries.XC, "E0", true)]
+    [InlineData(XinjeSeries.XC, "ED0", false)]
+    public void ExtendedDeviceCode_UnsupportedDevices_AreNullWithoutAliasing(XinjeSeries series, string address, bool isBit)
+    {
+        XinjeAddress parsed = XinjeAddress.Parse(address, series, isBit);
+        Assert.Null(parsed.ExtendedDeviceCode);
+        Assert.False(parsed.IsExtended);
+    }
+
+    [Fact]
+    public void ExtendedDeviceCode_UsesOfficialXinjeDeviceCodeEnum()
+    {
+        Assert.Equal((byte)XinjeDeviceCode.D, XinjeAddress.Parse("D100", XinjeSeries.XdXl).ExtendedDeviceCode);
+        Assert.Equal((byte)XinjeDeviceCode.M, XinjeAddress.Parse("M10", XinjeSeries.XdXl, isBitAccess: true).ExtendedDeviceCode);
+        Assert.Equal((byte)XinjeDeviceCode.SFD, XinjeAddress.Parse("SFD10", XinjeSeries.XdXl).ExtendedDeviceCode);
+    }
+
+    [Fact]
+    public void ToModbusPduAddress_And_Offset_RejectUnsupportedDevicesAnd24BitOverflow()
+    {
+        XinjeAddress d20480 = XinjeAddress.Parse("D20480", XinjeSeries.XdXl, isBitAccess: false);
+        Assert.Throws<InvalidOperationException>(() => d20480.ToModbusPduAddress());
+
+        XinjeAddress dMax = XinjeAddress.Parse("D16777210", XinjeSeries.XdXl, isBitAccess: false);
+        Assert.Throws<ArgumentOutOfRangeException>(() => dMax.Offset(10));
+
+        Assert.False(XinjeAddress.TryParse("HD100", XinjeSeries.XC, isBitAccess: false, out _, out _));
+        Assert.False(XinjeAddress.TryParse("D8512", XinjeSeries.XC, isBitAccess: false, out _, out _));
+        Assert.False(XinjeAddress.TryParse("M12000", XinjeSeries.XC, isBitAccess: true, out _, out _));
+        Assert.False(XinjeAddress.TryParse("FS48", XinjeSeries.XdXl, isBitAccess: false, out _, out _));
+    }
 }

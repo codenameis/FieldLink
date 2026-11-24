@@ -18,8 +18,12 @@ public sealed class XinjeProtocol : IPlcProtocol
     private const byte StringPaddingByte = 0x00;
     private const byte BitOnValue = 1;
     private const byte BitOffValue = 0;
-    private const int StandardModbusMaxWords = 120;
-    private const int ExtendedProtocolMaxWords = 250;
+    private const int ExtendedMaxWords = 120; // 사양서 §A.1.5: 0x20/0x21 최대 120워드
+    private const int ExtendedMaxBits = 1920; // 사양서 §A.1.5: 0x1E/0x1F 최대 1920비트
+    private const int StandardModbusMaxReadWords = 125;
+    private const int StandardModbusMaxWriteWords = 123;
+    private const int StandardModbusMaxReadBits = 2000;
+    private const int StandardModbusMaxWriteBits = 1968;
     private const ushort MaxTransactionId = 0xFFFF;
     private const ushort InitialTransactionId = 0x0001;
     private const int TcpTransactionIdByteShift = 8;
@@ -31,7 +35,7 @@ public sealed class XinjeProtocol : IPlcProtocol
     private readonly XinjeOptions _options;
     private readonly XinjeTransportEncoding _encoding;
     private readonly IFrameDecoder _frameDecoder;
-    private readonly object _txIdLock = new();
+    private readonly object _transactionIdLock = new();
 
     private ushort _transactionId;
     private long _lastConnectionId = -1;
@@ -83,7 +87,8 @@ public sealed class XinjeProtocol : IPlcProtocol
         int requestedByteCount = request.ByteCount;
         PlcReadRequest effectiveRequest = address.IsBit ? request : ProtocolExecutionGuard.NormalizeWordReadRequest(request);
 
-        byte[] buffer = (_options.UseExtendedProtocol && _options.Series == XinjeSeries.XdXl)
+        bool useExtended = ShouldUseExtendedProtocol(address);
+        byte[] buffer = useExtended
             ? (address.IsBit
                 ? await ReadExtendedBitsAsync(address, effectiveRequest.Count, cancellationToken).ConfigureAwait(false)
                 : await ReadExtendedWordsAsync(address, effectiveRequest, cancellationToken).ConfigureAwait(false))
@@ -111,7 +116,7 @@ public sealed class XinjeProtocol : IPlcProtocol
             : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit);
 
         var context = new WriteContext(address, effectiveRequest, originalElementsPerUnit, totalOriginalCount);
-        if (_options.UseExtendedProtocol && _options.Series == XinjeSeries.XdXl)
+        if (ShouldUseExtendedProtocol(address))
         {
             if (address.IsBit)
             {
@@ -128,9 +133,17 @@ public sealed class XinjeProtocol : IPlcProtocol
         await WriteStandardModbusAsync(context, cancellationToken).ConfigureAwait(false);
     }
 
+    private bool ShouldUseExtendedProtocol(XinjeAddress address) =>
+        _options.UseExtendedProtocol &&
+        _options.Series == XinjeSeries.XdXl &&
+        address.ExtendedDeviceCode.HasValue;
+
     private async Task<byte[]> ReadExtendedBitsAsync(XinjeAddress address, int totalBits, CancellationToken cancellationToken)
     {
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, _options.MaxReadBits);
+        address.ValidateContiguousRange(totalBits, isStandardModbus: false, nameof(totalBits));
+
+        int maxBits = Math.Min(_options.MaxReadBits, ExtendedMaxBits);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(totalBits, maxBits);
         byte[] combinedBuffer = new byte[totalBits];
 
         await _transport.RunExclusiveAsync(async session =>
@@ -167,9 +180,9 @@ public sealed class XinjeProtocol : IPlcProtocol
     {
         int elementSize = request.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
-        int maxWords = address.IsExtended
-            ? Math.Min(_options.MaxReadWords, ExtendedProtocolMaxWords)
-            : Math.Min(_options.MaxReadWords, StandardModbusMaxWords);
+        address.ValidateContiguousRange((long)request.Count * wordsPerElement, isStandardModbus: false, nameof(request));
+
+        int maxWords = Math.Min(_options.MaxReadWords, ExtendedMaxWords);
         int maxElements = RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
         byte[] combinedBuffer = new byte[request.ByteCount];
@@ -205,12 +218,13 @@ public sealed class XinjeProtocol : IPlcProtocol
     {
         int elementSize = request.DataType.GetElementSize();
         int wordsPerElement = address.IsBit ? 1 : Math.Max(1, elementSize / BytesPerWord);
-        ValidateStandardModbusContiguousRange(address, checked(request.Count * wordsPerElement), nameof(request));
+        long totalUnits = (long)request.Count * wordsPerElement;
+        address.ValidateContiguousRange(totalUnits, isStandardModbus: true, nameof(request));
+        ValidateStandardModbusContiguousRange(address, totalUnits, nameof(request));
 
-        int maxWords = Math.Min(_options.MaxReadWords, StandardModbusMaxWords);
         int maxElements = address.IsBit
-            ? _options.MaxReadBits
-            : RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
+            ? Math.Min(_options.MaxReadBits, StandardModbusMaxReadBits)
+            : RequestChunker.CalculateElementLimit(Math.Min(_options.MaxReadWords, StandardModbusMaxReadWords), wordsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(request.Count, maxElements);
         byte[] combinedBuffer = new byte[request.ByteCount];
@@ -249,7 +263,10 @@ public sealed class XinjeProtocol : IPlcProtocol
 
     private async Task WriteExtendedBitsAsync(WriteContext context, CancellationToken cancellationToken)
     {
-        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(context.Request.Count, _options.MaxWriteBits);
+        context.Address.ValidateContiguousRange(context.Request.Count, isStandardModbus: false, nameof(context));
+
+        int maxBits = Math.Min(_options.MaxWriteBits, ExtendedMaxBits);
+        List<RequestChunker.Chunk> chunks = RequestChunker.Plan(context.Request.Count, maxBits);
         int completedElements = 0;
 
         try
@@ -293,9 +310,9 @@ public sealed class XinjeProtocol : IPlcProtocol
     {
         int elementSize = context.Request.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementSize / BytesPerWord);
-        int maxWords = context.Address.IsExtended
-            ? Math.Min(_options.MaxWriteWords, ExtendedProtocolMaxWords)
-            : Math.Min(_options.MaxWriteWords, StandardModbusMaxWords);
+        context.Address.ValidateContiguousRange((long)context.Request.Count * wordsPerElement, isStandardModbus: false, nameof(context));
+
+        int maxWords = Math.Min(_options.MaxWriteWords, ExtendedMaxWords);
         int maxElements = RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(context.Request.Count, maxElements);
         int completedElements = 0;
@@ -336,12 +353,13 @@ public sealed class XinjeProtocol : IPlcProtocol
     {
         int elementSize = context.Request.DataType.GetElementSize();
         int wordsPerElement = context.Address.IsBit ? 1 : Math.Max(1, elementSize / BytesPerWord);
-        ValidateStandardModbusContiguousRange(context.Address, checked(context.Request.Count * wordsPerElement), nameof(context));
+        long totalUnits = (long)context.Request.Count * wordsPerElement;
+        context.Address.ValidateContiguousRange(totalUnits, isStandardModbus: true, nameof(context));
+        ValidateStandardModbusContiguousRange(context.Address, totalUnits, nameof(context));
 
-        int maxWords = Math.Min(_options.MaxWriteWords, StandardModbusMaxWords);
         int maxElements = context.Address.IsBit
-            ? _options.MaxWriteBits
-            : RequestChunker.CalculateElementLimit(maxWords, wordsPerElement);
+            ? Math.Min(_options.MaxWriteBits, StandardModbusMaxWriteBits)
+            : RequestChunker.CalculateElementLimit(Math.Min(_options.MaxWriteWords, StandardModbusMaxWriteWords), wordsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(context.Request.Count, maxElements);
         int completedElements = 0;
@@ -356,7 +374,7 @@ public sealed class XinjeProtocol : IPlcProtocol
                 {
                     ushort chunkPduAddress = context.Address.Offset(checked(chunk.ElementOffset * wordsPerElement)).ToModbusPduAddress();
                     byte[] chunkData = context.Request.GetData(chunk.ElementOffset, chunk.ElementCount);
-                    await WriteStandardChunkAsync(session, chunkPduAddress, context.Address.IsBit, chunkData).ConfigureAwait(false);
+                    await WriteStandardChunkAsync(session, chunkPduAddress, context.Address.IsBit, chunk.ElementCount, wordsPerElement, chunkData).ConfigureAwait(false);
                     completedElements = context.AdvanceCompleted(completedElements, chunk.ElementCount);
                 }
 
@@ -369,23 +387,30 @@ public sealed class XinjeProtocol : IPlcProtocol
         }
     }
 
-    private static void ValidateStandardModbusContiguousRange(XinjeAddress startAddress, int totalUnits, string paramName)
+    private static void ValidateStandardModbusContiguousRange(XinjeAddress startAddress, long totalUnits, string paramName)
     {
         ushort startPdu = startAddress.ToModbusPduAddress();
-        ushort endPdu = startAddress.Offset(Math.Max(0, totalUnits - 1)).ToModbusPduAddress();
-        if (endPdu - startPdu != totalUnits - 1)
+        int offsetCount = checked((int)Math.Max(0, totalUnits - 1));
+        ushort endPdu = startAddress.Offset(offsetCount).ToModbusPduAddress();
+        if (endPdu - startPdu != offsetCount)
         {
             throw new ArgumentException("표준 Modbus 불연속 주소 경계를 가로지르는 요청은 지원하지 않습니다.", paramName);
         }
     }
 
-    private async Task WriteStandardChunkAsync(ITransportSession session, ushort pduAddress, bool isBit, byte[] chunkData)
+    private async Task WriteStandardChunkAsync(
+        ITransportSession session,
+        ushort pduAddress,
+        bool isBit,
+        int elementCount,
+        int wordsPerElement,
+        byte[] chunkData)
     {
-        byte[] requestPdu = BuildStandardWritePdu(pduAddress, isBit, chunkData);
+        byte[] requestPdu = BuildStandardWritePdu(pduAddress, isBit, elementCount, wordsPerElement, chunkData);
         byte[] responsePdu = await ExchangePduAsync(session, requestPdu).ConfigureAwait(false);
 
         var functionCode = (ModbusFunctionCode)requestPdu[0];
-        if (functionCode == ModbusFunctionCode.WriteSingleCoil)
+        if (functionCode is ModbusFunctionCode.WriteSingleCoil or ModbusFunctionCode.WriteSingleRegister)
         {
             ModbusResponseParser.ParseWriteSingleResponse(responsePdu, requestPdu);
             return;
@@ -395,11 +420,22 @@ public sealed class XinjeProtocol : IPlcProtocol
         ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, pduAddress, expectedQuantity);
     }
 
-    private static byte[] BuildStandardWritePdu(ushort pduAddress, bool isBit, byte[] chunkData)
+    private byte[] BuildStandardWritePdu(
+        ushort pduAddress,
+        bool isBit,
+        int elementCount,
+        int wordsPerElement,
+        byte[] chunkData)
     {
         if (!isBit)
         {
-            ushort wordCount = (ushort)(chunkData.Length / BytesPerWord);
+            if (_options.UseSingleWriteFunctions && elementCount == 1 && wordsPerElement == 1)
+            {
+                ushort registerValue = BinaryBuffer.ReadUInt16BigEndian(chunkData, 0);
+                return ModbusRequestBuilder.BuildWriteSingleRegister(pduAddress, registerValue);
+            }
+
+            ushort wordCount = checked((ushort)(chunkData.Length / BytesPerWord));
             return ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, wordCount, chunkData);
         }
 
@@ -410,7 +446,7 @@ public sealed class XinjeProtocol : IPlcProtocol
 
         bool[] bits = ConvertToBools(chunkData);
         byte[] packedCoilBytes = BitPacking.Pack(bits);
-        return ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, (ushort)chunkData.Length, packedCoilBytes);
+        return ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, checked((ushort)chunkData.Length), packedCoilBytes);
     }
 
     private static bool[] ConvertToBools(byte[] rawBitData)
@@ -435,8 +471,8 @@ public sealed class XinjeProtocol : IPlcProtocol
             byte[] responseFrame = await session.ReceiveAsync(_frameDecoder).ConfigureAwait(false);
             if (_encoding == XinjeTransportEncoding.Tcp && responseFrame.Length >= TcpTransactionIdLength)
             {
-                ushort receivedTxId = (ushort)((responseFrame[0] << TcpTransactionIdByteShift) | responseFrame[1]);
-                if (receivedTxId != transactionId)
+                ushort receivedTransactionId = (ushort)((responseFrame[0] << TcpTransactionIdByteShift) | responseFrame[1]);
+                if (receivedTransactionId != transactionId)
                 {
                     continue;
                 }
@@ -448,7 +484,7 @@ public sealed class XinjeProtocol : IPlcProtocol
 
     private ushort NextTransactionId()
     {
-        lock (_txIdLock)
+        lock (_transactionIdLock)
         {
             _transactionId = (ushort)(_transactionId == MaxTransactionId ? InitialTransactionId : _transactionId + 1);
             return _transactionId;
@@ -457,7 +493,7 @@ public sealed class XinjeProtocol : IPlcProtocol
 
     private void ResetTransactionIdIfNewConnection(long connectionId)
     {
-        lock (_txIdLock)
+        lock (_transactionIdLock)
         {
             if (_lastConnectionId != connectionId)
             {

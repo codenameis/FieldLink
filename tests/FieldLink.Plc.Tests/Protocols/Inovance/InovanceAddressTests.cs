@@ -55,4 +55,59 @@ public class InovanceAddressTests
         Assert.Equal(expectedArea, parsedAddress.Area);
         Assert.Equal(expectedPdu, parsedAddress.PduAddress);
     }
+
+    [Theory]
+    [InlineData("SMX0", ModbusArea.Coil, 0, true, "SMX", 0)]
+    [InlineData("SM8.3", ModbusArea.Coil, 67, true, "SMX", 67)]
+    [InlineData("SMX8.3", ModbusArea.Coil, 67, true, "SMX", 67)]
+    [InlineData("SDW0", ModbusArea.HoldingRegister, 0, true, "SDW", 0)]
+    [InlineData("SD10", ModbusArea.HoldingRegister, 10, true, "SDW", 10)]
+    [InlineData("MB0", ModbusArea.HoldingRegister, 0, false, "MB", 0)]
+    [InlineData("MB1", ModbusArea.HoldingRegister, 0, false, "MB", 1)]
+    [InlineData("MB5", ModbusArea.HoldingRegister, 2, false, "MB", 5)]
+    public void Parse_AmSeries_SmxSdwAndMb_MapsAndPopulatesMetadata(
+        string input,
+        ModbusArea expectedArea,
+        ushort expectedPdu,
+        bool expectedExtendedFc,
+        string expectedDeviceType,
+        int expectedNumber)
+    {
+        var parsedAddress = InovanceAddress.Parse(input, InovanceSeries.AM);
+        Assert.Equal(expectedArea, parsedAddress.Area);
+        Assert.Equal(expectedPdu, parsedAddress.PduAddress);
+        Assert.Equal(expectedExtendedFc, parsedAddress.UsesExtendedFunctionCode);
+        Assert.Equal(expectedDeviceType, parsedAddress.DeviceType);
+        Assert.Equal(expectedNumber, parsedAddress.Number);
+    }
+
+    [Theory]
+    [InlineData(InovanceSeries.AM, "QX5.2", "QX", 42)]
+    [InlineData(InovanceSeries.AM, "MW10", "MW", 10)]
+    [InlineData(InovanceSeries.AM, "MD100", "MD", 100)]
+    [InlineData(InovanceSeries.H3u, "C200", "C", 200)]
+    [InlineData(InovanceSeries.H5u, "B10", "B", 10)]
+    public void Parse_AllSeries_PopulatesDeviceTypeAndNumber(
+        InovanceSeries series,
+        string input,
+        string expectedDeviceType,
+        int expectedNumber)
+    {
+        var parsedAddress = InovanceAddress.Parse(input, series);
+        Assert.Equal(expectedDeviceType, parsedAddress.DeviceType);
+        Assert.Equal(expectedNumber, parsedAddress.Number);
+    }
+
+    [Theory]
+    [InlineData(InovanceSeries.AM, "MW65536")]
+    [InlineData(InovanceSeries.AM, "MD32768")]
+    [InlineData(InovanceSeries.AM, "MB131072")]
+    [InlineData(InovanceSeries.H3u, "D8512")]
+    [InlineData(InovanceSeries.H3u, "X400")]
+    [InlineData(InovanceSeries.H5u, "M8000")]
+    [InlineData(InovanceSeries.H5u, "X2000")]
+    public void Parse_OutOfBoundsAddresses_ThrowsFormatException(InovanceSeries series, string input)
+    {
+        Assert.Throws<System.FormatException>(() => InovanceAddress.Parse(input, series));
+    }
 }

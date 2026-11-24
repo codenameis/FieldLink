@@ -318,4 +318,78 @@ public class DeltaProtocolTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             protocol.WriteAsync(new PlcWriteRequest("D4095", PlcDataType.Int32, new byte[4]), default));
     }
+
+    [Fact]
+    public async Task ReadAsync_As_Y2Bit_UsesFc01At0xA020_MatchesSpecificationVector()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new DeltaProtocol(transport, new DeltaOptions { Series = DeltaSeries.AS, Station = 1 }, DeltaTransportEncoding.Tcp);
+
+        transport.EnqueueResponse(frame =>
+        {
+            ushort transactionId = (ushort)((frame[0] << 8) | frame[1]);
+            return ModbusRequestBuilder.BuildTcpAdu(transactionId, 1, [0x01, 0x01, 0x01]);
+        });
+
+        byte[] result = await protocol.ReadAsync(new PlcReadRequest("Y2", PlcDataType.Boolean, 1), default);
+        Assert.Equal([1], result);
+
+        // 출처: docs/plc-packet-manual/delta.md §4 "Y2 비트 접근 -> Coil 0xA020"
+        byte[] sentPdu = ModbusResponseParser.UnwrapTcpAdu(transport.SentFrames[0], 1, 1);
+        Assert.Equal(new byte[] { 0x01, 0xA0, 0x20, 0x00, 0x01 }, sentPdu);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_As_D100_5_BitInWord_ReadsAndPerformsRmw()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new DeltaProtocol(transport, new DeltaOptions { Series = DeltaSeries.AS, Station = 1 }, DeltaTransportEncoding.Rtu);
+
+        // 비트 5(0x0020)만 켜진 워드 응답
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x02, 0x00, 0x20]));
+        byte[] bitRead = await protocol.ReadAsync(new PlcReadRequest("D100.5", PlcDataType.Boolean, 1), default);
+        Assert.Equal([1], bitRead);
+
+        // 기존 0x0001에서 비트 5 ON -> 0x0021 쓰기 검증
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x02, 0x00, 0x01]));
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x10, 0x00, 0x64, 0x00, 0x01]));
+        await protocol.WriteAsync(new PlcWriteRequest("D100.5", PlcDataType.Boolean, [1]), default);
+
+        byte[] writePdu = ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[2], 1);
+        Assert.Equal(new byte[] { 0x10, 0x00, 0x64, 0x00, 0x01, 0x02, 0x00, 0x21 }, writePdu);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_Dvp_C199ToC200AndRangeOverflow_ThrowsBeforeSending()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new DeltaProtocol(transport, new DeltaOptions { Series = DeltaSeries.Dvp, Station = 1 }, DeltaTransportEncoding.Rtu);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("C199", PlcDataType.Int16, 2), default));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("C199", PlcDataType.Int16, new byte[4]), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D9990", PlcDataType.Int16, 20), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("D9990", PlcDataType.Int16, new byte[40]), default));
+
+        Assert.Empty(transport.SentFrames);
+    }
+
+    [Fact]
+    public async Task WriteAsync_UseSingleWriteFunctions_UsesFc05AndFc06()
+    {
+        var transport = new ScriptedTransport();
+        var options = new DeltaOptions { Series = DeltaSeries.Dvp, Station = 1, UseSingleWriteFunctions = true };
+        var protocol = new DeltaProtocol(transport, options, DeltaTransportEncoding.Rtu);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x05, 0x08, 0x00, 0xFF, 0x00]));
+        await protocol.WriteAsync(new PlcWriteRequest("M0", PlcDataType.Boolean, [1]), default);
+        Assert.Equal(0x05, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[0], 1)[0]);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x06, 0x10, 0x64, 0x12, 0x34]));
+        await protocol.WriteAsync(new PlcWriteRequest("D100", PlcDataType.Int16, [0x12, 0x34]), default);
+        Assert.Equal(0x06, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[1], 1)[0]);
+    }
 }

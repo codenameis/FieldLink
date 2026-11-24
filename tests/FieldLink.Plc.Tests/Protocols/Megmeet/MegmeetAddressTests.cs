@@ -37,4 +37,24 @@ public class MegmeetAddressTests
         Assert.Equal(expectedPdu, parsedAddress.PduAddress);
         Assert.False(parsedAddress.IsBit);
     }
+
+    [Theory]
+    [InlineData("D8000", false)]
+    [InlineData("C307", false)]
+    [InlineData("X400", true)]
+    [InlineData("Y400", true)]
+    [InlineData("M10240", true)]
+    [InlineData("SM512", true)]
+    [InlineData("SD512", false)]
+    public void Parse_OutOfBoundsAddresses_ThrowsFormatException(string input, bool isBitAccess)
+    {
+        Assert.Throws<System.FormatException>(() => MegmeetAddress.Parse(input, isBitAccess));
+    }
+
+    [Fact]
+    public void Offset_C199ToC200Crossing_ThrowsArgumentOutOfRangeException()
+    {
+        MegmeetAddress c199 = MegmeetAddress.Parse("C199", isBitAccess: false);
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => c199.Offset(1));
+    }
 }

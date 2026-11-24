@@ -7,6 +7,8 @@ namespace FieldLink.Plc.Protocols.FujiElectric;
 /// <summary>Fuji SPB 프로토콜의 주소 표현입니다. (사양서 Part A §A.1.2)</summary>
 public sealed class FujiElectricSpbAddress
 {
+    internal const ushort MaxSwapped4Value = 9999;
+
     private const int BitsPerWord = 16;
     private const int MaxBitOffset = 15;
     private const int BitsPerByte = 8;
@@ -40,7 +42,7 @@ public sealed class FujiElectricSpbAddress
     /// <summary>2자리 16진 텍스트 영역 코드입니다. (예: D는 "0C", M은 "02")</summary>
     public string AreaCode { get; }
 
-    /// <summary>16비트 워드 번호입니다.</summary>
+    /// <summary>16비트 워드 번호입니다. (0~9999)</summary>
     public ushort WordAddress { get; }
 
     /// <summary>워드 내 비트 오프셋(0~15)입니다.</summary>
@@ -52,22 +54,21 @@ public sealed class FujiElectricSpbAddress
     /// <summary>워드 접근 시 6문자 주소 문자열입니다. (영역코드 2문자 + 자리교차 4문자)</summary>
     public string WireWordAddress { get; }
 
-    /// <summary>주소 문자열을 파싱합니다.</summary>
+    /// <summary>주소 문자열을 기본 영역 성격에 맞게 파싱합니다.</summary>
     /// <param name="address">파싱할 Fuji SPB 주소 문자열입니다.</param>
     /// <returns>파싱된 <see cref="FujiElectricSpbAddress"/> 인스턴스입니다.</returns>
     public static FujiElectricSpbAddress Parse(string address)
     {
-        if (string.IsNullOrWhiteSpace(address))
-        {
-            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
-        }
+        return ParseCore(address, explicitBitAccess: null);
+    }
 
-        if (!TryParse(address, out FujiElectricSpbAddress? result, out string? errorMessage))
-        {
-            throw new FormatException(errorMessage);
-        }
-
-        return result;
+    /// <summary>비트/워드 접근 모드를 지정하여 주소 문자열을 파싱합니다.</summary>
+    /// <param name="address">파싱할 Fuji SPB 주소 문자열입니다.</param>
+    /// <param name="isBitAccess">비트 접근 여부입니다. false이면 비트 영역 접두사(예: M6)도 워드 주소로 해석합니다.</param>
+    /// <returns>파싱된 <see cref="FujiElectricSpbAddress"/> 인스턴스입니다.</returns>
+    public static FujiElectricSpbAddress Parse(string address, bool isBitAccess)
+    {
+        return ParseCore(address, explicitBitAccess: isBitAccess);
     }
 
     /// <summary>주소 문자열 파싱을 시도합니다.</summary>
@@ -80,30 +81,34 @@ public sealed class FujiElectricSpbAddress
         [NotNullWhen(true)] out FujiElectricSpbAddress? result,
         [NotNullWhen(false)] out string? errorMessage)
     {
-        result = null;
-        errorMessage = null;
-
-        if (address is null || string.IsNullOrWhiteSpace(address))
-        {
-            errorMessage = "주소 문자열이 비어 있습니다.";
-            return false;
-        }
-
-        string trimmed = address.Trim().ToUpperInvariant();
-        if (!TryExtractPrefix(trimmed, out string areaCode, out bool isBitArea, out string numberText))
-        {
-            errorMessage = $"지원하지 않는 Fuji SPB 주소 접두사입니다: {address}";
-            return false;
-        }
-
-        return TryParseNumber(trimmed, areaCode, isBitArea, numberText, out result, out errorMessage);
+        return TryParseCore(address, explicitBitAccess: null, out result, out errorMessage);
     }
 
-    /// <summary>10진 <see cref="ushort"/> 값을 4자리로 만들고 상위 2자리와 하위 2자리를 맞바꿉니다. (예: 100 → "0100" → "0001")</summary>
-    /// <param name="value">변환할 10진 워드/바이트 수치입니다.</param>
+    /// <summary>비트/워드 접근 모드를 지정하여 주소 문자열 파싱을 시도합니다.</summary>
+    /// <param name="address">파싱할 Fuji SPB 주소 문자열입니다.</param>
+    /// <param name="isBitAccess">비트 접근 여부입니다.</param>
+    /// <param name="result">파싱에 성공한 주소 객체입니다.</param>
+    /// <param name="errorMessage">파싱 실패 시 오류 설명입니다.</param>
+    /// <returns>파싱 성공 여부입니다.</returns>
+    public static bool TryParse(
+        string? address,
+        bool isBitAccess,
+        [NotNullWhen(true)] out FujiElectricSpbAddress? result,
+        [NotNullWhen(false)] out string? errorMessage)
+    {
+        return TryParseCore(address, explicitBitAccess: isBitAccess, out result, out errorMessage);
+    }
+
+    /// <summary>10진 <see cref="ushort"/> 값(0~9999)을 4자리로 만들고 상위 2자리와 하위 2자리를 맞바꿉니다. (예: 100 → "0100" → "0001")</summary>
+    /// <param name="value">변환할 10진 워드/바이트 수치입니다. (0~9999)</param>
     /// <returns>상·하위 2자리가 교차된 4자리 10진 문자열입니다.</returns>
     public static string FormatSwapped4(ushort value)
     {
+        if (value > MaxSwapped4Value)
+        {
+            throw new ArgumentOutOfRangeException(nameof(value), value, $"SPB 4자리 자리교차 값은 0~{MaxSwapped4Value} 사이여야 합니다.");
+        }
+
         string fourDigitDecimal = value.ToString("D4", CultureInfo.InvariantCulture);
         return fourDigitDecimal.Substring(HalfDigitLength, HalfDigitLength)
             + fourDigitDecimal.Substring(0, HalfDigitLength);
@@ -121,7 +126,7 @@ public sealed class FujiElectricSpbAddress
 
         string fourDigitDecimal = swapped4.Substring(HalfDigitLength, HalfDigitLength)
             + swapped4.Substring(0, HalfDigitLength);
-        return ushort.Parse(fourDigitDecimal, CultureInfo.InvariantCulture);
+        return ushort.Parse(fourDigitDecimal, NumberStyles.None, CultureInfo.InvariantCulture);
     }
 
     /// <summary>단일 비트 쓰기용 8문자 주소를 생성합니다. (영역코드 2문자 + 자리교차 4문자 바이트인덱스 + 바이트내비트 2자리)</summary>
@@ -129,8 +134,16 @@ public sealed class FujiElectricSpbAddress
     public string BuildBitWriteAddress()
     {
         int byteIndex = (WordAddress * BytesPerWord) + (BitOffset / BitsPerByte);
+        if (byteIndex > MaxSwapped4Value)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(WordAddress),
+                WordAddress,
+                $"SPB 비트 쓰기 바이트 인덱스({byteIndex})가 최대 범위(0~{MaxSwapped4Value})를 초과합니다.");
+        }
+
         int bitInByte = BitOffset % BitsPerByte;
-        string swappedByteIndex = FormatSwapped4(checked((ushort)byteIndex));
+        string swappedByteIndex = FormatSwapped4((ushort)byteIndex);
         return $"{AreaCode}{swappedByteIndex}{bitInByte:D2}";
     }
 
@@ -148,9 +161,9 @@ public sealed class FujiElectricSpbAddress
         {
             long totalBits = ((long)WordAddress * BitsPerWord) + BitOffset + count;
             long nextWord = totalBits / BitsPerWord;
-            if (nextWord > ushort.MaxValue)
+            if (nextWord > MaxSwapped4Value)
             {
-                throw new ArgumentOutOfRangeException(nameof(count), count, "비트 주소가 16비트 워드 범위를 초과합니다.");
+                throw new ArgumentOutOfRangeException(nameof(count), count, $"비트 주소가 SPB 최대 워드 범위(0~{MaxSwapped4Value})를 초과합니다.");
             }
 
             ushort newWordAddress = (ushort)nextWord;
@@ -166,9 +179,9 @@ public sealed class FujiElectricSpbAddress
         }
 
         long nextWordLong = (long)WordAddress + count;
-        if (nextWordLong > ushort.MaxValue)
+        if (nextWordLong > MaxSwapped4Value)
         {
-            throw new ArgumentOutOfRangeException(nameof(count), count, "워드 주소가 16비트 범위를 초과합니다.");
+            throw new ArgumentOutOfRangeException(nameof(count), count, $"워드 주소가 SPB 최대 워드 범위(0~{MaxSwapped4Value})를 초과합니다.");
         }
 
         ushort nextWordAddress = (ushort)nextWordLong;
@@ -184,6 +197,11 @@ public sealed class FujiElectricSpbAddress
 
     internal FujiElectricSpbAddress ToWordAddress(ushort wordAddress)
     {
+        if (wordAddress > MaxSwapped4Value)
+        {
+            throw new ArgumentOutOfRangeException(nameof(wordAddress), wordAddress, $"SPB 워드 주소는 0~{MaxSwapped4Value} 사이여야 합니다.");
+        }
+
         string wireWordAddress = $"{AreaCode}{FormatSwapped4(wordAddress)}";
         return new FujiElectricSpbAddress(
             Original,
@@ -208,6 +226,46 @@ public sealed class FujiElectricSpbAddress
             BitOffset,
             isBit: true,
             WireWordAddress);
+    }
+
+    private static FujiElectricSpbAddress ParseCore(string address, bool? explicitBitAccess)
+    {
+        if (string.IsNullOrWhiteSpace(address))
+        {
+            throw new ArgumentException("주소 문자열은 필수입니다.", nameof(address));
+        }
+
+        if (!TryParseCore(address, explicitBitAccess, out FujiElectricSpbAddress? result, out string? errorMessage))
+        {
+            throw new FormatException(errorMessage);
+        }
+
+        return result;
+    }
+
+    private static bool TryParseCore(
+        string? address,
+        bool? explicitBitAccess,
+        [NotNullWhen(true)] out FujiElectricSpbAddress? result,
+        [NotNullWhen(false)] out string? errorMessage)
+    {
+        result = null;
+        errorMessage = null;
+
+        if (address is null || string.IsNullOrWhiteSpace(address))
+        {
+            errorMessage = "주소 문자열이 비어 있습니다.";
+            return false;
+        }
+
+        string trimmed = address.Trim().ToUpperInvariant();
+        if (!TryExtractPrefix(trimmed, out string areaCode, out bool isBitArea, out string numberText))
+        {
+            errorMessage = $"지원하지 않는 Fuji SPB 주소 접두사입니다: {address}";
+            return false;
+        }
+
+        return TryParseNumber(trimmed, areaCode, isBitArea, explicitBitAccess, numberText, out result, out errorMessage);
     }
 
     private static bool TryExtractPrefix(
@@ -259,6 +317,7 @@ public sealed class FujiElectricSpbAddress
         string original,
         string areaCode,
         bool isBitArea,
+        bool? explicitBitAccess,
         string numberText,
         [NotNullWhen(true)] out FujiElectricSpbAddress? result,
         out string? errorMessage)
@@ -278,10 +337,17 @@ public sealed class FujiElectricSpbAddress
             return false;
         }
 
-        ushort wordAddress = isBitArea ? (ushort)(parsedNumber / BitsPerWord) : parsedNumber;
-        byte bitOffset = isBitArea ? (byte)(parsedNumber % BitsPerWord) : (byte)0;
+        bool resolveAsBit = isBitArea && (explicitBitAccess ?? true);
+        ushort wordAddress = resolveAsBit ? (ushort)(parsedNumber / BitsPerWord) : parsedNumber;
+        if (wordAddress > MaxSwapped4Value)
+        {
+            errorMessage = $"Fuji SPB 워드 주소 범위(0~{MaxSwapped4Value})를 초과했습니다: {original}";
+            return false;
+        }
+
+        byte bitOffset = resolveAsBit ? (byte)(parsedNumber % BitsPerWord) : (byte)0;
         string wireWordAddress = $"{areaCode}{FormatSwapped4(wordAddress)}";
-        result = new FujiElectricSpbAddress(original, areaCode, wordAddress, bitOffset, isBitArea, wireWordAddress);
+        result = new FujiElectricSpbAddress(original, areaCode, wordAddress, bitOffset, resolveAsBit, wireWordAddress);
         return true;
     }
 
@@ -296,16 +362,17 @@ public sealed class FujiElectricSpbAddress
         result = null;
         errorMessage = null;
 
-        string wordPart = numberText.Substring(0, dotIndex);
-        string bitPart = numberText.Substring(dotIndex + 1);
+        string wordText = numberText.Substring(0, dotIndex);
+        string bitText = numberText.Substring(dotIndex + 1);
 
-        if (!ushort.TryParse(wordPart, NumberStyles.None, CultureInfo.InvariantCulture, out ushort wordAddress))
+        if (!ushort.TryParse(wordText, NumberStyles.None, CultureInfo.InvariantCulture, out ushort wordAddress)
+            || wordAddress > MaxSwapped4Value)
         {
-            errorMessage = $"워드 주소 파싱 실패: {original}";
+            errorMessage = $"워드 주소 파싱 실패(0~{MaxSwapped4Value}): {original}";
             return false;
         }
 
-        if (!byte.TryParse(bitPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte bitOffset)
+        if (!byte.TryParse(bitText, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out byte bitOffset)
             || bitOffset > MaxBitOffset)
         {
             errorMessage = $"비트 오프셋 파싱 실패 (0~F): {original}";

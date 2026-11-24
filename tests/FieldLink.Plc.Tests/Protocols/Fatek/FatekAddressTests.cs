@@ -95,4 +95,40 @@ public class FatekAddressTests
     {
         Assert.Throws<ArgumentException>(() => FatekAddress.Parse(empty));
     }
+
+    [Theory]
+    [InlineData("DR0", "DR00000", false, true)]
+    [InlineData("DD100", "DD00100", false, true)]
+    [InlineData("DF50", "DF00050", false, true)]
+    [InlineData("DRT5", "DRT0005", false, true)]
+    [InlineData("DWX0", "DWX0000", true, true)]
+    [InlineData("DWY16", "DWY0016", true, true)]
+    [InlineData("DWM0", "DWM0000", true, true)]
+    [InlineData("DWS0", "DWS0000", true, true)]
+    [InlineData("DWT0", "DWT0000", true, true)]
+    [InlineData("DWC0", "DWC0000", true, true)]
+    public void Parse_32BitPrefixes_SetIs32BitAndExpectedWireFormat(
+        string input,
+        string expectedWire,
+        bool expectedIsWordGroup,
+        bool expectedIs32Bit)
+    {
+        FatekAddress parsedAddress = FatekAddress.Parse(input);
+        Assert.Equal(expectedWire, parsedAddress.WireString);
+        Assert.False(parsedAddress.IsBit);
+        Assert.Equal(expectedIsWordGroup, parsedAddress.IsWordGroup);
+        Assert.Equal(expectedIs32Bit, parsedAddress.Is32Bit);
+    }
+
+    [Fact]
+    public void Offset_Respects32BitRegisterWordGroupAndDrcStrides()
+    {
+        Assert.Equal("DD00102", FatekAddress.Parse("DD100").Offset(1).WireString);
+        Assert.Equal("DRT0007", FatekAddress.Parse("DRT5").Offset(1).WireString);
+        Assert.Equal("DRC0201", FatekAddress.Parse("DRC200").Offset(1).WireString);
+        Assert.Equal("WM0016", FatekAddress.Parse("WM0").Offset(1).WireString);
+        Assert.Equal("DWM0032", FatekAddress.Parse("DWM0").Offset(1).WireString);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => FatekAddress.Parse("DD65534").Offset(1));
+    }
 }

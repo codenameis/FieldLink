@@ -302,4 +302,127 @@ public class XinjeProtocolTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             protocol.ReadAsync(new PlcReadRequest("M7999", PlcDataType.Boolean, 2), default));
     }
+
+    [Fact]
+    public void Options_And_RequestBuilder_EnforceProtocolLimitsAndRejectUnsupportedDevices()
+    {
+        var defaultOptions = new XinjeOptions();
+        Assert.Equal(120, defaultOptions.MaxReadWords);
+        Assert.Equal(120, defaultOptions.MaxWriteWords);
+        Assert.Equal(1920, defaultOptions.MaxReadBits);
+        Assert.Equal(1920, defaultOptions.MaxWriteBits);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new XinjeOptions { Series = (XinjeSeries)999 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new XinjeOptions { MaxReadWords = 126 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new XinjeOptions { MaxWriteWords = 124 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new XinjeOptions { MaxReadBits = 2001 });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new XinjeOptions { MaxWriteBits = 1969 });
+
+        XinjeAddress d100 = XinjeAddress.Parse("D100", XinjeSeries.XdXl, isBitAccess: false);
+        XinjeAddress m10 = XinjeAddress.Parse("M10", XinjeSeries.XdXl, isBitAccess: true);
+        XinjeAddress sem0 = XinjeAddress.Parse("SEM0", XinjeSeries.XdXl, isBitAccess: true);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => XinjeRequestBuilder.BuildExtendedReadPdu(d100, 121));
+        Assert.Throws<ArgumentOutOfRangeException>(() => XinjeRequestBuilder.BuildExtendedReadPdu(m10, 1921));
+        Assert.Throws<ArgumentException>(() => XinjeRequestBuilder.BuildExtendedReadPdu(sem0, 1));
+        Assert.Throws<ArgumentException>(() => XinjeRequestBuilder.BuildExtendedWriteWordPdu(d100, 1, new byte[4]));
+        Assert.Throws<ArgumentException>(() => XinjeRequestBuilder.BuildExtendedWriteBitPdu(m10, 2, [true]));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            XinjeRequestBuilder.WrapAdu([0x20, 0x80, 0x00, 0x00, 0x64, 0x00, 0x01], station: 0, XinjeTransportEncoding.Rtu, transactionId: 0));
+    }
+
+    [Fact]
+    public async Task ExtendedProtocol_ClampsChunksTo120WordsAnd1920Bits_AndRoutesSemFsToStandardModbus()
+    {
+        var transport = new ScriptedTransport();
+        var options = new XinjeOptions
+        {
+            Series = XinjeSeries.XdXl,
+            Station = 1,
+            UseExtendedProtocol = true,
+            MaxReadWords = 125,
+            MaxReadBits = 2000,
+        };
+        var protocol = new XinjeProtocol(transport, options, XinjeTransportEncoding.Rtu);
+
+        // 125워드 읽기 -> MaxReadWords=125여도 확장 프로토콜 상한(120 + 5)으로 분할
+        byte[] wordChunk1 = new byte[2 + 240];
+        wordChunk1[0] = 0x20;
+        wordChunk1[1] = 240;
+        byte[] wordChunk2 = new byte[2 + 10];
+        wordChunk2[0] = 0x20;
+        wordChunk2[1] = 10;
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, wordChunk1));
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, wordChunk2));
+
+        byte[] words = await protocol.ReadAsync(new PlcReadRequest("D100", PlcDataType.Int16, 125), default);
+        Assert.Equal(250, words.Length);
+        Assert.Equal(120, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[0], 1)[6]);
+        Assert.Equal(5, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[1], 1)[6]);
+
+        // 2000비트 읽기 -> MaxReadBits=2000이어도 확장 프로토콜 상한(1920 + 80)으로 분할
+        byte[] bitChunk1 = new byte[2 + 240];
+        bitChunk1[0] = 0x1E;
+        bitChunk1[1] = 240;
+        byte[] bitChunk2 = new byte[2 + 10];
+        bitChunk2[0] = 0x1E;
+        bitChunk2[1] = 10;
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, bitChunk1));
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, bitChunk2));
+
+        byte[] bits = await protocol.ReadAsync(new PlcReadRequest("M10", PlcDataType.Boolean, 2000), default);
+        Assert.Equal(2000, bits.Length);
+        byte[] bitPdu1 = ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[2], 1);
+        Assert.Equal(1920, (ushort)((bitPdu1[5] << 8) | bitPdu1[6]));
+        byte[] bitPdu2 = ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[3], 1);
+        Assert.Equal(80, (ushort)((bitPdu2[5] << 8) | bitPdu2[6]));
+
+        // SEM0 및 FS0은 확장 프로토콜에서도 표준 Modbus(FC 0x01 / FC 0x03)로 라우팅
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x01, 0x01, 0x01]));
+        byte[] semBits = await protocol.ReadAsync(new PlcReadRequest("SEM0", PlcDataType.Boolean, 1), default);
+        Assert.Equal([1], semBits);
+        Assert.Equal(0x01, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[4], 1)[0]);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x02, 0x12, 0x34]));
+        byte[] fsWords = await protocol.ReadAsync(new PlcReadRequest("FS0", PlcDataType.Int16, 1), default);
+        Assert.Equal([0x12, 0x34], fsWords);
+        Assert.Equal(0x03, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[5], 1)[0]);
+    }
+
+    [Fact]
+    public void ResponseParser_RequiresExactExceptionFunctionCodeAndTwoByteExceptionPdu()
+    {
+        // 기대 기능 코드 0x20에 대해 0x83(표준 예외 코드)이 오면 PlcDeviceException이 아닌 InvalidResponse여야 함
+        PlcException wrongFc = Assert.Throws<PlcException>(() =>
+            XinjeResponseParser.ParseExtendedReadResponse([0x83, 0x02], expectedFunctionCode: 0x20, expectedByteCount: 2));
+        Assert.Equal(PlcErrorKind.InvalidResponse, wrongFc.Kind);
+
+        // 정확히 (0x20 | 0x80) = 0xA0이고 길이가 2바이트일 때만 PlcDeviceException
+        PlcDeviceException exactDeviceError = Assert.Throws<PlcDeviceException>(() =>
+            XinjeResponseParser.ParseExtendedReadResponse([0xA0, 0x02], expectedFunctionCode: 0x20, expectedByteCount: 2));
+        Assert.Equal(2, exactDeviceError.DeviceErrorCode);
+
+        // 길이가 2바이트가 아닌 예외 PDU 거부
+        PlcException badLen = Assert.Throws<PlcException>(() =>
+            XinjeResponseParser.ParseExtendedReadResponse([0xA0, 0x02, 0x00], expectedFunctionCode: 0x20, expectedByteCount: 2));
+        Assert.Equal(PlcErrorKind.InvalidResponse, badLen.Kind);
+    }
+
+    [Fact]
+    public async Task StandardModbus_UseSingleWriteAndUpfrontOverflow_BehaveCorrectly()
+    {
+        var transport = new ScriptedTransport();
+        var options = new XinjeOptions { Series = XinjeSeries.XC, UseExtendedProtocol = false, UseSingleWriteFunctions = true };
+        var protocol = new XinjeProtocol(transport, options, XinjeTransportEncoding.Rtu);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x06, 0x00, 0x64, 0x12, 0x34]));
+        await protocol.WriteAsync(new PlcWriteRequest("D100", PlcDataType.Int16, [0x12, 0x34]), default);
+        Assert.Equal(0x06, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[0], 1)[0]);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D8505", PlcDataType.Int16, 10), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("D8505", PlcDataType.Int16, new byte[20]), default));
+        Assert.Single(transport.SentFrames);
+    }
 }

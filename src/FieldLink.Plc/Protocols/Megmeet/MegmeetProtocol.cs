@@ -47,7 +47,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
     private readonly MegmeetOptions _options;
     private readonly MegmeetTransportEncoding _encoding;
     private readonly IFrameDecoder _frameDecoder;
-    private readonly object _txIdLock = new();
+    private readonly object _transactionIdLock = new();
 
     private ushort _transactionId;
     private long _lastConnectionId = -1;
@@ -95,7 +95,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
         bool isBit = request.DataType == PlcDataType.Boolean;
         var address = MegmeetAddress.Parse(request.Address, isBit);
         ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
-        Validate32BitCounterDataType(address, request.DataType, request.ByteCount, nameof(request));
+        Validate32BitCounterDataType(address, request.DataType, request.ByteCount, isWrite: false, nameof(request));
 
         int requestedByteCount = request.ByteCount;
         int bytesPerDeviceUnit = address.Is32BitWord ? BytesPer32BitCounter : BytesPerWord;
@@ -105,6 +105,8 @@ public sealed class MegmeetProtocol : IPlcProtocol
 
         int elementSize = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = CalculateWordsPerElement(address, elementSize);
+        address.ValidateContiguousRange(effectiveRequest.Count, wordsPerElement, nameof(request));
+
         int maxElements = address.IsBit
             ? _options.MaxReadBits
             : RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
@@ -146,7 +148,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
         }
 
         ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
-        Validate32BitCounterDataType(address, request.DataType, request.ByteCount, nameof(request));
+        Validate32BitCounterDataType(address, request.DataType, request.ByteCount, isWrite: true, nameof(request));
 
         int totalOriginalCount = request.Count;
         int originalElementsPerUnit = 1;
@@ -156,6 +158,8 @@ public sealed class MegmeetProtocol : IPlcProtocol
             : ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out originalElementsPerUnit, bytesPerDeviceUnit);
 
         int wordsPerElement = CalculateWordsPerElement(address, effectiveRequest.DataType.GetElementSize());
+        address.ValidateContiguousRange(effectiveRequest.Count, wordsPerElement, nameof(request));
+
         int maxElements = address.IsBit
             ? _options.MaxWriteBits
             : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
@@ -172,7 +176,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
                 foreach (PlannedChunk chunk in chunks)
                 {
                     byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
-                    await WriteChunkAsync(session, chunk.PduAddress, address.IsBit, chunkData).ConfigureAwait(false);
+                    await WriteChunkAsync(session, chunk.PduAddress, address.IsBit, chunk.ElementCount, wordsPerElement, chunkData).ConfigureAwait(false);
                     completedElements = ProtocolExecutionGuard.AdvanceCompletedCount(
                         completedElements,
                         chunk.ElementCount,
@@ -193,6 +197,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
         MegmeetAddress address,
         PlcDataType dataType,
         int byteCount,
+        bool isWrite,
         string paramName)
     {
         if (!address.Is32BitWord)
@@ -201,10 +206,10 @@ public sealed class MegmeetProtocol : IPlcProtocol
         }
 
         if (dataType is PlcDataType.Int16 or PlcDataType.UInt16 ||
-            (dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPer32BitCounter != 0))
+            (isWrite && dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPer32BitCounter != 0))
         {
             throw new ArgumentException(
-                "32비트 카운터(C200~C306)는 32비트 이상 자료형 또는 4바이트 배수로만 접근할 수 있습니다.",
+                "32비트 카운터(C200~C306)는 32비트 이상 자료형 또는 쓰기 시 4바이트 배수로만 접근할 수 있습니다.",
                 paramName);
         }
     }
@@ -239,7 +244,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
             List<RequestChunker.Chunk> subChunks = RequestChunker.Plan(range.ElementCount, maxElements);
             foreach (RequestChunker.Chunk subChunk in subChunks)
             {
-                ushort pduAddress = (ushort)(range.BasePduAddress + (subChunk.ElementOffset * wordsPerElement));
+                ushort pduAddress = checked((ushort)(range.BasePduAddress + (subChunk.ElementOffset * wordsPerElement)));
                 plannedChunks.Add(new PlannedChunk(pduAddress, globalElementOffset + subChunk.ElementOffset, subChunk.ElementCount));
             }
 
@@ -253,20 +258,10 @@ public sealed class MegmeetProtocol : IPlcProtocol
     {
         var ranges = new List<RangePlan>(2);
         int boundary = GetBoundary(address);
-        int numbersPerElement = address.Is32BitWord
-            ? Math.Max(1, wordsPerElement / WordsPer32BitCounter)
-            : wordsPerElement;
-        int totalNumberSpan = checked(elementCount * numbersPerElement);
-
-        if (!address.IsBit &&
-            address.Device == "C" &&
-            address.Number < Counter32BitStartNumber &&
-            address.Number + totalNumberSpan > Counter32BitStartNumber)
-        {
-            throw new ArgumentException(
-                "16비트 카운터(C0~C199)와 32비트 카운터(C200~C306) 경계를 가로지르는 요청은 지원하지 않습니다.",
-                nameof(address));
-        }
+        int numbersPerElement = address.IsBit
+            ? 1
+            : (address.Is32BitWord ? Math.Max(1, wordsPerElement / WordsPer32BitCounter) : wordsPerElement);
+        long totalNumberSpan = (long)elementCount * numbersPerElement;
 
         if (boundary > 0 && address.Number < boundary && address.Number + totalNumberSpan > boundary)
         {
@@ -338,16 +333,16 @@ public sealed class MegmeetProtocol : IPlcProtocol
         ITransportSession session,
         ushort pduAddress,
         bool isBit,
+        int elementCount,
+        int wordsPerElement,
         byte[] chunkData)
     {
         ushort transactionId = NextTransactionId();
         ushort quantity = checked((ushort)(isBit ? chunkData.Length : chunkData.Length / BytesPerWord));
-        byte[] requestPdu = BuildWritePdu(pduAddress, quantity, isBit, chunkData);
+        byte[] requestPdu = BuildWritePdu(pduAddress, isBit, elementCount, wordsPerElement, quantity, chunkData);
 
         byte[] responsePdu = await ExchangePduAsync(session, requestPdu, transactionId).ConfigureAwait(false);
-
-        var functionCode = (ModbusFunctionCode)requestPdu[0];
-        ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, pduAddress, quantity);
+        ValidateWriteResponse(requestPdu, responsePdu, pduAddress, quantity);
     }
 
     private async Task<byte[]> ExchangePduAsync(ITransportSession session, byte[] pdu, ushort transactionId)
@@ -365,8 +360,8 @@ public sealed class MegmeetProtocol : IPlcProtocol
 
             if (responseAdu.Length >= TcpTransactionIdLength)
             {
-                ushort receivedTxId = (ushort)((responseAdu[0] << TcpTransactionIdByteShift) | responseAdu[1]);
-                if (receivedTxId != transactionId)
+                ushort receivedTransactionId = (ushort)((responseAdu[0] << TcpTransactionIdByteShift) | responseAdu[1]);
+                if (receivedTransactionId != transactionId)
                 {
                     continue;
                 }
@@ -376,21 +371,54 @@ public sealed class MegmeetProtocol : IPlcProtocol
         }
     }
 
-    private static byte[] BuildWritePdu(ushort pduAddress, ushort quantity, bool isBit, byte[] chunkData)
+    private byte[] BuildWritePdu(
+        ushort pduAddress,
+        bool isBit,
+        int elementCount,
+        int wordsPerElement,
+        ushort quantity,
+        byte[] chunkData)
     {
-        if (!isBit)
+        if (isBit)
         {
-            return ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, quantity, chunkData);
+            if (_options.UseSingleWriteFunctions && elementCount == 1)
+            {
+                return ModbusRequestBuilder.BuildWriteSingleCoil(pduAddress, chunkData[0] != 0);
+            }
+
+            bool[] bits = new bool[quantity];
+            for (int i = 0; i < quantity; i++)
+            {
+                bits[i] = chunkData[i] != 0;
+            }
+
+            byte[] packedCoilBytes = BitPacking.Pack(bits);
+            return ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, quantity, packedCoilBytes);
         }
 
-        bool[] bits = new bool[quantity];
-        for (int i = 0; i < quantity; i++)
+        if (_options.UseSingleWriteFunctions && elementCount == 1 && wordsPerElement == 1)
         {
-            bits[i] = chunkData[i] != 0;
+            ushort registerValue = BinaryBuffer.ReadUInt16BigEndian(chunkData, 0);
+            return ModbusRequestBuilder.BuildWriteSingleRegister(pduAddress, registerValue);
         }
 
-        byte[] packedCoilBytes = BitPacking.Pack(bits);
-        return ModbusRequestBuilder.BuildWriteMultipleCoils(pduAddress, quantity, packedCoilBytes);
+        return ModbusRequestBuilder.BuildWriteMultipleRegisters(pduAddress, quantity, chunkData);
+    }
+
+    private static void ValidateWriteResponse(
+        byte[] requestPdu,
+        byte[] responsePdu,
+        ushort chunkPduAddress,
+        ushort expectedQuantity)
+    {
+        var functionCode = (ModbusFunctionCode)requestPdu[0];
+        if (functionCode is ModbusFunctionCode.WriteSingleCoil or ModbusFunctionCode.WriteSingleRegister)
+        {
+            ModbusResponseParser.ParseWriteSingleResponse(responsePdu, requestPdu);
+            return;
+        }
+
+        ModbusResponseParser.ParseWriteMultipleResponse(responsePdu, functionCode, chunkPduAddress, expectedQuantity);
     }
 
     private byte[] WrapAdu(byte[] pdu, ushort transactionId) => _encoding switch
@@ -409,7 +437,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
 
     private ushort NextTransactionId()
     {
-        lock (_txIdLock)
+        lock (_transactionIdLock)
         {
             _transactionId = (ushort)(_transactionId == MaxTransactionId ? InitialTransactionId : _transactionId + 1);
             return _transactionId;
@@ -418,7 +446,7 @@ public sealed class MegmeetProtocol : IPlcProtocol
 
     private void ResetTransactionIdIfNewConnection(long connectionId)
     {
-        lock (_txIdLock)
+        lock (_transactionIdLock)
         {
             if (_lastConnectionId != connectionId)
             {

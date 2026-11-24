@@ -190,4 +190,55 @@ public class MegmeetProtocolTests
         await Assert.ThrowsAsync<ArgumentException>(() =>
             protocol.WriteAsync(new PlcWriteRequest("C199", PlcDataType.Int16, new byte[4]), default));
     }
+
+    [Fact]
+    public async Task ReadAsync_C200_AllowsNon4ByteMultipleByteAndString_WhileWriteAsyncRejects()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MegmeetProtocol(transport, new MegmeetOptions { Station = 1 }, MegmeetTransportEncoding.Rtu);
+
+        // Byte 3개 읽기 -> C200(4바이트) 읽기 후 3바이트로 트림 반환
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x04, 0x41, 0x42, 0x43, 0x00]));
+        byte[] byteResult = await protocol.ReadAsync(new PlcReadRequest("C200", PlcDataType.Byte, 3), default);
+        Assert.Equal([0x41, 0x42, 0x43], byteResult);
+
+        // String 3바이트 읽기 허용
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x04, 0x41, 0x42, 0x43, 0x00]));
+        byte[] stringResult = await protocol.ReadAsync(new PlcReadRequest("C200", PlcDataType.String, 3), default);
+        Assert.Equal([0x41, 0x42, 0x43], stringResult);
+
+        // 쓰기에서는 4바이트 배수가 아닌 Byte/String 거부
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("C200", PlcDataType.Byte, [0x41, 0x42, 0x43]), default));
+    }
+
+    [Fact]
+    public async Task WriteAsync_UseSingleWriteFunctions_UsesFc05AndFc06()
+    {
+        var transport = new ScriptedTransport();
+        var options = new MegmeetOptions { Station = 1, UseSingleWriteFunctions = true };
+        var protocol = new MegmeetProtocol(transport, options, MegmeetTransportEncoding.Rtu);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x05, 0x07, 0xD0, 0xFF, 0x00]));
+        await protocol.WriteAsync(new PlcWriteRequest("M0", PlcDataType.Boolean, [1]), default);
+        Assert.Equal(0x05, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[0], 1)[0]);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x06, 0x00, 0x64, 0x12, 0x34]));
+        await protocol.WriteAsync(new PlcWriteRequest("D100", PlcDataType.Int16, [0x12, 0x34]), default);
+        Assert.Equal(0x06, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[1], 1)[0]);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_ExceedingDeviceBounds_ThrowsBeforeSending()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new MegmeetProtocol(transport, new MegmeetOptions { Station = 1 }, MegmeetTransportEncoding.Rtu);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D7995", PlcDataType.Int16, 10), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("D7995", PlcDataType.Int16, new byte[20]), default));
+
+        Assert.Empty(transport.SentFrames);
+    }
 }

@@ -8,6 +8,7 @@ namespace FieldLink.Plc.Protocols.Xinje;
 public static class XinjeResponseParser
 {
     private const byte ExceptionResponseFlag = 0x80;
+    private const int ExceptionPduLength = 2;
     private const int FunctionCodeOffset = 0;
     private const int ExceptionCodeOffset = 1;
 
@@ -37,9 +38,12 @@ public static class XinjeResponseParser
         XinjeTransportEncoding encoding,
         ushort expectedTransactionId)
     {
-        return encoding == XinjeTransportEncoding.Tcp
-            ? ModbusResponseParser.UnwrapTcpAdu(adu, expectedTransactionId, expectedStation)
-            : ModbusResponseParser.UnwrapRtuAdu(adu, expectedStation);
+        return encoding switch
+        {
+            XinjeTransportEncoding.Tcp => ModbusResponseParser.UnwrapTcpAdu(adu, expectedTransactionId, expectedStation),
+            XinjeTransportEncoding.Rtu => ModbusResponseParser.UnwrapRtuAdu(adu, expectedStation),
+            _ => throw new ArgumentOutOfRangeException(nameof(encoding), encoding, "지원하지 않는 XINJE 전송 인코딩입니다."),
+        };
     }
 
     /// <summary>확장 Modbus 읽기 응답 PDU(0x1E, 0x20)에서 데이터 바이트를 추출합니다.</summary>
@@ -48,6 +52,7 @@ public static class XinjeResponseParser
     /// <returns>추출된 데이터 바이트 배열입니다.</returns>
     public static byte[] ParseExtendedReadResponse(byte[] pdu, byte expectedFunctionCode)
     {
+        ValidateExtendedReadFunctionCode(expectedFunctionCode);
         ValidateExtendedPduHeader(pdu, expectedFunctionCode, minimumLength: ReadResponseHeaderLength);
 
         int declaredByteCount = pdu[ReadByteCountOffset];
@@ -70,6 +75,12 @@ public static class XinjeResponseParser
     /// <returns>추출된 데이터 바이트 배열입니다.</returns>
     public static byte[] ParseExtendedReadResponse(byte[] pdu, byte expectedFunctionCode, int expectedByteCount)
     {
+        ValidateExtendedReadFunctionCode(expectedFunctionCode);
+        if (expectedByteCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedByteCount), expectedByteCount, "기대 바이트 수는 1 이상이어야 합니다.");
+        }
+
         ValidateExtendedPduHeader(pdu, expectedFunctionCode, minimumLength: ReadResponseHeaderLength);
 
         int declaredByteCount = pdu[ReadByteCountOffset];
@@ -90,6 +101,7 @@ public static class XinjeResponseParser
     /// <param name="expectedFunctionCode">기대하는 확장 쓰기 기능 코드(0x1F 또는 0x21)입니다.</param>
     public static void VerifyExtendedWriteResponse(byte[] pdu, byte expectedFunctionCode)
     {
+        ValidateExtendedWriteFunctionCode(expectedFunctionCode);
         ValidateExtendedPduHeader(pdu, expectedFunctionCode, minimumLength: ExtendedWriteResponsePduLength);
 
         if (pdu.Length != ExtendedWriteResponsePduLength)
@@ -116,18 +128,27 @@ public static class XinjeResponseParser
             throw new ArgumentNullException(nameof(expectedAddress));
         }
 
+        if (!expectedAddress.ExtendedDeviceCode.HasValue)
+        {
+            throw new ArgumentException($"'{expectedAddress.Device}' 디바이스에는 확장 디바이스 코드가 없습니다.", nameof(expectedAddress));
+        }
+
         VerifyExtendedWriteResponse(pdu, expectedFunctionCode);
-        ValidateExtendedWriteEcho(pdu, expectedAddress, expectedCount);
+        ValidateExtendedWriteEcho(pdu, expectedAddress, expectedAddress.ExtendedDeviceCode.Value, expectedCount);
     }
 
-    private static void ValidateExtendedWriteEcho(byte[] pdu, XinjeAddress expectedAddress, ushort expectedCount)
+    private static void ValidateExtendedWriteEcho(
+        byte[] pdu,
+        XinjeAddress expectedAddress,
+        byte expectedDeviceCode,
+        ushort expectedCount)
     {
         byte responseDeviceCode = pdu[DeviceCodeOffset];
-        if (responseDeviceCode != expectedAddress.ExtendedDeviceCode)
+        if (responseDeviceCode != expectedDeviceCode)
         {
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
-                $"확장 쓰기 응답의 디바이스 코드(0x{responseDeviceCode:X2})가 요청(0x{expectedAddress.ExtendedDeviceCode:X2})과 일치하지 않습니다.");
+                $"확장 쓰기 응답의 디바이스 코드(0x{responseDeviceCode:X2})가 요청(0x{expectedDeviceCode:X2})과 일치하지 않습니다.");
         }
 
         int highByte = pdu[AddressHighOffset] << HighAddressByteShift;
@@ -159,16 +180,26 @@ public static class XinjeResponseParser
             throw new ArgumentNullException(nameof(pdu));
         }
 
-        if (pdu.Length < 1)
+        if (pdu.Length < ExceptionPduLength)
         {
-            throw new PlcException(PlcErrorKind.InvalidResponse, "PDU 길이가 너무 짧습니다.");
+            throw new PlcException(PlcErrorKind.InvalidResponse, $"PDU 길이가 너무 짧습니다. (길이: {pdu.Length})");
         }
 
         byte functionCode = pdu[FunctionCodeOffset];
-        if ((functionCode & ExceptionResponseFlag) != 0)
+        if (functionCode == (expectedFunctionCode | ExceptionResponseFlag))
         {
-            byte errorCode = pdu.Length > ExceptionCodeOffset ? pdu[ExceptionCodeOffset] : (byte)0;
-            throw new PlcDeviceException(errorCode, $"XINJE Modbus 예외 응답 수신: 기능코드=0x{functionCode:X2}, 오류코드=0x{errorCode:X2}");
+            if (pdu.Length != ExceptionPduLength)
+            {
+                throw new PlcException(
+                    PlcErrorKind.InvalidResponse,
+                    $"XINJE 확장 Modbus 예외 응답 길이가 {ExceptionPduLength}바이트가 아닙니다. (실제: {pdu.Length})");
+            }
+
+            byte errorCode = pdu[ExceptionCodeOffset];
+            var exceptionCode = (ModbusExceptionCode)errorCode;
+            throw new PlcDeviceException(
+                errorCode,
+                $"XINJE Modbus 예외 응답(기능코드=0x{functionCode:X2}, 오류코드=0x{errorCode:X2}): {exceptionCode.GetDescription()}");
         }
 
         if (functionCode != expectedFunctionCode)
@@ -183,6 +214,22 @@ public static class XinjeResponseParser
             throw new PlcException(
                 PlcErrorKind.InvalidResponse,
                 $"응답 PDU 길이가 너무 짧습니다: 기대={minimumLength}, 수신={pdu.Length}");
+        }
+    }
+
+    private static void ValidateExtendedReadFunctionCode(byte functionCode)
+    {
+        if (functionCode is not (XinjeRequestBuilder.ExtendedReadBitsFunctionCode or XinjeRequestBuilder.ExtendedReadWordsFunctionCode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(functionCode), functionCode, "지원하지 않는 XINJE 확장 읽기 기능 코드입니다.");
+        }
+    }
+
+    private static void ValidateExtendedWriteFunctionCode(byte functionCode)
+    {
+        if (functionCode is not (XinjeRequestBuilder.ExtendedWriteBitsFunctionCode or XinjeRequestBuilder.ExtendedWriteWordsFunctionCode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(functionCode), functionCode, "지원하지 않는 XINJE 확장 쓰기 기능 코드입니다.");
         }
     }
 }

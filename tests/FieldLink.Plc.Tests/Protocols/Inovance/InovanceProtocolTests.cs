@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using FieldLink.Plc.Abstractions;
+using FieldLink.Plc.Conversion;
 using FieldLink.Plc.Protocols.Inovance;
 using FieldLink.Plc.Protocols.Modbus;
 using FieldLink.Plc.Tests.Support;
@@ -228,5 +229,139 @@ public class InovanceProtocolTests
 
         byte[] readPdu2 = ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[1], 1);
         Assert.Equal(new byte[] { 0x03, 0x00, 0xCA, 0x00, 0x02 }, readPdu2);
+    }
+
+    [Fact]
+    public async Task Traits_DefaultByteOrder_IsBigEndianWordSwap_AndPlcClientDecodesCdab()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new InovanceProtocol(transport, new InovanceOptions { Series = InovanceSeries.H3u, Station = 1 }, InovanceTransportEncoding.Tcp);
+
+        // 출처: docs/plc-packet-manual/inovance.md §2.2 "기본 32비트 워드 순서는 하위 워드 먼저(CDAB)"
+        Assert.Equal(ByteOrder.BigEndianWordSwap, protocol.Traits.DefaultByteOrder);
+        Assert.Equal(0x12345678, PlcValueConverter.ToInt32([0x56, 0x78, 0x12, 0x34], byteOrder: protocol.Traits.DefaultByteOrder));
+
+        using var client = new PlcClient(transport, protocol);
+        PlcResult openResult = await client.OpenAsync();
+        Assert.True(openResult.IsSuccess);
+
+        transport.EnqueueResponse(frame =>
+        {
+            ushort transactionId = (ushort)((frame[0] << 8) | frame[1]);
+            return ModbusRequestBuilder.BuildTcpAdu(transactionId, 1, [0x03, 0x04, 0x56, 0x78, 0x12, 0x34]);
+        });
+
+        PlcResult<int> readResult = await client.ReadInt32Async("D100");
+        Assert.True(readResult.IsSuccess);
+        Assert.Equal(0x12345678, readResult.Value);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_Am_SmxAndSdw_UsesExtendedFunctionCodePlus0x30_Rtu()
+    {
+        var transport = new ScriptedTransport();
+        var options = new InovanceOptions { Series = InovanceSeries.AM, Station = 1 };
+        var protocol = new InovanceProtocol(transport, options, InovanceTransportEncoding.Rtu);
+
+        // SM10 읽기 -> FC 0x01 + 0x30 = 0x31
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x31, 0x01, 0x01]));
+        byte[] smRead = await protocol.ReadAsync(new PlcReadRequest("SM10", PlcDataType.Boolean, 1), default);
+        Assert.Equal([1], smRead);
+        Assert.Equal(0x31, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[0], 1)[0]);
+
+        // SDW10 읽기 -> FC 0x03 + 0x30 = 0x33
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x33, 0x02, 0x12, 0x34]));
+        byte[] sdwRead = await protocol.ReadAsync(new PlcReadRequest("SDW10", PlcDataType.Int16, 1), default);
+        Assert.Equal([0x12, 0x34], sdwRead);
+        Assert.Equal(0x33, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[1], 1)[0]);
+
+        // SM10 다중 비트 쓰기 -> FC 0x0F + 0x30 = 0x3F
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x3F, 0x00, 0x0A, 0x00, 0x02]));
+        await protocol.WriteAsync(new PlcWriteRequest("SM10", PlcDataType.Boolean, [1, 0]), default);
+        Assert.Equal(0x3F, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[2], 1)[0]);
+
+        // UseSingleWriteFunctions = true일 때 SMX0 -> 0x35, SDW10 -> 0x36
+        var singleProtocol = new InovanceProtocol(
+            transport,
+            new InovanceOptions { Series = InovanceSeries.AM, Station = 1, UseSingleWriteFunctions = true },
+            InovanceTransportEncoding.Rtu);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x35, 0x00, 0x00, 0xFF, 0x00]));
+        await singleProtocol.WriteAsync(new PlcWriteRequest("SMX0", PlcDataType.Boolean, [1]), default);
+        Assert.Equal(0x35, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[3], 1)[0]);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x36, 0x00, 0x0A, 0x12, 0x34]));
+        await singleProtocol.WriteAsync(new PlcWriteRequest("SDW10", PlcDataType.Int16, [0x12, 0x34]), default);
+        Assert.Equal(0x36, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[4], 1)[0]);
+
+        // RTU 디코더가 확장 예외 응답(0x33 | 0x80 = 0xB3) 프레임 경계도 올바르게 판정하는지 검증
+        var rtuDecoder = new InovanceRtuFrameDecoder();
+        byte[] extendedExceptionFrame = ModbusRequestBuilder.BuildRtuAdu(1, [0xB3, 0x02]);
+        bool isComplete = rtuDecoder.TryGetFrameLength(new ArraySegment<byte>(extendedExceptionFrame), out int frameLength);
+        Assert.True(isComplete);
+        Assert.Equal(5, frameLength);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_Am_MbByteAddress_ReadsOddOffsetAndPerformsRmwWrite()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new InovanceProtocol(transport, new InovanceOptions { Series = InovanceSeries.AM, Station = 1 }, InovanceTransportEncoding.Rtu);
+
+        // 출처: docs/plc-packet-manual/inovance.md §2.3
+        // MB1부터 3바이트(MB1, MB2, MB3) 읽기 -> MW0, MW1 총 2워드 읽기
+        // MW0 = [0xAA(MB1), 0x11(MB0)], MW1 = [0x22(MB3), 0x33(MB2)]
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x04, 0xAA, 0x11, 0x22, 0x33]));
+        byte[] mbSlice = await protocol.ReadAsync(new PlcReadRequest("MB1", PlcDataType.Byte, 3), default);
+        Assert.Equal([0xAA, 0x33, 0x22], mbSlice);
+
+        byte[] readWordPdu = ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[0], 1);
+        Assert.Equal(new byte[] { 0x03, 0x00, 0x00, 0x00, 0x02 }, readWordPdu);
+
+        // MB1 1바이트 쓰기(0xBB) -> MW0 읽기 후 상위 바이트만 0xBB로 수정하고 하위 바이트(MB0=0x11) 보존
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x02, 0xAA, 0x11]));
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x10, 0x00, 0x00, 0x00, 0x01]));
+        await protocol.WriteAsync(new PlcWriteRequest("MB1", PlcDataType.Byte, [0xBB]), default);
+
+        byte[] rmwWritePdu = ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[2], 1);
+        Assert.Equal(new byte[] { 0x10, 0x00, 0x00, 0x00, 0x01, 0x02, 0xBB, 0x11 }, rmwWritePdu);
+    }
+
+    [Fact]
+    public async Task ReadAsync_AmMdAndH3uC200_AllowsNon4ByteMultipleByteAndString_WhileWriteRejects()
+    {
+        var transport = new ScriptedTransport();
+        var amProtocol = new InovanceProtocol(transport, new InovanceOptions { Series = InovanceSeries.AM, Station = 1 }, InovanceTransportEncoding.Rtu);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x04, 0x41, 0x42, 0x43, 0x00]));
+        byte[] bytes = await amProtocol.ReadAsync(new PlcReadRequest("MD100", PlcDataType.Byte, 3), default);
+        Assert.Equal([0x41, 0x42, 0x43], bytes);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x03, 0x04, 0x41, 0x42, 0x43, 0x00]));
+        byte[] str = await amProtocol.ReadAsync(new PlcReadRequest("MD100", PlcDataType.String, 3), default);
+        Assert.Equal([0x41, 0x42, 0x43], str);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            amProtocol.WriteAsync(new PlcWriteRequest("MD100", PlcDataType.Byte, [0x41, 0x42, 0x43]), default));
+    }
+
+    [Fact]
+    public async Task Options_And_Protocol_EnforceSeriesValidationUseSingleWriteAndUpfrontOverflow()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new InovanceOptions { Series = (InovanceSeries)999 });
+
+        var transport = new ScriptedTransport();
+        var options = new InovanceOptions { Series = InovanceSeries.AM, Station = 1, UseSingleWriteFunctions = true };
+        var protocol = new InovanceProtocol(transport, options, InovanceTransportEncoding.Rtu);
+
+        transport.EnqueueResponse(ModbusRequestBuilder.BuildRtuAdu(1, [0x06, 0x00, 0x0A, 0x12, 0x34]));
+        await protocol.WriteAsync(new PlcWriteRequest("MW10", PlcDataType.Int16, [0x12, 0x34]), default);
+        Assert.Equal(0x06, ModbusResponseParser.UnwrapRtuAdu(transport.SentFrames[0], 1)[0]);
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("MW65530", PlcDataType.Int16, 10), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("MW65530", PlcDataType.Int16, new byte[20]), default));
+        Assert.Single(transport.SentFrames);
     }
 }

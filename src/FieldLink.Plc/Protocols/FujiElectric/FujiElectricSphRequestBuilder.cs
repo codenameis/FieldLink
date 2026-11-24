@@ -41,6 +41,8 @@ public static class FujiElectricSphRequestBuilder
     private const int WordCountOffset = 24;
     private const int WordDataOffset = 26;
 
+    private const byte MinConnectionId = 0x01;
+    private const byte MaxConnectionId = 0xFE;
     private const ushort MinWordCount = 1;
     private const ushort MaxWordCount = 230;
     private const int BytesPerWord = 2;
@@ -55,15 +57,24 @@ public static class FujiElectricSphRequestBuilder
     /// <returns>조립된 26바이트 요청 프레임입니다.</returns>
     public static byte[] BuildReadWords(byte connectionId, FujiElectricSphAddress address, ushort wordCount)
     {
+        ValidateConnectionId(connectionId);
+
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
+        }
+
+        if (address.IsBit)
+        {
+            throw new ArgumentException("SPH 워드 요청에는 비트 주소를 사용할 수 없습니다.", nameof(address));
         }
 
         if (wordCount is < MinWordCount or > MaxWordCount)
         {
             throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 읽기 개수는 1~230 사이여야 합니다.");
         }
+
+        address.ValidateWordRange(wordCount, nameof(wordCount));
 
         byte[] frame = new byte[ReadRequestFrameLength];
         FillHeader(frame, connectionId, ReadCommandCode, DescriptorByteLength);
@@ -83,15 +94,24 @@ public static class FujiElectricSphRequestBuilder
         ushort wordCount,
         byte[] wordData)
     {
+        ValidateConnectionId(connectionId);
+
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
+        }
+
+        if (address.IsBit)
+        {
+            throw new ArgumentException("SPH 워드 요청에는 비트 주소를 사용할 수 없습니다.", nameof(address));
         }
 
         if (wordCount is < MinWordCount or > MaxWordCount)
         {
             throw new ArgumentOutOfRangeException(nameof(wordCount), "워드 쓰기 개수는 1~230 사이여야 합니다.");
         }
+
+        address.ValidateWordRange(wordCount, nameof(wordCount));
 
         if (wordData is null)
         {
@@ -110,6 +130,17 @@ public static class FujiElectricSphRequestBuilder
         FillDescriptor(frame, address, wordCount);
         Buffer.BlockCopy(wordData, 0, frame, WordDataOffset, wordData.Length);
         return frame;
+    }
+
+    private static void ValidateConnectionId(byte connectionId)
+    {
+        if (connectionId < MinConnectionId || connectionId > MaxConnectionId)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(connectionId),
+                connectionId,
+                $"연결 ID는 0x{MinConnectionId:X2}~0x{MaxConnectionId:X2} 사이여야 합니다.");
+        }
     }
 
     private static void FillHeader(byte[] frame, byte connectionId, byte commandCode, ushort payloadByteLength)

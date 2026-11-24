@@ -14,6 +14,7 @@ public sealed class FatekProtocol : IPlcProtocol
 {
     private const int BytesPerWord = 2;
     private const int BytesPerDWord = 4;
+    private const int WordsPerDWord = 2;
     private const byte StringPaddingByte = 0x00;
     private const string CommandWriteBits = "45";
     private const string CommandWriteWords = "47";
@@ -52,7 +53,7 @@ public sealed class FatekProtocol : IPlcProtocol
 
         var address = FatekAddress.Parse(request.Address);
         ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
-        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, nameof(request));
+        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, isWrite: false, nameof(request));
 
         int requestedByteCount = request.ByteCount;
         int bytesPerDeviceUnit = address.Is32Bit ? BytesPerDWord : BytesPerWord;
@@ -61,9 +62,15 @@ public sealed class FatekProtocol : IPlcProtocol
             : ProtocolExecutionGuard.NormalizeWordReadRequest(request, bytesPerDeviceUnit);
         int bytesPerElement = effectiveRequest.DataType.GetElementSize();
         int unitsPerElement = address.IsBit ? 1 : Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        int wordsPerElement = address.IsBit
+            ? 1
+            : Math.Max(address.Is32Bit ? WordsPerDWord : 1, bytesPerElement / BytesPerWord);
+
+        address.ValidateContiguousRange((long)effectiveRequest.Count * unitsPerElement, nameof(request));
+
         int maxElementsPerChunk = address.IsBit
             ? _options.MaxReadBits
-            : RequestChunker.CalculateElementLimit(_options.MaxReadWords, unitsPerElement);
+            : RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
@@ -96,7 +103,7 @@ public sealed class FatekProtocol : IPlcProtocol
 
         var address = FatekAddress.Parse(request.Address);
         ProtocolExecutionGuard.ValidateAddressAndDataType(address.IsBit, request.DataType);
-        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, nameof(request));
+        Validate32BitDeviceDataType(address, request.DataType, request.ByteCount, isWrite: true, nameof(request));
 
         int totalOriginalCount = request.Count;
         int originalElementsPerUnit = 1;
@@ -107,9 +114,15 @@ public sealed class FatekProtocol : IPlcProtocol
 
         int bytesPerElement = effectiveRequest.DataType.GetElementSize();
         int unitsPerElement = address.IsBit ? 1 : Math.Max(1, bytesPerElement / bytesPerDeviceUnit);
+        int wordsPerElement = address.IsBit
+            ? 1
+            : Math.Max(address.Is32Bit ? WordsPerDWord : 1, bytesPerElement / BytesPerWord);
+
+        address.ValidateContiguousRange((long)effectiveRequest.Count * unitsPerElement, nameof(request));
+
         int maxElementsPerChunk = address.IsBit
             ? _options.MaxWriteBits
-            : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, unitsPerElement);
+            : RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
 
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         int completedElements = 0;
@@ -145,6 +158,7 @@ public sealed class FatekProtocol : IPlcProtocol
         FatekAddress address,
         PlcDataType dataType,
         int byteCount,
+        bool isWrite,
         string paramName)
     {
         if (!address.Is32Bit)
@@ -153,10 +167,10 @@ public sealed class FatekProtocol : IPlcProtocol
         }
 
         if (dataType is PlcDataType.Int16 or PlcDataType.UInt16 ||
-            (dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPerDWord != 0))
+            (isWrite && dataType is (PlcDataType.Byte or PlcDataType.String) && byteCount % BytesPerDWord != 0))
         {
             throw new ArgumentException(
-                $"32비트 카운터 레지스터({address.Device})는 32비트 이상 자료형 또는 4바이트 배수로만 접근할 수 있습니다.",
+                $"32비트 레지스터({address.Device})는 32비트 이상 자료형 또는 쓰기 시 4바이트 배수로만 접근할 수 있습니다.",
                 paramName);
         }
     }

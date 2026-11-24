@@ -16,6 +16,7 @@ public sealed class DeltaOptions
     private const int DefaultWordLimit = 120;
     private const int DefaultBitLimit = 1920;
 
+    private readonly DeltaSeries _series = DeltaSeries.Dvp;
     private readonly byte _station = DefaultStation;
     private readonly int _maxReadWords = DefaultWordLimit;
     private readonly int _maxReadBits = DefaultBitLimit;
@@ -23,7 +24,19 @@ public sealed class DeltaOptions
     private readonly int _maxWriteBits = DefaultBitLimit;
 
     /// <summary>대상 Delta PLC 시리즈입니다. 기본값은 <see cref="DeltaSeries.Dvp"/>입니다.</summary>
-    public DeltaSeries Series { get; init; } = DeltaSeries.Dvp;
+    public DeltaSeries Series
+    {
+        get => _series;
+        init
+        {
+            if (!Enum.IsDefined(typeof(DeltaSeries), value))
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "지원하지 않는 Delta PLC 시리즈입니다.");
+            }
+
+            _series = value;
+        }
+    }
 
     /// <summary>슬레이브 국번(Station 번호)입니다. 기본값은 1입니다.</summary>
     public byte Station
@@ -67,6 +80,9 @@ public sealed class DeltaOptions
         get => _maxWriteBits;
         init => _maxWriteBits = ValidateLimit(value, MaxModbusWriteBits, nameof(value), "최대 쓰기 비트 수");
     }
+
+    /// <summary>단일 원소 쓰기 시 FC 0x05/0x06을 사용할지 여부입니다. 기본값은 false입니다.</summary>
+    public bool UseSingleWriteFunctions { get; init; }
 
     private static int ValidateLimit(int value, int maxLimit, string paramName, string label)
     {

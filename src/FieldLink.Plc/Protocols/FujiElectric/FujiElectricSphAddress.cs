@@ -16,6 +16,9 @@ public sealed class FujiElectricSphAddress
     private const int StandardPrefixLength = 3;
     private const int SystemPrefixLength = 4;
     private const int IoPrefixLength = 1;
+    private const int IecWordPrefixLength = 4;
+    private const int IecSystemPrefixLength = 5;
+    private const int IecIoPrefixLength = 2;
 
     private FujiElectricSphAddress(string original, byte areaCode, uint wordAddress, byte bitOffset, bool isBit)
     {
@@ -79,7 +82,10 @@ public sealed class FujiElectricSphAddress
         }
 
         string trimmed = address.Trim().ToUpperInvariant();
-        if (!TryExtractAreaCode(trimmed, out byte areaCode, out string numberText))
+        string normalized = trimmed.StartsWith("%", StringComparison.Ordinal)
+            ? trimmed.Substring(1)
+            : trimmed;
+        if (!TryExtractAreaCode(normalized, out byte areaCode, out string numberText))
         {
             errorMessage = $"지원하지 않는 SPH 메모리 영역입니다: {address}";
             return false;
@@ -108,33 +114,74 @@ public sealed class FujiElectricSphAddress
         return new FujiElectricSphAddress(Original, AreaCode, wordAddress, bitOffset: 0, isBit: false);
     }
 
-    private static bool TryExtractAreaCode(string trimmed, out byte areaCode, out string numberText)
+    internal void ValidateWordRange(long wordCount, string paramName)
     {
-        if (trimmed.StartsWith("M1.", StringComparison.Ordinal))
+        if (wordCount <= 0)
         {
-            areaCode = StandardMemoryAreaCode;
-            numberText = trimmed.Substring(StandardPrefixLength);
-            return true;
+            throw new ArgumentOutOfRangeException(paramName, wordCount, "워드 개수는 1 이상이어야 합니다.");
         }
 
-        if (trimmed.StartsWith("M3.", StringComparison.Ordinal))
+        if ((long)WordAddress + wordCount - 1 > MaxWordAddress)
         {
-            areaCode = RetainMemoryAreaCode;
-            numberText = trimmed.Substring(StandardPrefixLength);
-            return true;
+            throw new ArgumentOutOfRangeException(paramName, wordCount, "요청 범위가 SPH 24비트 주소 범위를 초과합니다.");
         }
+    }
 
-        if (trimmed.StartsWith("M10.", StringComparison.Ordinal))
+    private static bool TryExtractAreaCode(string normalized, out byte areaCode, out string numberText)
+    {
+        if (normalized.StartsWith("MW10.", StringComparison.Ordinal))
         {
             areaCode = SystemMemoryAreaCode;
-            numberText = trimmed.Substring(SystemPrefixLength);
+            numberText = normalized.Substring(IecSystemPrefixLength);
             return true;
         }
 
-        if (trimmed.StartsWith("I", StringComparison.Ordinal) || trimmed.StartsWith("Q", StringComparison.Ordinal))
+        if (normalized.StartsWith("M10.", StringComparison.Ordinal))
+        {
+            areaCode = SystemMemoryAreaCode;
+            numberText = normalized.Substring(SystemPrefixLength);
+            return true;
+        }
+
+        if (normalized.StartsWith("MW1.", StringComparison.Ordinal))
+        {
+            areaCode = StandardMemoryAreaCode;
+            numberText = normalized.Substring(IecWordPrefixLength);
+            return true;
+        }
+
+        if (normalized.StartsWith("M1.", StringComparison.Ordinal))
+        {
+            areaCode = StandardMemoryAreaCode;
+            numberText = normalized.Substring(StandardPrefixLength);
+            return true;
+        }
+
+        if (normalized.StartsWith("MW3.", StringComparison.Ordinal))
+        {
+            areaCode = RetainMemoryAreaCode;
+            numberText = normalized.Substring(IecWordPrefixLength);
+            return true;
+        }
+
+        if (normalized.StartsWith("M3.", StringComparison.Ordinal))
+        {
+            areaCode = RetainMemoryAreaCode;
+            numberText = normalized.Substring(StandardPrefixLength);
+            return true;
+        }
+
+        if (normalized.StartsWith("IX", StringComparison.Ordinal) || normalized.StartsWith("QX", StringComparison.Ordinal))
         {
             areaCode = IoAreaCode;
-            numberText = trimmed.Substring(IoPrefixLength);
+            numberText = normalized.Substring(IecIoPrefixLength);
+            return true;
+        }
+
+        if (normalized.StartsWith("I", StringComparison.Ordinal) || normalized.StartsWith("Q", StringComparison.Ordinal))
+        {
+            areaCode = IoAreaCode;
+            numberText = normalized.Substring(IoPrefixLength);
             return true;
         }
 
@@ -191,7 +238,7 @@ public sealed class FujiElectricSphAddress
             return false;
         }
 
-        if (!byte.TryParse(bitPart, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte parsedBitOffset)
+        if (!byte.TryParse(bitPart, NumberStyles.None, CultureInfo.InvariantCulture, out byte parsedBitOffset)
             || parsedBitOffset > MaxBitOffset)
         {
             errorMessage = $"유효하지 않은 비트 오프셋입니다: {original}";

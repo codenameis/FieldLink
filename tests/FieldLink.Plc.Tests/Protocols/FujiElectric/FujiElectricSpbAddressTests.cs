@@ -60,11 +60,58 @@ public class FujiElectricSpbAddressTests
     [InlineData("M10.50", 0x08, 50u, false)]
     [InlineData("I0.5", 0x01, 0u, true)]
     [InlineData("Q10", 0x01, 10u, false)]
+    [InlineData("M1.100.10", 0x02, 100u, true)]
+    [InlineData("M1.100.15", 0x02, 100u, true)]
+    [InlineData("%MW1.100", 0x02, 100u, false)]
+    [InlineData("%MW3.200", 0x04, 200u, false)]
+    [InlineData("%MW10.50", 0x08, 50u, false)]
+    [InlineData("%IX0.5", 0x01, 0u, true)]
+    [InlineData("%QX10", 0x01, 10u, false)]
     public void Parse_SphAddresses_MapsToExpectedAreaAndOffset(string input, byte expectedArea, uint expectedWord, bool isBit)
     {
         FujiElectricSphAddress parsedAddress = FujiElectricSphAddress.Parse(input);
         Assert.Equal(expectedArea, parsedAddress.AreaCode);
         Assert.Equal(expectedWord, parsedAddress.WordAddress);
         Assert.Equal(isBit, parsedAddress.IsBit);
+    }
+
+    [Fact]
+    public void Parse_Spb_M6_RespectsBitVsWordAccessMode()
+    {
+        FujiElectricSpbAddress wordAddress = FujiElectricSpbAddress.Parse("M6", isBitAccess: false);
+        Assert.False(wordAddress.IsBit);
+        Assert.Equal((ushort)6, wordAddress.WordAddress);
+        Assert.Equal("020600", wordAddress.WireWordAddress);
+
+        FujiElectricSpbAddress bitAddress = FujiElectricSpbAddress.Parse("M6", isBitAccess: true);
+        Assert.True(bitAddress.IsBit);
+        Assert.Equal((ushort)0, bitAddress.WordAddress);
+        Assert.Equal((byte)6, bitAddress.BitOffset);
+        Assert.Equal("020000", bitAddress.WireWordAddress);
+    }
+
+    [Fact]
+    public void FormatSwapped4_And_BitWriteAddress_Enforce9999LimitAndRejectWhitespace()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => FujiElectricSpbAddress.FormatSwapped4(10000));
+        Assert.Throws<System.FormatException>(() => FujiElectricSpbAddress.Unswap4(" 100"));
+        Assert.False(FujiElectricSpbAddress.TryParse("D10. 0", out _, out _));
+        Assert.False(FujiElectricSpbAddress.TryParse("D10000", out _, out _));
+
+        FujiElectricSpbAddress outOfBitWriteRange = FujiElectricSpbAddress.Parse("D5000.0");
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => outOfBitWriteRange.BuildBitWriteAddress());
+    }
+
+    [Fact]
+    public void Parse_Sph_DecimalBitOffsets10To15_AndRejectsHexBits()
+    {
+        FujiElectricSphAddress bit10 = FujiElectricSphAddress.Parse("M1.100.10");
+        Assert.Equal((byte)10, bit10.BitOffset);
+
+        FujiElectricSphAddress bit15 = FujiElectricSphAddress.Parse("M1.100.15");
+        Assert.Equal((byte)15, bit15.BitOffset);
+
+        Assert.Throws<System.FormatException>(() => FujiElectricSphAddress.Parse("M1.100.A"));
+        Assert.Throws<System.FormatException>(() => FujiElectricSphAddress.Parse("M1.100.16"));
     }
 }

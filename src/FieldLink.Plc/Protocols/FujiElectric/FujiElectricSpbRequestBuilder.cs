@@ -14,6 +14,8 @@ public static class FujiElectricSpbRequestBuilder
     private const string BitOnText = "01";
     private const string BitOffText = "00";
 
+    private const byte MinStation = 1;
+    private const byte MaxStation = 255;
     private const ushort MinWordCount = 1;
     private const ushort MaxWordCount = 64;
     private const int FixedReadWordsBodyByteLength = 9;
@@ -24,8 +26,8 @@ public static class FujiElectricSpbRequestBuilder
     private const int LowByteMask = 0xFF;
 
     /// <summary>연속 워드 읽기(명령 00 00) 요청 프레임을 생성합니다.</summary>
-    /// <param name="station">대상 PLC 국번입니다.</param>
-    /// <param name="address">읽기 시작 주소입니다.</param>
+    /// <param name="station">대상 PLC 국번(1~255)입니다.</param>
+    /// <param name="address">읽기 시작 워드 주소입니다.</param>
     /// <param name="wordCount">읽을 워드 수(1~64)입니다.</param>
     /// <param name="includeLrc">2문자 ASCII LRC 체크섬을 포함할지 여부입니다.</param>
     /// <returns>조립된 ASCII 요청 바이트 배열입니다.</returns>
@@ -35,9 +37,15 @@ public static class FujiElectricSpbRequestBuilder
         ushort wordCount,
         bool includeLrc = false)
     {
+        ValidateStation(station);
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
+        }
+
+        if (address.IsBit)
+        {
+            throw new ArgumentException("워드 읽기 요청에는 워드 주소만 사용할 수 있습니다.", nameof(address));
         }
 
         if (wordCount is < MinWordCount or > MaxWordCount)
@@ -46,13 +54,13 @@ public static class FujiElectricSpbRequestBuilder
         }
 
         string swappedWordCount = FujiElectricSpbAddress.FormatSwapped4(wordCount);
-        string payload = $"{station:X2}{FixedReadWordsBodyByteLength:X2}{DirectCpuExtendedStation}{ReadWordsCommand}{address.WireWordAddress}{swappedWordCount}";
+        string payload = $"{station.ToString("X2", CultureInfo.InvariantCulture)}{FixedReadWordsBodyByteLength.ToString("X2", CultureInfo.InvariantCulture)}{DirectCpuExtendedStation}{ReadWordsCommand}{address.WireWordAddress}{swappedWordCount}";
         return EncodeFrame(payload, includeLrc);
     }
 
     /// <summary>연속 워드 쓰기(명령 01 00) 요청 프레임을 생성합니다.</summary>
-    /// <param name="station">대상 PLC 국번입니다.</param>
-    /// <param name="address">쓰기 시작 주소입니다.</param>
+    /// <param name="station">대상 PLC 국번(1~255)입니다.</param>
+    /// <param name="address">쓰기 시작 워드 주소입니다.</param>
     /// <param name="wordCount">쓸 워드 수(1~64)입니다.</param>
     /// <param name="wordData">리틀엔디언 워드 데이터 바이트 배열입니다.</param>
     /// <param name="includeLrc">2문자 ASCII LRC 체크섬을 포함할지 여부입니다.</param>
@@ -64,9 +72,15 @@ public static class FujiElectricSpbRequestBuilder
         byte[] wordData,
         bool includeLrc = false)
     {
+        ValidateStation(station);
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
+        }
+
+        if (address.IsBit)
+        {
+            throw new ArgumentException("워드 쓰기 요청에는 워드 주소만 사용할 수 있습니다.", nameof(address));
         }
 
         if (wordCount is < MinWordCount or > MaxWordCount)
@@ -89,7 +103,7 @@ public static class FujiElectricSpbRequestBuilder
     }
 
     /// <summary>단일 비트 쓰기(명령 01 02) 요청 프레임을 생성합니다.</summary>
-    /// <param name="station">대상 PLC 국번입니다.</param>
+    /// <param name="station">대상 PLC 국번(1~255)입니다.</param>
     /// <param name="address">대상 비트 주소입니다.</param>
     /// <param name="bitValue">기록할 비트 값(true=ON, false=OFF)입니다.</param>
     /// <param name="includeLrc">2문자 ASCII LRC 체크섬을 포함할지 여부입니다.</param>
@@ -100,15 +114,29 @@ public static class FujiElectricSpbRequestBuilder
         bool bitValue,
         bool includeLrc = false)
     {
+        ValidateStation(station);
         if (address is null)
         {
             throw new ArgumentNullException(nameof(address));
         }
 
+        if (!address.IsBit)
+        {
+            throw new ArgumentException("단일 비트 쓰기 요청에는 비트 주소만 사용할 수 있습니다.", nameof(address));
+        }
+
         string bitWriteAddress = address.BuildBitWriteAddress();
         string bitValueText = bitValue ? BitOnText : BitOffText;
-        string payload = $"{station:X2}{FixedWriteBitBodyByteLength:X2}{DirectCpuExtendedStation}{WriteBitCommand}{bitWriteAddress}{bitValueText}";
+        string payload = $"{station.ToString("X2", CultureInfo.InvariantCulture)}{FixedWriteBitBodyByteLength.ToString("X2", CultureInfo.InvariantCulture)}{DirectCpuExtendedStation}{WriteBitCommand}{bitWriteAddress}{bitValueText}";
         return EncodeFrame(payload, includeLrc);
+    }
+
+    private static void ValidateStation(byte station)
+    {
+        if (station is < MinStation or > MaxStation)
+        {
+            throw new ArgumentOutOfRangeException(nameof(station), station, $"Fuji SPB 국번은 {MinStation}~{MaxStation} 사이여야 합니다.");
+        }
     }
 
     private static string BuildWriteWordsPayload(
@@ -150,6 +178,6 @@ public static class FujiElectricSpbRequestBuilder
         }
 
         byte lrc = (byte)((-asciiByteSum) & LowByteMask);
-        return Encoding.ASCII.GetBytes($":{payload}{lrc:X2}\r\n");
+        return Encoding.ASCII.GetBytes($":{payload}{lrc.ToString("X2", CultureInfo.InvariantCulture)}\r\n");
     }
 }

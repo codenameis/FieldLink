@@ -93,6 +93,7 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
     {
         int elementByteSize = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementByteSize / BytesPerWord);
+        baseWordAddress.ValidateWordRange((long)effectiveRequest.Count * wordsPerElement, nameof(effectiveRequest));
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxReadWords, wordsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
         byte[] combinedBuffer = new byte[effectiveRequest.ByteCount];
@@ -102,7 +103,7 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
             foreach (RequestChunker.Chunk chunk in chunks)
             {
                 FujiElectricSphAddress chunkAddress = baseWordAddress.Offset(chunk.ElementOffset * wordsPerElement);
-                ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
                 byte[] chunkData = await ReadSingleWordChunkAsync(session, chunkAddress, wordCount).ConfigureAwait(false);
 
                 int destinationOffset = chunk.ElementOffset * elementByteSize;
@@ -125,7 +126,7 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
             chunkAddress,
             wordCount);
         byte[] responseFrame = await session.ExchangeAsync(requestFrame, _frameDecoder).ConfigureAwait(false);
-        return FujiElectricSphResponseParser.ParseReadWords(responseFrame, _options.ConnectionId, wordCount);
+        return FujiElectricSphResponseParser.ParseReadWords(responseFrame, _options.ConnectionId, chunkAddress, wordCount);
     }
 
     private async Task<byte[]> ReadBitsAsync(
@@ -135,15 +136,17 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
     {
         long startBit = ((long)address.WordAddress * BitsPerWord) + address.BitOffset;
         long endBit = startBit + bitCount - 1;
-        uint startWord = (uint)(startBit / BitsPerWord);
-        uint endWord = (uint)(endBit / BitsPerWord);
-        int totalWordCount = (int)(endWord - startWord + 1);
+        long startWord = startBit / BitsPerWord;
+        long endWord = endBit / BitsPerWord;
+        long totalWordCountLong = endWord - startWord + 1;
 
-        FujiElectricSphAddress baseWordAddress = address.ToWordAddress(startWord);
+        FujiElectricSphAddress baseWordAddress = address.ToWordAddress((uint)startWord);
+        baseWordAddress.ValidateWordRange(totalWordCountLong, nameof(bitCount));
+        int totalWordCount = checked((int)totalWordCountLong);
         var wordRequest = new PlcReadRequest(address.Original, PlcDataType.UInt16, totalWordCount);
         byte[] wordBytes = await ReadWordsCoreAsync(baseWordAddress, wordRequest, cancellationToken).ConfigureAwait(false);
 
-        return ExtractBitsFromWords(wordBytes, startBit, startWord, bitCount);
+        return ExtractBitsFromWords(wordBytes, startBit, (uint)startWord, bitCount);
     }
 
     private static byte[] ExtractBitsFromWords(byte[] wordBytes, long startBit, uint startWord, int bitCount)
@@ -171,11 +174,13 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
     {
         long startBit = ((long)address.WordAddress * BitsPerWord) + address.BitOffset;
         long endBit = startBit + request.Count - 1;
-        uint startWord = (uint)(startBit / BitsPerWord);
-        uint endWord = (uint)(endBit / BitsPerWord);
-        int totalWordCount = (int)(endWord - startWord + 1);
+        long startWord = startBit / BitsPerWord;
+        long endWord = endBit / BitsPerWord;
+        long totalWordCountLong = endWord - startWord + 1;
 
-        FujiElectricSphAddress baseWordAddress = address.ToWordAddress(startWord);
+        FujiElectricSphAddress baseWordAddress = address.ToWordAddress((uint)startWord);
+        baseWordAddress.ValidateWordRange(totalWordCountLong, nameof(request));
+        int totalWordCount = checked((int)totalWordCountLong);
         byte[] bitValues = request.GetData();
         int completedElements = 0;
 
@@ -184,13 +189,13 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
             await _transport.RunExclusiveAsync(async session =>
             {
                 byte[] wordBytes = await ReadRawWordsOnSessionAsync(session, baseWordAddress, totalWordCount).ConfigureAwait(false);
-                ApplyBitsToWords(wordBytes, startBit, startWord, bitValues);
+                ApplyBitsToWords(wordBytes, startBit, (uint)startWord, bitValues);
                 List<RequestChunker.Chunk> writeChunks = RequestChunker.Plan(totalWordCount, _options.MaxWriteWords);
 
                 foreach (RequestChunker.Chunk chunk in writeChunks)
                 {
                     await WriteModifiedBitWordChunkAsync(session, baseWordAddress, wordBytes, chunk).ConfigureAwait(false);
-                    long coveredEndBitExclusive = ((long)startWord + chunk.ElementOffset + chunk.ElementCount) * BitsPerWord;
+                    long coveredEndBitExclusive = (startWord + chunk.ElementOffset + chunk.ElementCount) * BitsPerWord;
                     completedElements = (int)Math.Min(request.Count, coveredEndBitExclusive - startBit);
                 }
 
@@ -214,7 +219,7 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
         foreach (RequestChunker.Chunk chunk in readChunks)
         {
             FujiElectricSphAddress chunkAddress = baseWordAddress.Offset(chunk.ElementOffset);
-            ushort wordCount = (ushort)chunk.ElementCount;
+            ushort wordCount = checked((ushort)chunk.ElementCount);
             byte[] chunkData = await ReadSingleWordChunkAsync(session, chunkAddress, wordCount).ConfigureAwait(false);
             Array.Copy(chunkData, 0, wordBytes, chunk.ElementOffset * BytesPerWord, chunkData.Length);
         }
@@ -251,7 +256,7 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
         RequestChunker.Chunk chunk)
     {
         FujiElectricSphAddress chunkAddress = baseWordAddress.Offset(chunk.ElementOffset);
-        ushort wordCount = (ushort)chunk.ElementCount;
+        ushort wordCount = checked((ushort)chunk.ElementCount);
         byte[] chunkData = new byte[wordCount * BytesPerWord];
         Buffer.BlockCopy(wordBytes, chunk.ElementOffset * BytesPerWord, chunkData, 0, chunkData.Length);
 
@@ -267,9 +272,10 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
         PlcWriteRequest effectiveRequest = ProtocolExecutionGuard.NormalizeWordWriteRequest(request, out int originalElementsPerUnit);
         int elementByteSize = effectiveRequest.DataType.GetElementSize();
         int wordsPerElement = Math.Max(1, elementByteSize / BytesPerWord);
+        FujiElectricSphAddress baseWordAddress = address.ToWordAddress(address.WordAddress);
+        baseWordAddress.ValidateWordRange((long)effectiveRequest.Count * wordsPerElement, nameof(request));
         int maxElementsPerChunk = RequestChunker.CalculateElementLimit(_options.MaxWriteWords, wordsPerElement);
         List<RequestChunker.Chunk> chunks = RequestChunker.Plan(effectiveRequest.Count, maxElementsPerChunk);
-        FujiElectricSphAddress baseWordAddress = address.ToWordAddress(address.WordAddress);
         int completedElements = 0;
 
         try
@@ -279,7 +285,7 @@ public sealed class FujiElectricSphProtocol : IPlcProtocol
                 foreach (RequestChunker.Chunk chunk in chunks)
                 {
                     FujiElectricSphAddress chunkAddress = baseWordAddress.Offset(chunk.ElementOffset * wordsPerElement);
-                    ushort wordCount = (ushort)(chunk.ElementCount * wordsPerElement);
+                    ushort wordCount = checked((ushort)(chunk.ElementCount * wordsPerElement));
                     byte[] chunkData = effectiveRequest.GetData(chunk.ElementOffset, chunk.ElementCount);
 
                     await WriteSingleWordChunkAsync(session, chunkAddress, wordCount, chunkData).ConfigureAwait(false);

@@ -36,7 +36,7 @@ public class FujiElectricProtocolTests
     public async Task ReadAsync_Spb_WithLrc_ParsesSuccessfully()
     {
         var transport = new ScriptedTransport();
-        var protocol = new FujiElectricSpbProtocol(transport, new FujiElectricSpbOptions { Station = 1 });
+        var protocol = new FujiElectricSpbProtocol(transport, new FujiElectricSpbOptions { Station = 1, IncludeLrc = true });
 
         byte[] response = Encoding.ASCII.GetBytes(":0107FFFF000000341236\r\n");
         transport.EnqueueResponse(response);
@@ -55,7 +55,7 @@ public class FujiElectricProtocolTests
         byte[] response = Encoding.ASCII.GetBytes(":0107FFFF000000341200\r\n");
 
         PlcException exception = Assert.Throws<PlcException>(() =>
-            FujiElectricSpbResponseParser.ParseReadWords(response, expectedStation: 1, expectedCount: 1));
+            FujiElectricSpbResponseParser.ParseReadWords(response, expectedStation: 1, expectedCount: 1, expectLrc: true));
 
         Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
         Assert.Contains("LRC 체크섬 불일치", exception.Message);
@@ -80,7 +80,7 @@ public class FujiElectricProtocolTests
         byte[] response = Encoding.ASCII.GetBytes(":0108FFFF000000341235\r\n");
 
         PlcException exception = Assert.Throws<PlcException>(() =>
-            FujiElectricSpbResponseParser.ParseReadWords(response, expectedStation: 1, expectedCount: 1));
+            FujiElectricSpbResponseParser.ParseReadWords(response, expectedStation: 1, expectedCount: 1, expectLrc: true));
 
         Assert.Equal(PlcErrorKind.InvalidResponse, exception.Kind);
     }
@@ -375,5 +375,145 @@ public class FujiElectricProtocolTests
         response[18] = 0x06;
         response[19] = 0x00;
         return response;
+    }
+
+    [Fact]
+    public async Task ReadAsync_Spb_M6_1Word_MatchesSpecificationTestVector()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new FujiElectricSpbProtocol(transport, new FujiElectricSpbOptions { Station = 1 });
+
+        byte[] response = Encoding.ASCII.GetBytes(":0107FFFF0000003412\r\n");
+        transport.EnqueueResponse(response);
+
+        var request = new PlcReadRequest("M6", PlcDataType.Int16, 1);
+        byte[] result = await protocol.ReadAsync(request, default);
+
+        Assert.Equal([0x34, 0x12], result);
+        Assert.Single(transport.SentFrames);
+
+        // 출처: docs/plc-packet-manual/fuji.md §A.3 "M6 1워드 읽기" (:0109FFFF00000206000100\r\n)
+        Assert.Equal(":0109FFFF00000206000100\r\n", Encoding.ASCII.GetString(transport.SentFrames[0]));
+    }
+
+    [Fact]
+    public void ParseReadWords_Spb_StrictExpectLrc_RejectsMissingOrUnexpectedLrc()
+    {
+        byte[] frameWithoutLrc = Encoding.ASCII.GetBytes(":0107FFFF0000003412\r\n");
+        byte[] frameWithLrc = Encoding.ASCII.GetBytes(":0107FFFF000000341236\r\n");
+        byte[] frameWithLrcBumpedLength = Encoding.ASCII.GetBytes(":0108FFFF000000341236\r\n");
+
+        PlcException missingLrc = Assert.Throws<PlcException>(() =>
+            FujiElectricSpbResponseParser.ParseReadWords(frameWithoutLrc, expectedStation: 1, expectedCount: 1, expectLrc: true));
+        Assert.Equal(PlcErrorKind.InvalidResponse, missingLrc.Kind);
+
+        PlcException unexpectedLrc = Assert.Throws<PlcException>(() =>
+            FujiElectricSpbResponseParser.ParseReadWords(frameWithLrc, expectedStation: 1, expectedCount: 1, expectLrc: false));
+        Assert.Equal(PlcErrorKind.InvalidResponse, unexpectedLrc.Kind);
+
+        PlcException bumpedLength = Assert.Throws<PlcException>(() =>
+            FujiElectricSpbResponseParser.ParseReadWords(frameWithLrcBumpedLength, expectedStation: 1, expectedCount: 1, expectLrc: false));
+        Assert.Equal(PlcErrorKind.InvalidResponse, bumpedLength.Kind);
+    }
+
+    [Fact]
+    public void ParseReadWords_Spb_ValidatesExtendedStationAndLrcBeforeEndCode()
+    {
+        // 확장 국번이 "FFFF"가 아니면서 오류 종료 코드(07)가 담긴 프레임 -> PlcDeviceException이 아닌 InvalidResponse여야 함
+        byte[] badExtendedStation = Encoding.ASCII.GetBytes(":0105FF00070000\r\n");
+        PlcException badStationException = Assert.Throws<PlcException>(() =>
+            FujiElectricSpbResponseParser.ParseReadWords(badExtendedStation, expectedStation: 1, expectedCount: 1, expectLrc: false));
+        Assert.Equal(PlcErrorKind.InvalidResponse, badStationException.Kind);
+
+        // LRC가 손상되었으면서 오류 종료 코드(07)가 담긴 프레임 -> PlcDeviceException이 아닌 InvalidResponse여야 함
+        byte[] badLrcWithError = Encoding.ASCII.GetBytes(":0105FFFF070000FF\r\n");
+        PlcException badLrcException = Assert.Throws<PlcException>(() =>
+            FujiElectricSpbResponseParser.ParseReadWords(badLrcWithError, expectedStation: 1, expectedCount: 1, expectLrc: true));
+        Assert.Equal(PlcErrorKind.InvalidResponse, badLrcException.Kind);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_Spb_RangeExceeding9999_ThrowsBeforeSending()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new FujiElectricSpbProtocol(transport, new FujiElectricSpbOptions { Station = 1 });
+
+        await Assert.ThrowsAsync<System.ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D9990", PlcDataType.Int16, 20), default));
+        await Assert.ThrowsAsync<System.ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("D9990", PlcDataType.Int16, new byte[40]), default));
+        await Assert.ThrowsAsync<System.ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D9999.A", PlcDataType.Boolean, 10), default));
+        await Assert.ThrowsAsync<System.ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("D5000.0", PlcDataType.Boolean, [1]), default));
+
+        Assert.Empty(transport.SentFrames);
+    }
+
+    [Fact]
+    public void SphRequestBuilder_ValidatesConnectionIdBitAddressAnd24BitRange()
+    {
+        FujiElectricSphAddress wordAddress = FujiElectricSphAddress.Parse("M1.100");
+        FujiElectricSphAddress bitAddress = FujiElectricSphAddress.Parse("M1.100.5");
+        FujiElectricSphAddress nearEndAddress = FujiElectricSphAddress.Parse("M1.16777210");
+
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => FujiElectricSphRequestBuilder.BuildReadWords(0x00, wordAddress, 1));
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => FujiElectricSphRequestBuilder.BuildReadWords(0xFF, wordAddress, 1));
+        Assert.Throws<System.ArgumentException>(() => FujiElectricSphRequestBuilder.BuildReadWords(1, bitAddress, 1));
+        Assert.Throws<System.ArgumentException>(() => FujiElectricSphRequestBuilder.BuildWriteWords(1, bitAddress, 1, [0, 0]));
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => FujiElectricSphRequestBuilder.BuildReadWords(1, nearEndAddress, 10));
+    }
+
+    [Fact]
+    public void SphResponseParser_ValidatesEnvelopeBeforeEndCode_AndChecksDescriptorAndExactLength()
+    {
+        // 헤더 마커([1]=0x00)가 손상되고 EndCode=0x40인 프레임 -> PlcDeviceException이 아닌 InvalidResponse여야 함
+        byte[] corruptedMarkerWithError = BuildSphWriteResponse(connectionId: 1, status: 0x40);
+        corruptedMarkerWithError[1] = 0x00;
+        PlcException markerException = Assert.Throws<PlcException>(() =>
+            FujiElectricSphResponseParser.VerifyWriteResponse(corruptedMarkerWithError, expectedConnectionId: 1));
+        Assert.Equal(PlcErrorKind.InvalidResponse, markerException.Kind);
+
+        // declaredPayloadLength와 실제 길이가 다르고 EndCode=0x40인 프레임 -> InvalidResponse여야 함
+        byte[] mismatchedLengthWithError = BuildSphWriteResponse(connectionId: 1, status: 0x40);
+        mismatchedLengthWithError[18] = 0x04;
+        PlcException payloadLenException = Assert.Throws<PlcException>(() =>
+            FujiElectricSphResponseParser.VerifyWriteResponse(mismatchedLengthWithError, expectedConnectionId: 1));
+        Assert.Equal(PlcErrorKind.InvalidResponse, payloadLenException.Kind);
+
+        // expectedWordCount == 0 거부
+        byte[] validRead = BuildSphReadResponse(connectionId: 1, areaCode: 0x02, startWord: 100, [0x34, 0x12]);
+        Assert.Throws<System.ArgumentOutOfRangeException>(() =>
+            FujiElectricSphResponseParser.ParseReadWords(validRead, expectedConnectionId: 1, expectedWordCount: 0));
+
+        // 정상 응답이라도 주소 디스크립터 [20..25]가 불일치하면 거부
+        FujiElectricSphAddress differentAddress = FujiElectricSphAddress.Parse("M1.101");
+        PlcException descriptorException = Assert.Throws<PlcException>(() =>
+            FujiElectricSphResponseParser.ParseReadWords(validRead, expectedConnectionId: 1, differentAddress, expectedWordCount: 1));
+        Assert.Equal(PlcErrorKind.InvalidResponse, descriptorException.Kind);
+
+        // 쓰기 정상 응답(EndCode=0x00) 길이가 26바이트가 아니면 거부
+        byte[] oversizedWrite = new byte[28];
+        System.Array.Copy(BuildSphWriteResponse(connectionId: 1, status: 0x00), oversizedWrite, 26);
+        oversizedWrite[18] = 0x08;
+        PlcException writeLenException = Assert.Throws<PlcException>(() =>
+            FujiElectricSphResponseParser.VerifyWriteResponse(oversizedWrite, expectedConnectionId: 1));
+        Assert.Equal(PlcErrorKind.InvalidResponse, writeLenException.Kind);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_Sph_24BitOverflow_ThrowsBeforeSending()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new FujiElectricSphProtocol(transport, new FujiElectricSphOptions { ConnectionId = 1 });
+
+        await Assert.ThrowsAsync<System.ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("M1.16777210", PlcDataType.Int16, 10), default));
+        await Assert.ThrowsAsync<System.ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("M1.16777215.10", PlcDataType.Boolean, 10), default));
+        await Assert.ThrowsAsync<System.ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("M1.16777215.10", PlcDataType.Boolean, new byte[10]), default));
+
+        Assert.Empty(transport.SentFrames);
     }
 }

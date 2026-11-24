@@ -10,6 +10,8 @@ public static class FatekResponseParser
     private const byte Stx = 0x02;
     private const byte Etx = 0x03;
 
+    private const byte MinStation = 1;
+    private const byte MaxStation = 254;
     private const int MinimumFrameLength = 9;
     private const int StationOffset = 1;
     private const int StationHexLength = 2;
@@ -19,24 +21,51 @@ public static class FatekResponseParser
     private const int DataStartOffset = 6;
     private const int TrailerLength = 3;
     private const int ChecksumHexLength = 2;
+    private const int HexCharsPerByte = 2;
     private const int HexCharsPerWord = 4;
     private const int BytesPerWord = 2;
     private const int HexCharsPerDWord = 8;
     private const int BytesPerDWord = 4;
+    private const int StatusByteCount = 3;
+    private const int StatusHexLength = StatusByteCount * HexCharsPerByte;
     private const int BitsPerWord = 16;
     private const int ChecksumByteMask = 0xFF;
 
-    private const char StatusSuccess = '0';
     private const byte BitOnAscii = (byte)'1';
     private const byte BitOffAscii = (byte)'0';
     private const byte BitOnValue = 1;
     private const byte BitOffValue = 0;
+    private const string CommandReadStatus = "40";
     private const string CommandReadBits = "44";
     private const string CommandReadWords = "46";
 
+    /// <summary>PLC 시스템 상태 요약(명령 40) 응답을 검증하고 3바이트 상태 배열(Status1~Status3)을 추출합니다. (사양서 §2.3)</summary>
+    /// <param name="frame">수신된 응답 프레임입니다.</param>
+    /// <param name="expectedStation">기대하는 국번(1~254)입니다.</param>
+    /// <returns>추출된 3바이트 상태 배열입니다.</returns>
+    public static byte[] ParseReadStatus(byte[] frame, byte expectedStation)
+    {
+        int bodyLength = ValidateHeaderAndChecksum(frame, expectedStation, CommandReadStatus);
+        if (bodyLength != StatusHexLength)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"수신된 상태 읽기 응답 길이가 일치하지 않습니다. (필요: {StatusHexLength}, 수신: {bodyLength})");
+        }
+
+        byte[] statusBytes = new byte[StatusByteCount];
+        for (int i = 0; i < StatusByteCount; i++)
+        {
+            int charOffset = DataStartOffset + (i * HexCharsPerByte);
+            statusBytes[i] = (byte)BinaryBuffer.ReadAsciiHex(frame, charOffset, HexCharsPerByte);
+        }
+
+        return statusBytes;
+    }
+
     /// <summary>연속 비트 읽기 응답을 검증하고 비트 바이트 배열(0 또는 1)을 추출합니다.</summary>
     /// <param name="frame">수신된 응답 프레임입니다.</param>
-    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedStation">기대하는 국번(1~254)입니다.</param>
     /// <param name="expectedCount">기대하는 비트 수입니다.</param>
     /// <returns>추출된 비트 바이트 배열입니다.</returns>
     public static byte[] ParseReadBits(byte[] frame, byte expectedStation, ushort expectedCount)
@@ -71,7 +100,7 @@ public static class FatekResponseParser
 
     /// <summary>연속 워드 읽기 응답을 검증하고 리틀 엔디언 바이트 배열을 추출합니다.</summary>
     /// <param name="frame">수신된 응답 프레임입니다.</param>
-    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedStation">기대하는 국번(1~254)입니다.</param>
     /// <param name="expectedCount">기대하는 워드 수입니다.</param>
     /// <returns>추출된 워드 데이터 바이트 배열(리틀 엔디언)입니다.</returns>
     public static byte[] ParseReadWords(byte[] frame, byte expectedStation, ushort expectedCount)
@@ -101,9 +130,9 @@ public static class FatekResponseParser
         return result;
     }
 
-    /// <summary>연속 32비트 레지스터(DRC) 읽기 응답을 검증하고 리틀 엔디언 바이트 배열을 추출합니다.</summary>
+    /// <summary>연속 32비트 레지스터(DR/DD/DF/DRT/DRC/DW*) 읽기 응답을 검증하고 리틀 엔디언 바이트 배열을 추출합니다.</summary>
     /// <param name="frame">수신된 응답 프레임입니다.</param>
-    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedStation">기대하는 국번(1~254)입니다.</param>
     /// <param name="expectedCount">기대하는 32비트 레지스터 수입니다.</param>
     /// <returns>추출된 32비트 레지스터 데이터 바이트 배열(리틀 엔디언)입니다.</returns>
     public static byte[] ParseReadDWords(byte[] frame, byte expectedStation, ushort expectedCount)
@@ -137,7 +166,7 @@ public static class FatekResponseParser
 
     /// <summary>쓰기 명령(비트 또는 워드) 응답을 검증합니다.</summary>
     /// <param name="frame">수신된 응답 프레임입니다.</param>
-    /// <param name="expectedStation">기대하는 국번입니다.</param>
+    /// <param name="expectedStation">기대하는 국번(1~254)입니다.</param>
     /// <param name="expectedCommand">기대하는 2문자 명령 에코(예: "45", "47")입니다.</param>
     public static void VerifyWriteResponse(byte[] frame, byte expectedStation, string expectedCommand)
     {
@@ -146,11 +175,22 @@ public static class FatekResponseParser
             throw new ArgumentException("기대 명령 코드는 비어 있을 수 없습니다.", nameof(expectedCommand));
         }
 
-        ValidateHeaderAndChecksum(frame, expectedStation, expectedCommand);
+        int bodyLength = ValidateHeaderAndChecksum(frame, expectedStation, expectedCommand);
+        if (bodyLength != 0)
+        {
+            throw new PlcException(
+                PlcErrorKind.InvalidResponse,
+                $"FATEK 쓰기 응답 본문 길이가 0이 아닙니다. (실제: {bodyLength})");
+        }
     }
 
     private static int ValidateHeaderAndChecksum(byte[] frame, byte expectedStation, string expectedCommand)
     {
+        if (expectedStation is < MinStation or > MaxStation)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedStation), expectedStation, $"FATEK 국번은 {MinStation}~{MaxStation} 사이여야 합니다.");
+        }
+
         if (frame is null || frame.Length < MinimumFrameLength)
         {
             throw new PlcException(PlcErrorKind.InvalidResponse, "FATEK 응답 프레임 길이가 너무 짧습니다.");
@@ -176,10 +216,10 @@ public static class FatekResponseParser
         }
 
         char statusChar = (char)frame[StatusCharOffset];
-        if (statusChar != StatusSuccess)
+        var errorCode = (FatekErrorCode)statusChar;
+        if (errorCode != FatekErrorCode.ErrorFree)
         {
-            string message = GetErrorMessage(statusChar);
-            throw new PlcDeviceException(statusChar, $"FATEK 장치 오류 (코드 '{statusChar}'): {message}");
+            throw new PlcDeviceException(statusChar, $"FATEK 장치 오류 (코드 '{statusChar}'): {errorCode.GetDescription()}");
         }
 
         return frame.Length - MinimumFrameLength;
@@ -200,17 +240,4 @@ public static class FatekResponseParser
             throw new PlcException(PlcErrorKind.InvalidResponse, $"FATEK 체크섬 불일치: 계산 {expectedLrc:X2}, 수신 {actualLrc:X2}");
         }
     }
-
-    private static string GetErrorMessage(char errorCode) => errorCode switch
-    {
-        '2' => "데이터 값 범위 초과 (Illegal value)",
-        '3' => "포맷 오류 또는 쓰기 금지 / 명령 실행 불가 (Illegal format / write protected)",
-        '4' => "정의되지 않은 명령 코드 (Invalid command code)",
-        '5' => "RUN 전환 불가 — 래더 체크섬 불일치",
-        '6' => "RUN 전환 불가 — PLC ID와 래더 ID 불일치",
-        '7' => "RUN 전환 불가 — 래더 문법 오류",
-        '9' => "RUN 전환 불가 — 미지원 명령어 포함",
-        'A' => "컴포넌트 기호 또는 주소 범위 초과 (Illegal address)",
-        _ => "알 수 없는 FATEK 오류",
-    };
 }

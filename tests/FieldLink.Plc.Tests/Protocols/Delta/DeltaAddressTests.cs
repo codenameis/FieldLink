@@ -63,4 +63,55 @@ public class DeltaAddressTests
     {
         Assert.Throws<FormatException>(() => DeltaAddress.Parse(invalidBit, DeltaSeries.AS));
     }
+
+    [Fact]
+    public void Parse_As_XAndYWithoutDot_RespectsBitVsWordAccess()
+    {
+        // 출처: docs/plc-packet-manual/delta.md §4 "Y2 비트 접근 -> 0xA020"
+        DeltaAddress y2Bit = DeltaAddress.Parse("Y2", DeltaSeries.AS, isBitAccess: true);
+        Assert.Equal(ModbusArea.Coil, y2Bit.Area);
+        Assert.Equal((ushort)0xA020, y2Bit.PduAddress);
+        Assert.True(y2Bit.IsBit);
+
+        DeltaAddress x2Bit = DeltaAddress.Parse("X2", DeltaSeries.AS, isBitAccess: true);
+        Assert.Equal(ModbusArea.DiscreteInput, x2Bit.Area);
+        Assert.Equal((ushort)0x6020, x2Bit.PduAddress);
+        Assert.True(x2Bit.IsBit);
+
+        DeltaAddress y2Word = DeltaAddress.Parse("Y2", DeltaSeries.AS, isBitAccess: false);
+        Assert.Equal(ModbusArea.HoldingRegister, y2Word.Area);
+        Assert.Equal((ushort)0xA002, y2Word.PduAddress);
+        Assert.False(y2Word.IsBit);
+    }
+
+    [Fact]
+    public void Parse_As_WordBitAddressing_D100_5_Succeeds()
+    {
+        DeltaAddress parsed = DeltaAddress.Parse("D100.5", DeltaSeries.AS, isBitAccess: true);
+        Assert.Equal(ModbusArea.HoldingRegister, parsed.Area);
+        Assert.Equal((ushort)100, parsed.PduAddress);
+        Assert.Equal(5, parsed.BitIndex);
+        Assert.True(parsed.IsBit);
+    }
+
+    [Theory]
+    [InlineData("X20000000000")]
+    [InlineData("X40000000000")]
+    [InlineData("Y77777777777")]
+    [InlineData("X400")]
+    public void Parse_Dvp_OctalOverflowOrOutOfRange_ThrowsFormatExceptionWithoutWrapping(string input)
+    {
+        Assert.Throws<FormatException>(() => DeltaAddress.Parse(input, DeltaSeries.Dvp));
+    }
+
+    [Theory]
+    [InlineData(DeltaSeries.Dvp, "D10000")]
+    [InlineData(DeltaSeries.Dvp, "M4096")]
+    [InlineData(DeltaSeries.Dvp, "C256")]
+    [InlineData(DeltaSeries.AS, "D30000")]
+    [InlineData(DeltaSeries.AS, "M8192")]
+    public void Parse_OutOfBoundsAddresses_ThrowsFormatException(DeltaSeries series, string input)
+    {
+        Assert.Throws<FormatException>(() => DeltaAddress.Parse(input, series));
+    }
 }

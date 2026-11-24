@@ -184,4 +184,68 @@ public class FatekProtocolTests
         Assert.Equal(2, transport.SentFrames.Count);
         Assert.StartsWith("\x02" + "014701DRC020012345678", Encoding.ASCII.GetString(transport.SentFrames[1]));
     }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_32BitRegisters_CapsChunkAt32ItemsAndSupportsNon4ByteByteRead()
+    {
+        var transport = new ScriptedTransport();
+        var options = new FatekOptions { Station = 1, MaxWordsPerRequest = 64 };
+        var protocol = new FatekProtocol(transport, options);
+
+        // 40개의 DD(32비트) 읽기 -> 최대 32항목 제한으로 32 + 8 항목(0x20, 0x08)으로 분할
+        string chunk1Hex = new string('1', 32 * 8);
+        string chunk2Hex = new string('2', 8 * 8);
+        transport.EnqueueResponse(MakeResponse(1, "46", '0', chunk1Hex));
+        transport.EnqueueResponse(MakeResponse(1, "46", '0', chunk2Hex));
+
+        byte[] read40 = await protocol.ReadAsync(new PlcReadRequest("DD100", PlcDataType.Int32, 40), default);
+        Assert.Equal(160, read40.Length);
+        Assert.StartsWith("\x02" + "014620DD00100", Encoding.ASCII.GetString(transport.SentFrames[0]));
+        Assert.StartsWith("\x02" + "014608DD00164", Encoding.ASCII.GetString(transport.SentFrames[1]));
+
+        // 32비트 디바이스 DD100에 Byte(3바이트) / String(3바이트) 읽기는 허용, 쓰기는 거부
+        transport.EnqueueResponse(MakeResponse(1, "46", '0', "00434241"));
+        byte[] byte3 = await protocol.ReadAsync(new PlcReadRequest("DD100", PlcDataType.Byte, 3), default);
+        Assert.Equal([0x41, 0x42, 0x43], byte3);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("DD100", PlcDataType.Byte, [0x41, 0x42, 0x43]), default));
+    }
+
+    [Fact]
+    public void RequestBuilder_And_ResponseParser_ValidateLimitsAndStatus40()
+    {
+        FatekAddress dd100 = FatekAddress.Parse("DD100");
+        FatekAddress d100 = FatekAddress.Parse("D100");
+        FatekAddress x0 = FatekAddress.Parse("X0");
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => FatekRequestBuilder.BuildReadWords(0, dd100, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => FatekRequestBuilder.BuildReadWords(1, dd100, 33));
+        Assert.Throws<ArgumentOutOfRangeException>(() => FatekRequestBuilder.BuildWriteDWords(1, dd100, 33, new byte[33 * 4]));
+        Assert.Throws<ArgumentException>(() => FatekRequestBuilder.BuildWriteDWords(1, d100, 1, new byte[4]));
+        Assert.Throws<ArgumentException>(() => FatekRequestBuilder.BuildWriteBits(1, x0, 2, [1]));
+
+        // 명령 40 상태 읽기 3바이트 파싱 및 비어 있지 않은 쓰기 응답 거부 검증
+        byte[] statusResponse = MakeResponse(1, "40", '0', "A1B2C3");
+        Assert.Equal([0xA1, 0xB2, 0xC3], FatekResponseParser.ParseReadStatus(statusResponse, expectedStation: 1));
+
+        byte[] invalidWriteBody = MakeResponse(1, "47", '0', "EXTRA");
+        PlcException writeException = Assert.Throws<PlcException>(() =>
+            FatekResponseParser.VerifyWriteResponse(invalidWriteBody, expectedStation: 1, "47"));
+        Assert.Equal(PlcErrorKind.InvalidResponse, writeException.Kind);
+    }
+
+    [Fact]
+    public async Task ReadAndWriteAsync_RangeExceedingAddressSpace_ThrowsBeforeSending()
+    {
+        var transport = new ScriptedTransport();
+        var protocol = new FatekProtocol(transport, new FatekOptions { Station = 1 });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.ReadAsync(new PlcReadRequest("D65530", PlcDataType.Int16, 10), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            protocol.WriteAsync(new PlcWriteRequest("DD65530", PlcDataType.Int32, new byte[20]), default));
+
+        Assert.Empty(transport.SentFrames);
+    }
 }

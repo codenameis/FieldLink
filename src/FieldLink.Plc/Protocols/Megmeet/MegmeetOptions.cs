@@ -65,6 +65,9 @@ public sealed class MegmeetOptions
         init => _maxWriteBits = ValidateLimit(value, MaxModbusWriteBits, nameof(value), "최대 쓰기 비트 수");
     }
 
+    /// <summary>단일 원소 쓰기 시 FC 0x05/0x06을 사용할지 여부입니다. 기본값은 false입니다.</summary>
+    public bool UseSingleWriteFunctions { get; init; }
+
     private static int ValidateLimit(int value, int maxLimit, string paramName, string label)
     {
         if (value < MinCount || value > maxLimit)
