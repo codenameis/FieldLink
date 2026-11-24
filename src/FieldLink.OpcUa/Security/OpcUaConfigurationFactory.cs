@@ -51,7 +51,7 @@ internal static class OpcUaConfigurationFactory
                     StoreType = options.Certificates.SdkStoreTypeName,
                     StorePath = options.Certificates.RejectedCertificateStorePath
                 },
-                // 클린룸 보안 규칙: 미신뢰 인증서는 절대 자동 승인하지 않는다.
+                // 보안 정책 규칙: 미신뢰 인증서는 절대 자동 승인하지 않는다.
                 AutoAcceptUntrustedCertificates = false,
                 AddAppCertToTrustedStore = false,
                 RejectSHA1SignedCertificates = options.Certificates.RejectSha1SignedCertificates

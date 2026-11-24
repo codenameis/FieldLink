@@ -1,65 +1,71 @@
+<div align="center">
+
 # FieldLink
+
+**Unified Industrial Communication Suite for .NET**  
+PLC Protocols · Industrial Robots · OPC UA (IEC 62541) · Transport & Framing
 
 **English** | [한국어](README.ko.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Target Frameworks](https://img.shields.io/badge/.NET%20Standard-2.0%20%7C%202.1-512BD4)](Directory.Build.props)
+[![License: MIT](https://img.shields.io/badge/License-MIT-0969DA.svg)](LICENSE)
+[![.NET Standard](https://img.shields.io/badge/.NET%20Standard-2.0%20%7C%202.1-512BD4)](Directory.Build.props)
 [![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4)](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj)
-[![Build Policy](https://img.shields.io/badge/Warnings-As%20Errors-success)](Directory.Build.props)
+[![Build Policy](https://img.shields.io/badge/Warnings-As%20Errors-1F883D)](Directory.Build.props)
 
-Industrial communication suite for .NET covering PLCs, industrial robots, and OPC UA servers through a shared transport abstraction and clean-room protocol implementations.
+[Highlights](#highlights) · [Architecture](#architecture) · [Supported Protocols](#supported-protocols) · [Quick Start](#quick-start) · [Build & Test](#build-and-test) · [License](#license)
+
+</div>
 
 ---
 
-## Overview
+## Highlights
 
-FieldLink separates byte transport, wire protocol framing, and device data conversion into four modular packages:
+- **Strict Layer Separation**: [`FieldLink.Transport`](src/FieldLink.Transport/FieldLink.Transport.csproj) operates purely on byte streams, datagrams, and message frames with zero knowledge of PLC or robot semantics. Device packages communicate exclusively through transport contracts.
+- **Stateless Wire Codecs**: Protocol `*Address`, `*RequestBuilder`, `*ResponseParser`, and `*FrameDecoder` types are stateless and hardware-independent, enabling deterministic frame-level verification without physical hardware.
+- **Explicit Failure & Progress Contract**: Caller mistakes (null arguments, invalid addresses, calls before `OpenAsync`) fail fast with standard .NET exceptions. Operational I/O errors and device rejections return [`PlcResult`](src/FieldLink.Plc/PlcResult.cs) / `RobotResult`—tracking partial completion counts on multi-chunk writes and never retrying writes implicitly.
+- **Isolated OPC UA Stack**: [`FieldLink.OpcUa`](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj) isolates `OPCFoundation.NetStandard.Opc.Ua.Client` from core packages and enforces `MessageSecurityMode.SignAndEncrypt` by default without silent fallback to unencrypted connections.
 
-| Package | Responsibility | Target Frameworks | Primary Entry Point |
+---
+
+## Architecture
+
+| Package | Scope | Target Frameworks | Primary Entry Point |
 | --- | --- | --- | --- |
-| [`FieldLink.Transport`](src/FieldLink.Transport/FieldLink.Transport.csproj) | TCP, UDP, Serial (`System.IO.Ports`), HTTP, WebSocket, and `IFrameDecoder` framing | `netstandard2.0` | `ITransport`, `TcpTransport`, `SerialTransport` |
-| [`FieldLink.Plc`](src/FieldLink.Plc/FieldLink.Plc.csproj) | 16 PLC protocol families with pure static builders, parsers, and address types | `netstandard2.0` | [`PlcClientFactory`](src/FieldLink.Plc/PlcClientFactory.cs), [`PlcClient`](src/FieldLink.Plc/PlcClient.cs) |
-| [`FieldLink.Robot`](src/FieldLink.Robot/FieldLink.Robot.csproj) | Industrial robot controller clients across 8 manufacturers | `netstandard2.0` | [`RobotClientFactory`](src/FieldLink.Robot/RobotClientFactory.cs), [`IRobotClient`](src/FieldLink.Robot/Abstractions/IRobotClient.cs) |
-| [`FieldLink.OpcUa`](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj) | Isolated OPC UA client (`OPCFoundation.NetStandard.Opc.Ua.Client`, MIT) | `net48`, `netstandard2.1` | [`OpcUaClient`](src/FieldLink.OpcUa/OpcUaClient.cs), [`IOpcUaClient`](src/FieldLink.OpcUa/IOpcUaClient.cs) |
-
-### Architecture
+| [`FieldLink.Transport`](src/FieldLink.Transport/FieldLink.Transport.csproj) | TCP, UDP, Serial (`System.IO.Ports`), HTTP, WebSocket, and `IFrameDecoder` codecs | `netstandard2.0` | [`ITransport`](src/FieldLink.Transport/ITransport.cs), `TcpTransport`, `SerialTransport` |
+| [`FieldLink.Plc`](src/FieldLink.Plc/FieldLink.Plc.csproj) | 16 PLC protocol families with unified typed read/write facade | `netstandard2.0` | [`PlcClientFactory`](src/FieldLink.Plc/PlcClientFactory.cs), [`PlcClient`](src/FieldLink.Plc/PlcClient.cs) |
+| [`FieldLink.Robot`](src/FieldLink.Robot/FieldLink.Robot.csproj) | Industrial robot controller protocols across 8 OEMs | `netstandard2.0` | [`RobotClientFactory`](src/FieldLink.Robot/RobotClientFactory.cs), [`IRobotClient`](src/FieldLink.Robot/Abstractions/IRobotClient.cs) |
+| [`FieldLink.OpcUa`](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj) | Security-enforced OPC UA (IEC 62541) client wrapper | `net48`, `netstandard2.1` | [`OpcUaClient`](src/FieldLink.OpcUa/OpcUaClient.cs), [`IOpcUaClient`](src/FieldLink.OpcUa/IOpcUaClient.cs) |
 
 ```mermaid
 flowchart TD
-    App["Application"]
+    App["Application Code"]
 
     subgraph Plc["FieldLink.Plc (netstandard2.0)"]
         PlcFactory["PlcClientFactory"]
         PlcClient["PlcClient (Result Facade)"]
-        PlcProto["16 PLC Protocol Families"]
+        PlcCodecs["16 PLC Protocol Drivers"]
     end
 
     subgraph Robot["FieldLink.Robot (netstandard2.0)"]
         RobotFactory["RobotClientFactory"]
-        RobotClients["Manufacturer Robot Clients"]
+        RobotCodecs["10 Robot Protocol Clients"]
     end
 
     subgraph OpcUa["FieldLink.OpcUa (net48 / netstandard2.1)"]
         UaClient["OpcUaClient"]
-        UaStack["OPCFoundation.NetStandard.Opc.Ua.Client (MIT)"]
+        UaStack["OPCFoundation.NetStandard.Opc.Ua.Client"]
     end
 
     subgraph Transport["FieldLink.Transport (netstandard2.0)"]
-        ITransport["ITransport · ITransportSession · IFrameDecoder"]
+        Contracts["ITransport · ITransportSession · IFrameDecoder"]
         Channels["Tcp · Udp · Serial · Http · WebSocket"]
     end
 
-    App --> PlcFactory --> PlcClient --> PlcProto --> ITransport
-    App --> RobotFactory --> RobotClients --> ITransport
-    ITransport --- Channels
+    App --> PlcFactory --> PlcClient --> PlcCodecs --> Contracts
+    App --> RobotFactory --> RobotCodecs --> Contracts
+    Contracts --- Channels
     App --> UaClient --> UaStack
 ```
-
-Design guarantees across the codebase:
-
-- **Strict layer isolation**: `FieldLink.Transport` has zero knowledge of PLCs or robots. Protocol builders, parsers, and address types are stateless pure types tested without hardware.
-- **Explicit error contract**: Caller mistakes (null inputs, malformed addresses, calls before `OpenAsync`) fail fast with standard .NET exceptions. Operational I/O and device rejections return `PlcResult` / `PlcResult<T>` or `RobotResult` / `RobotResult<T>` without hidden retries on writes.
-- **OPC UA isolation**: `FieldLink.OpcUa` keeps the OPC Foundation dependency out of core transport, PLC, and robot assemblies. Security defaults to `MessageSecurityMode.SignAndEncrypt` without silent fallback to `None`.
 
 ---
 
@@ -67,17 +73,19 @@ Design guarantees across the codebase:
 
 ### PLC Protocols (`FieldLink.Plc`)
 
-| Vendor / Standard | Series / Scope | Wire Protocol & Transport | `PlcClientFactory` Methods |
+Every factory method also provides an `ITransport` overload for custom transports, logging decorators, and unit testing.
+
+| Vendor / Standard | Target Series | Wire Protocol & Framing | `PlcClientFactory` Entry Points |
 | --- | --- | --- | --- |
-| **Modbus** | Standard compliant devices | Modbus TCP, Modbus RTU, Modbus ASCII | `CreateModbusTcp`, `CreateModbusRtu`, `CreateModbusAscii` |
+| **Modbus** | Standard Modbus devices | Modbus TCP, Modbus RTU, Modbus ASCII | `CreateModbusTcp`, `CreateModbusRtu`, `CreateModbusAscii` |
 | **Mitsubishi Electric** | MELSEC Q / L / iQ-R / iQ-F / FX | MC Protocol 3E Frame (Binary & ASCII) | `CreateMitsubishiMCBinary`, `CreateMitsubishiMCAscii` |
 | **Siemens** | S7-200 / 300 / 400 / 1200 / 1500 | S7 communication over ISO-on-TCP (TPKT + COTP) | `CreateSiemensS7Comm` |
 | **LS ELECTRIC** | XGT / XGB / XGK / XGI | FEnet dedicated Ethernet protocol | `CreateLsElectricFEnet` |
 | **Delta Electronics** | DVP / AS Series | Modbus RTU / TCP with series address mapping | `CreateDelta`, `CreateDeltaDvpRtu`, `CreateDeltaDvpTcp`, `CreateDeltaAsTcp` |
 | **FATEK** | FBs Series | FATEK Serial / TCP ASCII (`STX`/`ETX`/LRC) | `CreateFatek`, `CreateFatekSerial` |
 | **Fuji Electric** | SPB Loader / MICREX-SX SPH | SPB ASCII (`:`/`CRLF`) & SPH SX-Bus binary (`0xFB`) | `CreateFujiElectricSpb`, `CreateFujiElectricSpbSerial`, `CreateFujiElectricSph`, `CreateFujiElectricSphTcp` |
-| **GE Fanuc / Emerson** | PACSystems RX3i/RX7i, Series 90-30 | SRTP 56-byte binary header over TCP | `CreateGESrtp`, `CreateGESrtpTcp` |
-| **Inovance** | AM400/600, H3U, H5U | Modbus RTU / TCP with series & bit-within-word mapping | `CreateInovance`, `CreateInovanceTcp`, `CreateInovanceRtu` |
+| **GE Fanuc / Emerson** | PACSystems RX3i/RX7i, Series 90-30 | SRTP 56-byte binary protocol over TCP | `CreateGESrtp`, `CreateGESrtpTcp` |
+| **Inovance** | AM400/600, H3U, H5U | Modbus RTU / TCP with series & bit-in-word mapping | `CreateInovance`, `CreateInovanceTcp`, `CreateInovanceRtu` |
 | **JTEKT (Toyota)** | TOYOPUC (2PORT-EFR) | TOYOPUC Computer Link (Basic & Extended `PRG` banks) | `CreateJtektToyopuc`, `CreateJtektToyopucTcp` |
 | **Keyence** | KV-8000 / 7000 / 5000 / 3000 / Nano | KV Host Link ASCII (`CR`/`RDS`/`WRS`/`CQ`) | `CreateKeyenceHostLink`, `CreateKeyenceHostLinkTcp`, `CreateKeyenceHostLinkSerial` |
 | **Megmeet** | MC200 / MC280 Series | Modbus RTU / TCP with 16-bit/32-bit counter boundaries | `CreateMegmeet`, `CreateMegmeetRtu`, `CreateMegmeetTcp` |
@@ -86,17 +94,15 @@ Design guarantees across the codebase:
 | **XINJE** | XC / XD · XL Series | Modbus RTU / TCP + extended function codes | `CreateXinje`, `CreateXinjeRtu`, `CreateXinjeTcp` |
 | **Yokogawa** | FA-M3 Series | Higher-Level Link Service binary protocol | `CreateYokogawa`, `CreateYokogawaTcp` |
 
-> Every factory method provides an `ITransport` overload for custom transports, logging wrappers, or deterministic unit tests.
-
 ### Industrial Robot Protocols (`FieldLink.Robot`)
 
-| Manufacturer | Controller / Protocol | Transport | `RobotClientFactory` Methods |
+| Manufacturer | Controller / Protocol | Transport | `RobotClientFactory` Entry Points |
 | --- | --- | --- | --- |
 | **ABB** | Robot Web Services (RWS) | HTTP / HTTPS | `CreateAbbRws` |
 | **EFORT** | ER7B-C10 (V1 & V2 frames) | TCP | `CreateEfortER7BC10V1`, `CreateEfortER7BC10V2`, `CreateEfortER7BC10` |
 | **Estun** | Estun Modbus interface | TCP | `CreateEstunModbus` |
 | **FANUC** | FANUC Robot Interface | TCP | `CreateFanucRobotInterface` |
-| **Hyundai Robotics** | Hi5/Hi6 OnLTrack | UDP listener | `CreateHyundaiOnLTrack` |
+| **Hyundai Robotics** | Hi5 / Hi6 OnLTrack | UDP listener | `CreateHyundaiOnLTrack` |
 | **KUKA** | KUKA VarProxy | TCP | `CreateKukaVarProxy` |
 | **KUKA** | KUKA Socket ASCII | TCP | `CreateKukaSocketAscii` |
 | **Yamaha** | RCX Controller | TCP | `CreateYamahaRcx` |
@@ -105,13 +111,24 @@ Design guarantees across the codebase:
 
 ### OPC UA Client (`FieldLink.OpcUa`)
 
-`FieldLink.OpcUa` provides session lifecycle management (`OpenAsync`, `CloseAsync`), endpoint discovery, certificate store configuration, deadline enforcement, typed node read/write (`ReadValueAsync`, `ReadValuesAsync`, `WriteValueAsync`, `WriteValuesAsync`), address space browsing (`BrowseAsync`), monitored item subscriptions (`SubscribeAsync`), and method invocation (`CallAsync`). See [OpcUaClientOptions](src/FieldLink.OpcUa/OpcUaClientOptions.cs) and [IOpcUaClient](src/FieldLink.OpcUa/IOpcUaClient.cs) for configuration and security defaults.
+`FieldLink.OpcUa` wraps session and channel internals while owning client lifecycle, security enforcement, and service contracts:
+
+- **Lifecycle & Discovery**: Endpoint discovery (`OpcUaSdkDiscoveryClient`), strict X.509 certificate trust validation (untrusted certificates are never auto-accepted), domain validation (`checkDomain: true`), and generation-isolated sessions.
+- **Data Access & Services**: Single and batch reads/writes (`ReadValueAsync`, `ReadValuesAsync`, `WriteValueAsync`, `WriteValuesAsync`), address space browsing (`BrowseAsync`), and method calls (`CallAsync`) with `OpcUaDeadline` timeout enforcement.
+- **Subscriptions**: Bounded-queue subscriptions (`SubscribeAsync`) with explicit backpressure handling.
+
+### Transport & Framing (`FieldLink.Transport`)
+
+| Component | Implementations |
+| --- | --- |
+| **Stream & Packet Transports** | `TcpTransport`, `UdpTransport`, `UdpListenerTransport`, `SerialTransport`, `HttpTransport`, `WebSocketTransport` |
+| **Frame Decoders (`IFrameDecoder`)** | `FixedLengthFrameDecoder`, `DelimitedFrameDecoder`, `HeaderLengthFrameDecoder`, `AvailableBytesFrameDecoder` |
 
 ---
 
 ## Quick Start
 
-### PLC Read and Write (`FieldLink.Plc`)
+### 1. PLC Client (`FieldLink.Plc`)
 
 ```csharp
 using System;
@@ -141,7 +158,7 @@ if (!writeResult.IsSuccess)
 }
 ```
 
-### Industrial Robot Client (`FieldLink.Robot`)
+### 2. Industrial Robot Client (`FieldLink.Robot`)
 
 ```csharp
 using System;
@@ -158,14 +175,14 @@ if (!openResult.IsSuccess)
     return;
 }
 
-RobotResult<string> response = await robot.ReadStringAsync("snapshot");
-if (response.IsSuccess)
+RobotResult<string> snapshot = await robot.ReadStringAsync("snapshot");
+if (snapshot.IsSuccess)
 {
-    Console.WriteLine(response.Value);
+    Console.WriteLine(snapshot.Value);
 }
 ```
 
-### OPC UA Client (`FieldLink.OpcUa`)
+### 3. OPC UA Client (`FieldLink.OpcUa`)
 
 ```csharp
 using System;
@@ -202,22 +219,29 @@ Console.WriteLine($"Value = {value.Value}, Status = {value.StatusCode}");
 
 ---
 
-## Building and Testing
+## Build and Test
 
-The repository uses a `.slnx` solution file, central package management ([Directory.Packages.props](Directory.Packages.props)), strict analyzer enforcement ([Directory.Build.props](Directory.Build.props)), and a unified `.editorconfig`.
+The solution uses [`FieldLink.slnx`](FieldLink.slnx), central NuGet package management ([`Directory.Packages.props`](Directory.Packages.props)), and strict build/style checks ([`Directory.Build.props`](Directory.Build.props) + [`.editorconfig`](.editorconfig)) with warnings treated as errors.
 
 ```powershell
-# Build all libraries, tests, and tools with warnings treated as errors
+# Build all libraries, tests, and tools
 dotnet build FieldLink.slnx -c Release
 
-# Run unit and loopback integration tests
+# Run unit and local loopback test suites
 dotnet test FieldLink.slnx -c Release
 
 # Verify formatting rules
 dotnet format FieldLink.slnx --verify-no-changes
 ```
 
-> **Note**: Hardware tests tagged `[Trait("Category", "Hardware")]` require physical hardware and are excluded from CI runs. All unit and local loopback tests run without external devices.
+| Test Project | Target Frameworks | Scope |
+| --- | --- | --- |
+| `FieldLink.Transport.Tests` | `net8.0` | Framing decoders, stream sessions, TCP/Serial lifecycle |
+| `FieldLink.Plc.Tests` | `net8.0` | Address parsers, request builders, response parsers, multi-chunk protocol state |
+| `FieldLink.Robot.Tests` | `net8.0` | Robot protocol codecs, HTTP/TCP/UDP drivers, session initialization |
+| `FieldLink.OpcUa.Tests` | `net10.0`, `net48` | Loopback OPC UA server integration, security policy validation, subscriptions |
+
+> Hardware integration tests tagged `[Trait("Category", "Hardware")]` require physical devices and are excluded from automated offline test runs.
 
 ---
 
@@ -225,33 +249,32 @@ dotnet format FieldLink.slnx --verify-no-changes
 
 ```text
 FieldLink/
-├─ FieldLink.slnx
-├─ Directory.Build.props          Shared build settings (Nullable, C# 12, warnings as errors)
-├─ Directory.Packages.props       Central NuGet package versions
+├─ FieldLink.slnx                 Solution definition
+├─ Directory.Build.props          Shared MSBuild properties (Nullable, C# 12, WarningsAsErrors)
+├─ Directory.Packages.props       Centralized NuGet dependency versions
+├─ .editorconfig                  Code style and analyzer enforcement
 ├─ LICENSE                        MIT License
 ├─ README.md                      English documentation
 ├─ README.ko.md                   Korean documentation
 ├─ THIRD-PARTY-NOTICES.md         Third-party license notices
 ├─ src/
-│  ├─ FieldLink.Transport/        Core transport and framing abstractions
+│  ├─ FieldLink.Transport/        Transport channels and IFrameDecoder codecs
 │  ├─ FieldLink.Plc/              PLC client facade and 16 protocol implementations
-│  ├─ FieldLink.Robot/            Industrial robot controller protocols
-│  ├─ FieldLink.OpcUa/            Isolated OPC UA client wrapper
-│  └─ Shared/Polyfills/           Compiler polyfills for netstandard2.0
+│  ├─ FieldLink.Robot/            Industrial robot protocol clients
+│  ├─ FieldLink.OpcUa/            Isolated OPC UA (IEC 62541) client wrapper
+│  └─ Shared/Polyfills/           Compiler feature polyfills for netstandard2.0
 ├─ tests/
 │  ├─ FieldLink.Transport.Tests/
 │  ├─ FieldLink.Plc.Tests/
 │  ├─ FieldLink.Robot.Tests/
 │  └─ FieldLink.OpcUa.Tests/
 └─ tools/
-   └─ FieldLink.PacketBench/      Benchmarking utilities
+   └─ FieldLink.PacketBench/      Packet throughput and allocation benchmark runner
 ```
 
 ---
 
-## Clean-Room Policy and License
+## License
 
-FieldLink follows a **clean-room architecture**: PLC and robot wire codecs are derived from manufacturer manuals, public protocol standards, and verified hardware behavior without copying external driver implementations.
-
-- **License**: [MIT License](LICENSE)
+- **Project License**: [MIT License](LICENSE)
 - **Third-Party Notices**: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)

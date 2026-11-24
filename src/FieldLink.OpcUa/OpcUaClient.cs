@@ -11,7 +11,7 @@ using Opc.Ua;
 
 namespace FieldLink.OpcUa;
 
-/// <summary>보안 정책 강제, 세대 격리 세션 수명, 품질 보존 서비스, Fail-Closed 구독을 제공하는 클린룸 OPC UA 클라이언트입니다.</summary>
+/// <summary>보안 정책 강제, 세대 격리 세션 수명, 품질 보존 서비스, Fail-Closed 구독을 제공하는 OPC UA 클라이언트입니다.</summary>
 public sealed class OpcUaClient : IOpcUaClient
 {
     private readonly IOpcUaDiscoveryClient _discoveryClient;

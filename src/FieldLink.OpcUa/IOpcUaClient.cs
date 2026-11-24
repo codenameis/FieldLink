@@ -8,7 +8,7 @@ using Opc.Ua;
 
 namespace FieldLink.OpcUa;
 
-/// <summary>클린룸 OPC UA (IEC 62541) 클라이언트 공개 계약입니다.</summary>
+/// <summary>OPC UA (IEC 62541) 클라이언트 공개 계약입니다.</summary>
 public interface IOpcUaClient : IDisposable, IAsyncDisposable
 {
     /// <summary>현재 클라이언트의 로컬 세션 상태 스냅샷을 반환합니다.</summary>

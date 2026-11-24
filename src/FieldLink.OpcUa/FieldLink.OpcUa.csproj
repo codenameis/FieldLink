@@ -5,7 +5,7 @@
     <TargetFrameworks>net48;netstandard2.1</TargetFrameworks>
     <RootNamespace>FieldLink.OpcUa</RootNamespace>
     <Version>0.1.0</Version>
-    <Description>OPC UA (IEC 62541) 클린룸 클라이언트. 보안 정책 강제, 세대 격리 세션 수명, 품질 보존 읽기/쓰기 및 유한 큐 구독 제공.</Description>
+    <Description>OPC UA (IEC 62541) 클라이언트. 보안 정책 강제, 세대 격리 세션 수명, 품질 보존 읽기/쓰기 및 유한 큐 구독 제공.</Description>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
