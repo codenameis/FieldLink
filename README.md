@@ -37,34 +37,38 @@ PLC Protocols · Industrial Robots · OPC UA (IEC 62541) · Transport & Framing
 | [`FieldLink.OpcUa`](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj) | Security-enforced OPC UA (IEC 62541) client wrapper | `net48`, `netstandard2.1` | [`OpcUaClient`](src/FieldLink.OpcUa/OpcUaClient.cs), [`IOpcUaClient`](src/FieldLink.OpcUa/IOpcUaClient.cs) |
 
 ```mermaid
-flowchart TD
+flowchart TB
     App["Application Code"]
 
     subgraph Plc["FieldLink.Plc (netstandard2.0)"]
-        PlcFactory["PlcClientFactory"]
-        PlcClient["PlcClient (Result Facade)"]
-        PlcCodecs["16 PLC Protocol Drivers"]
+        PlcEntry["PlcClientFactory · PlcClient"]
+        PlcDrivers["16 PLC Protocol Drivers"]
+        PlcEntry --> PlcDrivers
     end
 
     subgraph Robot["FieldLink.Robot (netstandard2.0)"]
-        RobotFactory["RobotClientFactory"]
-        RobotCodecs["10 Robot Protocol Clients"]
+        RobotEntry["RobotClientFactory · IRobotClient"]
+        RobotDrivers["10 Robot Protocol Clients"]
+        RobotEntry --> RobotDrivers
     end
 
     subgraph OpcUa["FieldLink.OpcUa (net48 / netstandard2.1)"]
-        UaClient["OpcUaClient"]
+        UaEntry["OpcUaClient · IOpcUaClient"]
         UaStack["OPCFoundation.NetStandard.Opc.Ua.Client"]
+        UaEntry --> UaStack
     end
 
     subgraph Transport["FieldLink.Transport (netstandard2.0)"]
-        Contracts["ITransport · ITransportSession · IFrameDecoder"]
-        Channels["Tcp · Udp · Serial · Http · WebSocket"]
+        TransportContracts["ITransport · ITransportSession · IFrameDecoder"]
+        TransportChannels["Tcp · Udp · Serial · Http · WebSocket"]
+        TransportContracts --> TransportChannels
     end
 
-    App --> PlcFactory --> PlcClient --> PlcCodecs --> Contracts
-    App --> RobotFactory --> RobotCodecs --> Contracts
-    Contracts --- Channels
-    App --> UaClient --> UaStack
+    App --> Plc
+    App --> Robot
+    App --> OpcUa
+    Plc --> Transport
+    Robot --> Transport
 ```
 
 ---

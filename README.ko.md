@@ -37,34 +37,38 @@ PLC 프로토콜 · 산업용 로봇 · OPC UA (IEC 62541) · 전송 및 프레�
 | [`FieldLink.OpcUa`](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj) | 보안 정책 강제 OPC UA (IEC 62541) 클라이언트 래퍼 | `net48`, `netstandard2.1` | [`OpcUaClient`](src/FieldLink.OpcUa/OpcUaClient.cs), [`IOpcUaClient`](src/FieldLink.OpcUa/IOpcUaClient.cs) |
 
 ```mermaid
-flowchart TD
+flowchart TB
     App["애플리케이션 코드"]
 
     subgraph Plc["FieldLink.Plc (netstandard2.0)"]
-        PlcFactory["PlcClientFactory"]
-        PlcClient["PlcClient (Result 퍼사드)"]
-        PlcCodecs["16개 PLC 프로토콜 드라이버"]
+        PlcEntry["PlcClientFactory · PlcClient"]
+        PlcDrivers["16개 PLC 프로토콜 드라이버"]
+        PlcEntry --> PlcDrivers
     end
 
     subgraph Robot["FieldLink.Robot (netstandard2.0)"]
-        RobotFactory["RobotClientFactory"]
-        RobotCodecs["10개 로봇 프로토콜 클라이언트"]
+        RobotEntry["RobotClientFactory · IRobotClient"]
+        RobotDrivers["10개 로봇 프로토콜 클라이언트"]
+        RobotEntry --> RobotDrivers
     end
 
     subgraph OpcUa["FieldLink.OpcUa (net48 / netstandard2.1)"]
-        UaClient["OpcUaClient"]
+        UaEntry["OpcUaClient · IOpcUaClient"]
         UaStack["OPCFoundation.NetStandard.Opc.Ua.Client"]
+        UaEntry --> UaStack
     end
 
     subgraph Transport["FieldLink.Transport (netstandard2.0)"]
-        Contracts["ITransport · ITransportSession · IFrameDecoder"]
-        Channels["Tcp · Udp · Serial · Http · WebSocket"]
+        TransportContracts["ITransport · ITransportSession · IFrameDecoder"]
+        TransportChannels["Tcp · Udp · Serial · Http · WebSocket"]
+        TransportContracts --> TransportChannels
     end
 
-    App --> PlcFactory --> PlcClient --> PlcCodecs --> Contracts
-    App --> RobotFactory --> RobotCodecs --> Contracts
-    Contracts --- Channels
-    App --> UaClient --> UaStack
+    App --> Plc
+    App --> Robot
+    App --> OpcUa
+    Plc --> Transport
+    Robot --> Transport
 ```
 
 ---
