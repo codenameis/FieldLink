@@ -10,10 +10,14 @@ public sealed class HttpTransportOptions
     private const int MinimumPort = 1;
     private const int MaximumPort = 65535;
     private const int DefaultTimeoutSeconds = 10;
+    private const int DefaultMaximumResponseBodyBytes = 16 * 1024 * 1024;
+    private const int MinimumResponseBodyBytes = 1;
 
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
 
     private readonly TimeSpan _timeout = DefaultTimeout;
+    private readonly int _maximumResponseBodyBytes = DefaultMaximumResponseBodyBytes;
+    private readonly string? _defaultContentType;
 
     /// <summary>기본 URI를 직접 지정하여 HTTP 전송 설정을 초기화합니다.</summary>
     /// <param name="baseUri">대상 장치의 HTTP 또는 HTTPS 기본 주소입니다.</param>
@@ -73,18 +77,30 @@ public sealed class HttpTransportOptions
     public string? Password { get; init; }
 
     /// <summary>HTTP 요청 제한 시간입니다. 기본값은 10초입니다.</summary>
-    /// <exception cref="ArgumentOutOfRangeException">0 이하의 시간을 지정했을 때.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">0 이하이거나 <see cref="int.MaxValue"/> 밀리초를 초과하는 시간을 지정했을 때.</exception>
     public TimeSpan Timeout
     {
         get => _timeout;
         init
         {
-            if (value <= TimeSpan.Zero)
+            TransportTimeoutValidation.ValidatePositive(value, nameof(value), "요청 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
+            _timeout = value;
+        }
+    }
+
+    /// <summary>수신할 응답 본문의 최대 바이트 수입니다. 기본값은 16MiB입니다.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">1 미만일 때.</exception>
+    public int MaximumResponseBodyBytes
+    {
+        get => _maximumResponseBodyBytes;
+        init
+        {
+            if (value < MinimumResponseBodyBytes)
             {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "요청 제한 시간은 0보다 커야 합니다.");
+                throw new ArgumentOutOfRangeException(nameof(value), value, "최대 응답 본문 크기는 1 이상이어야 합니다.");
             }
 
-            _timeout = value;
+            _maximumResponseBodyBytes = value;
         }
     }
 
@@ -95,5 +111,16 @@ public sealed class HttpTransportOptions
     public bool AllowUntrustedServerCertificate { get; init; }
 
     /// <summary>본문 전송 시 기본으로 사용할 Content-Type 헤더입니다.</summary>
-    public string? DefaultContentType { get; init; }
+    public string? DefaultContentType
+    {
+        get => _defaultContentType;
+        init
+        {
+            TransportHeaderValidation.ThrowIfContainsControlCharacters(
+                value,
+                nameof(value),
+                "Content-Type 헤더 값에는 제어 문자(\\r, \\n, \\0)를 포함할 수 없습니다.");
+            _defaultContentType = value;
+        }
+    }
 }

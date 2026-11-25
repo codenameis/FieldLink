@@ -12,7 +12,7 @@ public sealed class LoopbackServerSmokeTests
     public async Task OpcUaTestServer_StartsServesDiscoveryAndCleansUpTempDirectory()
     {
         string tempRoot;
-        using (OpcUaTestServer server = new(new OpcUaTestServerOptions { IncludeSignAndEncryptEndpoint = true, IncludeNoneEndpoint = false }))
+        await using (OpcUaTestServer server = new(new OpcUaTestServerOptions { IncludeSignAndEncryptEndpoint = true, IncludeNoneEndpoint = false }))
         {
             tempRoot = server.RootDirectory;
             await server.StartServerAsync();
@@ -38,12 +38,12 @@ public sealed class LoopbackServerSmokeTests
     [Fact]
     public async Task OpcUaTestServer_CanRestartNewInstanceOnCleanPort()
     {
-        using OpcUaTestServer first = new();
+        await using OpcUaTestServer first = new();
         await first.StartServerAsync();
         Uri firstUri = first.EndpointUrl;
         await first.StopAsync();
 
-        using OpcUaTestServer second = new();
+        await using OpcUaTestServer second = new();
         await second.StartServerAsync();
         Assert.NotEqual(0, second.EndpointUrl.Port);
         Assert.NotEqual(firstUri.Port, second.EndpointUrl.Port);

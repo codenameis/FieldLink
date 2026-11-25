@@ -7,6 +7,7 @@ namespace FieldLink.Transport.Serial;
 public sealed class SerialTransportOptions
 {
     private const int DefaultBaudRate = 9600;
+    private const int MinimumBaudRate = 1;
     private const int SevenDataBits = 7;
     private const int EightDataBits = 8;
     private const int DefaultTimeoutSeconds = 3;
@@ -20,14 +21,14 @@ public sealed class SerialTransportOptions
     private readonly TimeSpan _silenceInterval = DefaultSilenceInterval;
 
     /// <summary>포트 이름과 통신 속도로 시리얼 전송 설정을 초기화합니다.</summary>
-    /// <param name="portName">시리얼 포트 이름입니다. (예: "COM1", "/devicePrefix/ttyUSB0")</param>
+    /// <param name="portName">시리얼 포트 이름입니다. (예: "COM1", "/dev/ttyUSB0")</param>
     /// <param name="baudRate">통신 속도(보율)입니다. 기본값은 9600입니다.</param>
     /// <param name="parity">패리티 비트 설정입니다. Modbus RTU 표준 권장은 Even입니다.</param>
     /// <param name="dataBits">데이터 비트 수입니다. 7 또는 8.</param>
     /// <param name="stopBits">정지 비트 설정입니다. 기본값은 One입니다.</param>
     /// <exception cref="ArgumentNullException"><paramref name="portName"/>이 null일 때.</exception>
     /// <exception cref="ArgumentException"><paramref name="portName"/>이 비어 있거나 공백일 때.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">통신 속도 또는 데이터 비트가 유효하지 않을 때.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">통신 속도, 패리티, 데이터 비트 또는 정지 비트가 유효하지 않을 때.</exception>
     public SerialTransportOptions(
         string portName,
         int baudRate = DefaultBaudRate,
@@ -45,14 +46,24 @@ public sealed class SerialTransportOptions
             throw new ArgumentException("포트 이름은 비어 있을 수 없습니다.", nameof(portName));
         }
 
-        if (baudRate <= 0)
+        if (baudRate < MinimumBaudRate)
         {
             throw new ArgumentOutOfRangeException(nameof(baudRate), baudRate, "통신 속도는 1 이상이어야 합니다.");
+        }
+
+        if (!Enum.IsDefined(typeof(Parity), parity))
+        {
+            throw new ArgumentOutOfRangeException(nameof(parity), parity, "지원하지 않는 패리티 설정입니다.");
         }
 
         if (dataBits is not (SevenDataBits or EightDataBits))
         {
             throw new ArgumentOutOfRangeException(nameof(dataBits), dataBits, "데이터 비트는 7 또는 8이어야 합니다.");
+        }
+
+        if (!Enum.IsDefined(typeof(StopBits), stopBits) || stopBits == StopBits.None)
+        {
+            throw new ArgumentOutOfRangeException(nameof(stopBits), stopBits, "정지 비트는 One, OnePointFive, Two 중 하나여야 합니다.");
         }
 
         PortName = portName;
@@ -83,11 +94,7 @@ public sealed class SerialTransportOptions
         get => _readTimeout;
         init
         {
-            if (value <= TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "읽기 제한 시간은 0보다 커야 합니다.");
-            }
-
+            TransportTimeoutValidation.ValidatePositive(value, nameof(value), "읽기 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
             _readTimeout = value;
         }
     }
@@ -98,11 +105,7 @@ public sealed class SerialTransportOptions
         get => _writeTimeout;
         init
         {
-            if (value <= TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "쓰기 제한 시간은 0보다 커야 합니다.");
-            }
-
+            TransportTimeoutValidation.ValidatePositive(value, nameof(value), "쓰기 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
             _writeTimeout = value;
         }
     }
@@ -113,11 +116,7 @@ public sealed class SerialTransportOptions
         get => _silenceInterval;
         init
         {
-            if (value < TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "무수신 대기 간격은 0 이상이어야 합니다.");
-            }
-
+            TransportTimeoutValidation.ValidateNonNegative(value, nameof(value), "무수신 대기 간격은 0 이상이고 int.MaxValue 밀리초 이하이어야 합니다.");
             _silenceInterval = value;
         }
     }

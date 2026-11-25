@@ -27,7 +27,7 @@ internal static class OpcUaValueService
         }
 
         NodeId[] resolvedIds = OpcUaNodeResolver.ResolveNodeIds(nodeIds, session.NamespaceUris, nameof(nodeIds));
-        ValidateOperationLimit(resolvedIds.Length, session.OperationLimits?.MaxNodesPerRead, "MaxNodesPerRead");
+        OpcUaOperationLimitsGuard.ValidateLimit(resolvedIds.Length, session.OperationLimits?.MaxNodesPerRead, "MaxNodesPerRead");
 
         ReadValueIdCollection readCollection = new(resolvedIds.Length);
         for (int i = 0; i < resolvedIds.Length; i++)
@@ -81,7 +81,7 @@ internal static class OpcUaValueService
         }
 
         WriteValueCollection writeCollection = BuildWriteCollection(requests, session.NamespaceUris);
-        ValidateOperationLimit(writeCollection.Count, session.OperationLimits?.MaxNodesPerWrite, "MaxNodesPerWrite");
+        OpcUaOperationLimitsGuard.ValidateLimit(writeCollection.Count, session.OperationLimits?.MaxNodesPerWrite, "MaxNodesPerWrite");
 
         uint timeoutHint = deadline.GetOperationTimeoutHintMilliseconds(cancellationToken, nameof(WriteValuesAsync));
 
@@ -127,15 +127,5 @@ internal static class OpcUaValueService
         }
 
         return writeCollection;
-    }
-
-    private static void ValidateOperationLimit(int requestedCount, uint? maxAllowed, string limitName)
-    {
-        if (maxAllowed is > 0 && requestedCount > maxAllowed.Value)
-        {
-            throw new ArgumentOutOfRangeException(
-                nameof(requestedCount),
-                $"요청 항목 수({requestedCount})가 서버 {limitName} 한도({maxAllowed.Value})를 초과합니다. 자동 분할은 지원하지 않습니다.");
-        }
     }
 }

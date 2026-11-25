@@ -105,9 +105,11 @@ internal sealed class OpcUaSdkSubscriptionAdapter : IOpcUaSubscriptionAdapter
             }
             catch (ServiceResultException)
             {
+                // 세션이 이미 닫혔거나 구독이 제거된 경우 정리 계속
             }
             catch (ObjectDisposedException)
             {
+                // 세션이 이미 폐기된 경우 정리 계속
             }
         }
     }
@@ -134,11 +136,21 @@ internal sealed class OpcUaSdkSubscriptionAdapter : IOpcUaSubscriptionAdapter
             return;
         }
 
-        OpcUaRawDataChangeItem[] items = new OpcUaRawDataChangeItem[monitoredItems.Count];
+        List<OpcUaRawDataChangeItem> items = new(monitoredItems.Count);
         for (int i = 0; i < monitoredItems.Count; i++)
         {
-            MonitoredItemNotification itemNotification = monitoredItems[i];
-            items[i] = new OpcUaRawDataChangeItem(itemNotification.ClientHandle, itemNotification.Value);
+            MonitoredItemNotification? itemNotification = monitoredItems[i];
+            if (itemNotification is null || itemNotification.Value is null)
+            {
+                continue;
+            }
+
+            items.Add(new OpcUaRawDataChangeItem(itemNotification.ClientHandle, itemNotification.Value));
+        }
+
+        if (items.Count == 0)
+        {
+            return;
         }
 
         DateTimeOffset publishTime = ResolvePublishTimeUtc(notification.PublishTime);

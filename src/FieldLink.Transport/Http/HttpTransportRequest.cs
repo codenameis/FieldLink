@@ -36,6 +36,11 @@ public sealed class HttpTransportRequest
             throw new ArgumentException("요청 경로 또는 URL은 비어 있을 수 없습니다.", nameof(pathOrUri));
         }
 
+        TransportHeaderValidation.ThrowIfContainsControlCharacters(
+            contentType,
+            nameof(contentType),
+            "Content-Type 헤더 값에는 제어 문자(\\r, \\n, \\0)를 포함할 수 없습니다.");
+
         Method = method;
         PathOrUri = pathOrUri;
         _bodyBytes = bodyBytes is not null ? (byte[])bodyBytes.Clone() : null;
@@ -75,6 +80,15 @@ public sealed class HttpTransportRequest
                 {
                     throw new ArgumentException($"HTTP 헤더 '{pair.Key}'의 값은 null일 수 없습니다.", nameof(value));
                 }
+
+                TransportHeaderValidation.ThrowIfContainsControlCharacters(
+                    pair.Key,
+                    nameof(value),
+                    "HTTP 헤더 이름에는 제어 문자(\\r, \\n, \\0)를 포함할 수 없습니다.");
+                TransportHeaderValidation.ThrowIfContainsControlCharacters(
+                    pair.Value,
+                    nameof(value),
+                    $"HTTP 헤더 '{pair.Key}'의 값에는 제어 문자(\\r, \\n, \\0)를 포함할 수 없습니다.");
 
                 copy[pair.Key] = pair.Value;
             }

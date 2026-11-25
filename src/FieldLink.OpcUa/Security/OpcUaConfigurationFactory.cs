@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using FieldLink.OpcUa.Internal;
 using Opc.Ua;
 
 namespace FieldLink.OpcUa.Security;
@@ -27,55 +28,65 @@ internal static class OpcUaConfigurationFactory
             options,
             cancellationToken).ConfigureAwait(false);
 
-        ApplicationConfiguration configuration = new()
+        try
         {
-            ApplicationName = options.ApplicationName,
-            ApplicationUri = options.ApplicationUri,
-            ProductUri = DefaultProductUri,
-            ApplicationType = ApplicationType.Client,
-            SecurityConfiguration = new SecurityConfiguration
+            ApplicationConfiguration configuration = new()
             {
-                ApplicationCertificate = applicationCertificate,
-                TrustedPeerCertificates = new CertificateTrustList
+                ApplicationName = options.ApplicationName,
+                ApplicationUri = options.ApplicationUri,
+                ProductUri = DefaultProductUri,
+                ApplicationType = ApplicationType.Client,
+                SecurityConfiguration = new SecurityConfiguration
                 {
-                    StoreType = options.Certificates.SdkStoreTypeName,
-                    StorePath = options.Certificates.TrustedPeerCertificatesStorePath
+                    ApplicationCertificate = applicationCertificate,
+                    TrustedPeerCertificates = new CertificateTrustList
+                    {
+                        StoreType = options.Certificates.SdkStoreTypeName,
+                        StorePath = options.Certificates.TrustedPeerCertificatesStorePath
+                    },
+                    TrustedIssuerCertificates = new CertificateTrustList
+                    {
+                        StoreType = options.Certificates.SdkStoreTypeName,
+                        StorePath = options.Certificates.TrustedIssuerCertificatesStorePath
+                    },
+                    RejectedCertificateStore = new CertificateStoreIdentifier
+                    {
+                        StoreType = options.Certificates.SdkStoreTypeName,
+                        StorePath = options.Certificates.RejectedCertificateStorePath
+                    },
+                    // 보안 정책 규칙: 미신뢰 인증서는 절대 자동 승인하지 않는다.
+                    AutoAcceptUntrustedCertificates = false,
+                    AddAppCertToTrustedStore = false,
+                    RejectSHA1SignedCertificates = options.Certificates.RejectSha1SignedCertificates
                 },
-                TrustedIssuerCertificates = new CertificateTrustList
+                TransportQuotas = new TransportQuotas
                 {
-                    StoreType = options.Certificates.SdkStoreTypeName,
-                    StorePath = options.Certificates.TrustedIssuerCertificatesStorePath
+                    OperationTimeout = OpcUaDeadline.ToPositiveMillisecondsCeiling(
+                        options.DefaultOperationTimeout,
+                        MinimumOperationTimeoutMilliseconds),
+                    SecurityTokenLifetime = DefaultSecurityTokenLifetimeMilliseconds,
+                    ChannelLifetime = DefaultChannelLifetimeMilliseconds,
+                    MaxStringLength = DefaultMaxStringLength,
+                    MaxByteStringLength = DefaultMaxByteStringLength,
+                    MaxArrayLength = DefaultMaxArrayLength,
+                    MaxMessageSize = DefaultMaxMessageSize,
+                    MaxBufferSize = DefaultMaxBufferSize
                 },
-                RejectedCertificateStore = new CertificateStoreIdentifier
+                ClientConfiguration = new ClientConfiguration
                 {
-                    StoreType = options.Certificates.SdkStoreTypeName,
-                    StorePath = options.Certificates.RejectedCertificateStorePath
-                },
-                // 보안 정책 규칙: 미신뢰 인증서는 절대 자동 승인하지 않는다.
-                AutoAcceptUntrustedCertificates = false,
-                AddAppCertToTrustedStore = false,
-                RejectSHA1SignedCertificates = options.Certificates.RejectSha1SignedCertificates
-            },
-            TransportQuotas = new TransportQuotas
-            {
-                OperationTimeout = Math.Max(MinimumOperationTimeoutMilliseconds, (int)options.DefaultOperationTimeout.TotalMilliseconds),
-                SecurityTokenLifetime = DefaultSecurityTokenLifetimeMilliseconds,
-                ChannelLifetime = DefaultChannelLifetimeMilliseconds,
-                MaxStringLength = DefaultMaxStringLength,
-                MaxByteStringLength = DefaultMaxByteStringLength,
-                MaxArrayLength = DefaultMaxArrayLength,
-                MaxMessageSize = DefaultMaxMessageSize,
-                MaxBufferSize = DefaultMaxBufferSize
-            },
-            ClientConfiguration = new ClientConfiguration
-            {
-                DefaultSessionTimeout = (int)Math.Min(int.MaxValue, options.SessionTimeoutMilliseconds)
-            }
-        };
+                    DefaultSessionTimeout = (int)Math.Min(int.MaxValue, options.SessionTimeoutMilliseconds)
+                }
+            };
 
-        await configuration.ValidateAsync(ApplicationType.Client, cancellationToken).ConfigureAwait(false);
-        await configuration.CertificateValidator.UpdateAsync(configuration, cancellationToken).ConfigureAwait(false);
-        return configuration;
+            await configuration.ValidateAsync(ApplicationType.Client, cancellationToken).ConfigureAwait(false);
+            await configuration.CertificateValidator.UpdateAsync(configuration, cancellationToken).ConfigureAwait(false);
+            return configuration;
+        }
+        catch
+        {
+            applicationCertificate.DisposeCertificate();
+            throw;
+        }
     }
 
     private static async Task<CertificateIdentifier> ResolveClientCertificateAsync(
@@ -113,6 +124,7 @@ internal static class OpcUaConfigurationFactory
 
         if (foundCertificate is null)
         {
+            certificateIdentifier.DisposeCertificate();
             throw new InvalidOperationException(
                 "보안 연결에 필요한 클라이언트 애플리케이션 인증서 또는 개인키가 Own 저장소에 없습니다. " +
                 "연결 중 자동 발급은 허용되지 않으므로 사전에 인증서를 프로비저닝하세요.");
@@ -139,6 +151,7 @@ internal static class OpcUaConfigurationFactory
         }
 
         direct?.Dispose();
+        certificateIdentifier.DisposeCertificate();
 
         using ICertificateStore store = certificateIdentifier.OpenStore(telemetry);
         X509Certificate2Collection candidates = await store.EnumerateAsync(cancellationToken).ConfigureAwait(false);

@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
@@ -34,7 +36,7 @@ internal sealed class OpcUaTestServerOptions
     public bool AutoAcceptClientCertificates { get; init; }
 }
 
-internal sealed class OpcUaTestServer : StandardServer
+internal sealed class OpcUaTestServer : StandardServer, IAsyncDisposable
 {
     private readonly string _rootDirectory;
     private readonly OpcUaTestServerOptions _options;
@@ -42,6 +44,7 @@ internal sealed class OpcUaTestServer : StandardServer
     private OpcUaTestNodeManager? _nodeManager;
     private X509Certificate2? _serverCertificateWithPrivateKey;
     private X509Certificate2? _serverPublicCertificate;
+    private bool _started;
     private bool _disposed;
 
     public OpcUaTestServer(OpcUaTestServerOptions? options = null)
@@ -287,6 +290,7 @@ internal sealed class OpcUaTestServer : StandardServer
             DisableCertificateAutoCreation = true
         };
         await applicationInstance.StartAsync(this);
+        _started = true;
     }
 
     public async Task TrustClientCertificateAsync(X509Certificate2 clientCertificate, CancellationToken cancellationToken = default)
@@ -349,10 +353,51 @@ internal sealed class OpcUaTestServer : StandardServer
         throw new ServiceResultException(StatusCodes.BadIdentityTokenInvalid, "Unsupported identity token.");
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        if (!_disposed && _started)
+        {
+            _started = false;
+            try
+            {
+                await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (ServiceResultException)
+            {
+            }
+        }
+
+        if (!_disposed)
+        {
+            await DrainSdkRequestQueueAsync().ConfigureAwait(false);
+        }
+
+        Dispose();
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (!_disposed && disposing)
         {
+            if (_started)
+            {
+                _started = false;
+                try
+                {
+                    StopAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+                catch (ServiceResultException)
+                {
+                }
+            }
+
+            DrainSdkRequestQueueAsync().GetAwaiter().GetResult();
             _disposed = true;
             base.Dispose(disposing);
             _serverCertificateWithPrivateKey?.Dispose();
@@ -362,6 +407,49 @@ internal sealed class OpcUaTestServer : StandardServer
         else
         {
             base.Dispose(disposing);
+        }
+    }
+
+    private async Task DrainSdkRequestQueueAsync()
+    {
+        // OPCFoundation SDK ServerBase.RequestQueue.Dispose() disposes SemaphoreSlim before
+        // WorkerLoopAsync tasks exit, which throws unobserved ArgumentNullException on net48.
+        object? requestQueue = typeof(ServerBase)
+            .GetField("m_requestQueue", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?.GetValue(this);
+        if (requestQueue is null)
+        {
+            return;
+        }
+
+        Type queueType = requestQueue.GetType();
+        queueType.GetField("m_stopped", BindingFlags.Instance | BindingFlags.NonPublic)?.SetValue(requestQueue, true);
+
+        if (queueType.GetField("m_cts", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(requestQueue) is CancellationTokenSource cancellationSource)
+        {
+            try
+            {
+                cancellationSource.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        if (queueType.GetField("m_workers", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(requestQueue) is List<Task> workers)
+        {
+            Task[] snapshot;
+            lock (workers)
+            {
+                snapshot = workers.ToArray();
+            }
+
+            if (snapshot.Length > 0)
+            {
+                Task allWorkers = Task.WhenAll(snapshot);
+                _ = allWorkers.ContinueWith(static completed => _ = completed.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                await Task.WhenAny(allWorkers, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+            }
         }
     }
 

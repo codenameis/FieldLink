@@ -40,4 +40,18 @@ public sealed class SerialTransportOptionsTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new SerialTransportOptions("COM1", 9600, dataBits: 5));
         Assert.Throws<ArgumentOutOfRangeException>(() => new SerialTransportOptions("COM1", 9600, dataBits: 9));
     }
+
+    [Fact]
+    public void Constructor_WithInvalidParityOrStopBitsOrTimeoutOverflow_ThrowsArgumentOutOfRangeException()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new SerialTransportOptions("COM1", 9600, parity: (Parity)99));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new SerialTransportOptions("COM1", 9600, stopBits: StopBits.None));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new SerialTransportOptions("COM1", 9600, stopBits: (StopBits)99));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new SerialTransportOptions("COM1") { ReadTimeout = TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new SerialTransportOptions("COM1") { WriteTimeout = TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new SerialTransportOptions("COM1") { SilenceInterval = TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
+    }
 }

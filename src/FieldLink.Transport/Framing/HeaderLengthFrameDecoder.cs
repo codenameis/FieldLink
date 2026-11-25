@@ -9,9 +9,15 @@ namespace FieldLink.Transport.Framing;
 public sealed class HeaderLengthFrameDecoder : IFrameDecoder
 {
     private const int DefaultMaximumFrameLength = 65536;
+    private const int MinimumHeaderLength = 1;
+    private const int MinimumOffset = 0;
+    private const int InitialFrameLength = 0;
     private const int OneByteLengthField = 1;
     private const int TwoByteLengthField = 2;
     private const int FourByteLengthField = 4;
+    private const int SecondByteOffset = 1;
+    private const int ThirdByteOffset = 2;
+    private const int FourthByteOffset = 3;
     private const int ByteShiftOne = 8;
     private const int ByteShiftTwo = 16;
     private const int ByteShiftThree = 24;
@@ -39,12 +45,12 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
         int lengthAdjustment,
         int maximumFrameLength = DefaultMaximumFrameLength)
     {
-        if (headerLength <= 0)
+        if (headerLength < MinimumHeaderLength)
         {
             throw new ArgumentOutOfRangeException(nameof(headerLength), headerLength, "헤더 길이는 1 이상이어야 합니다.");
         }
 
-        if (lengthFieldOffset < 0)
+        if (lengthFieldOffset < MinimumOffset)
         {
             throw new ArgumentOutOfRangeException(nameof(lengthFieldOffset), lengthFieldOffset, "길이 필드 오프셋은 0 이상이어야 합니다.");
         }
@@ -54,7 +60,7 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
             throw new ArgumentOutOfRangeException(nameof(lengthFieldByteCount), lengthFieldByteCount, "길이 필드 바이트 수는 1, 2, 4 중 하나여야 합니다.");
         }
 
-        if (lengthFieldOffset + lengthFieldByteCount > headerLength)
+        if ((long)lengthFieldOffset + lengthFieldByteCount > headerLength)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(lengthFieldOffset),
@@ -83,7 +89,7 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
     {
         if (received.Count < _headerLength)
         {
-            frameLength = 0;
+            frameLength = InitialFrameLength;
             return false;
         }
 
@@ -100,7 +106,7 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
         int totalLength = (int)expectedTotalLength;
         if (received.Count < totalLength)
         {
-            frameLength = 0;
+            frameLength = InitialFrameLength;
             return false;
         }
 
@@ -121,17 +127,17 @@ public sealed class HeaderLengthFrameDecoder : IFrameDecoder
         {
             OneByteLengthField => array[offset],
             TwoByteLengthField => _isBigEndian
-                ? (uint)((array[offset] << ByteShiftOne) | array[offset + 1])
-                : (uint)(array[offset] | (array[offset + 1] << ByteShiftOne)),
+                ? (uint)((array[offset] << ByteShiftOne) | array[offset + SecondByteOffset])
+                : (uint)(array[offset] | (array[offset + SecondByteOffset] << ByteShiftOne)),
             FourByteLengthField => _isBigEndian
                 ? ((uint)array[offset] << ByteShiftThree)
-                    | ((uint)array[offset + 1] << ByteShiftTwo)
-                    | ((uint)array[offset + 2] << ByteShiftOne)
-                    | array[offset + 3]
+                    | ((uint)array[offset + SecondByteOffset] << ByteShiftTwo)
+                    | ((uint)array[offset + ThirdByteOffset] << ByteShiftOne)
+                    | array[offset + FourthByteOffset]
                 : array[offset]
-                    | ((uint)array[offset + 1] << ByteShiftOne)
-                    | ((uint)array[offset + 2] << ByteShiftTwo)
-                    | ((uint)array[offset + 3] << ByteShiftThree),
+                    | ((uint)array[offset + SecondByteOffset] << ByteShiftOne)
+                    | ((uint)array[offset + ThirdByteOffset] << ByteShiftTwo)
+                    | ((uint)array[offset + FourthByteOffset] << ByteShiftThree),
             _ => throw new InvalidOperationException("지원하지 않는 길이 필드 크기입니다.")
         };
     }

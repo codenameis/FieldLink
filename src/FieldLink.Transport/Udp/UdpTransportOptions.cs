@@ -62,11 +62,7 @@ public sealed class UdpTransportOptions
         get => _receiveTimeout;
         init
         {
-            if (value <= TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "수신 제한 시간은 0보다 커야 합니다.");
-            }
-
+            TransportTimeoutValidation.ValidatePositive(value, nameof(value), "수신 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
             _receiveTimeout = value;
         }
     }

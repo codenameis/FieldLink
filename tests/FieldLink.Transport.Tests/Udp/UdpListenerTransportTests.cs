@@ -68,4 +68,47 @@ public sealed class UdpListenerTransportTests
         using var cts = new CancellationTokenSource(50);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => listener.ReceiveAsync(cts.Token));
     }
+
+    [Fact]
+    public async Task ReceiveAsync_ConcurrentCallers_NeverDeliverDuplicateDatagram()
+    {
+        using var listener = new UdpListenerTransport(new UdpListenerTransportOptions(0, IPAddress.Loopback));
+        await listener.OpenAsync(CancellationToken.None);
+
+        using var sender = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        var destination = new IPEndPoint(IPAddress.Loopback, listener.BoundPort);
+
+        Task<UdpDatagram> firstReceive = listener.ReceiveAsync(CancellationToken.None);
+        Task<UdpDatagram> secondReceive = listener.ReceiveAsync(CancellationToken.None);
+        await Task.Delay(30);
+
+        await sender.SendAsync(new byte[] { 0x11 }, 1, destination);
+        await sender.SendAsync(new byte[] { 0x22 }, 1, destination);
+
+        UdpDatagram first = await firstReceive;
+        UdpDatagram second = await secondReceive;
+
+        byte[] payloads = { first.GetPayload()[0], second.GetPayload()[0] };
+        Array.Sort(payloads);
+        Assert.Equal(new byte[] { 0x11, 0x22 }, payloads);
+    }
+
+    [Fact]
+    public async Task Reopen_AfterCloseDuringPendingReceive_DoesNotPoisonNewConnection()
+    {
+        using var listener = new UdpListenerTransport(new UdpListenerTransportOptions(0, IPAddress.Loopback));
+        await listener.OpenAsync(CancellationToken.None);
+
+        Task<UdpDatagram> staleReceive = listener.ReceiveAsync(CancellationToken.None);
+        await Task.Delay(30);
+        await listener.CloseAsync(CancellationToken.None);
+        await Assert.ThrowsAnyAsync<Exception>(() => staleReceive);
+
+        await listener.OpenAsync(CancellationToken.None);
+        using var sender = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        await sender.SendAsync(new byte[] { 0x5A, 0xA5 }, 2, new IPEndPoint(IPAddress.Loopback, listener.BoundPort));
+
+        UdpDatagram fresh = await listener.ReceiveAsync(CancellationToken.None);
+        Assert.Equal(new byte[] { 0x5A, 0xA5 }, fresh.GetPayload());
+    }
 }

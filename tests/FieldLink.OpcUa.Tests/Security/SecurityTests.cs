@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using FieldLink.OpcUa.Discovery;
+using FieldLink.OpcUa.Security;
 using FieldLink.OpcUa.Tests.Fixtures;
 using Opc.Ua;
 using Xunit;
@@ -13,7 +16,7 @@ public sealed class SecurityTests
     [Fact]
     public async Task S01_SignAndEncryptWithTrustedCertificates_ConnectsSuccessfully()
     {
-        using OpcUaTestServer server = new(new OpcUaTestServerOptions
+        await using OpcUaTestServer server = new(new OpcUaTestServerOptions
         {
             IncludeSignAndEncryptEndpoint = true,
             IncludeNoneEndpoint = false,
@@ -37,7 +40,7 @@ public sealed class SecurityTests
     [Fact]
     public async Task S02_ServerExposesOnlyNoneEndpoint_ClientFailsWithoutFallback()
     {
-        using OpcUaTestServer server = new(new OpcUaTestServerOptions
+        await using OpcUaTestServer server = new(new OpcUaTestServerOptions
         {
             IncludeSignAndEncryptEndpoint = false,
             IncludeNoneEndpoint = true,
@@ -114,7 +117,7 @@ public sealed class SecurityTests
     [Fact]
     public async Task S03_UntrustedServerCertificate_PreservesBadCertificateUntrustedAndWritesRejectedStore()
     {
-        using OpcUaTestServer server = new(new OpcUaTestServerOptions
+        await using OpcUaTestServer server = new(new OpcUaTestServerOptions
         {
             IncludeSignAndEncryptEndpoint = true,
             AutoAcceptClientCertificates = true
@@ -148,7 +151,7 @@ public sealed class SecurityTests
     [Fact]
     public async Task S04_ExpiredServerCertificate_FailsWithBadCertificateTimeInvalid()
     {
-        using OpcUaTestServer server = new(new OpcUaTestServerOptions
+        await using OpcUaTestServer server = new(new OpcUaTestServerOptions
         {
             IncludeSignAndEncryptEndpoint = true,
             AutoAcceptClientCertificates = true,
@@ -169,7 +172,7 @@ public sealed class SecurityTests
     [Fact]
     public async Task S05_HostnameMismatchInServerCertificate_PreservesBadCertificateHostNameInvalid()
     {
-        using OpcUaTestServer server = new(new OpcUaTestServerOptions
+        await using OpcUaTestServer server = new(new OpcUaTestServerOptions
         {
             IncludeSignAndEncryptEndpoint = true,
             AutoAcceptClientCertificates = true,
@@ -190,7 +193,7 @@ public sealed class SecurityTests
     [Fact]
     public async Task S05_ApplicationUriMismatchInServerCertificate_PreservesBadCertificateUriInvalid()
     {
-        using OpcUaTestServer server = new(new OpcUaTestServerOptions
+        await using OpcUaTestServer server = new(new OpcUaTestServerOptions
         {
             IncludeSignAndEncryptEndpoint = true,
             AutoAcceptClientCertificates = true,
@@ -211,7 +214,7 @@ public sealed class SecurityTests
     [Fact]
     public async Task S06_MissingClientOwnCertificate_FailsWithoutAutoGeneration()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
 
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
@@ -230,7 +233,7 @@ public sealed class SecurityTests
         const string ValidPassword = "CorrectHorseBattery99!";
         const string WrongPassword = "WrongSecretPassword!42";
 
-        using OpcUaTestServer server = new(new OpcUaTestServerOptions
+        await using OpcUaTestServer server = new(new OpcUaTestServerOptions
         {
             IncludeSignAndEncryptEndpoint = true,
             AllowAnonymous = false,
@@ -262,5 +265,296 @@ public sealed class SecurityTests
         await validClient.OpenAsync();
         Assert.Equal(OpcUaClientState.Open, validClient.State);
         await validClient.CloseAsync();
+    }
+
+    [Fact]
+    public void S07_SelectEndpoint_RejectsMismatchedSecurityModeAndSecurityPolicyUri()
+    {
+        EndpointDescription mismatchedNoneMode = new()
+        {
+            EndpointUrl = "opc.tcp://127.0.0.1:4840",
+            TransportProfileUri = Profiles.UaTcpTransport,
+            SecurityMode = MessageSecurityMode.None,
+            SecurityPolicyUri = SecurityPolicies.Basic256Sha256,
+            UserIdentityTokens = new UserTokenPolicyCollection
+            {
+                new UserTokenPolicy { PolicyId = "anon", TokenType = UserTokenType.Anonymous }
+            }
+        };
+
+        OpcUaClientOptions noneOptions = CreateSecureEndpointTestOptions(
+            MessageSecurityMode.None,
+            new[] { SecurityPolicies.None },
+            OpcUaUserIdentity.CreateAnonymous());
+
+        Assert.Throws<InvalidOperationException>(() =>
+            OpcUaDiscovery.SelectEndpoint(new[] { mismatchedNoneMode }, noneOptions));
+
+        EndpointDescription mismatchedEncryptedMode = new()
+        {
+            EndpointUrl = "opc.tcp://127.0.0.1:4840",
+            TransportProfileUri = Profiles.UaTcpTransport,
+            SecurityMode = MessageSecurityMode.SignAndEncrypt,
+            SecurityPolicyUri = SecurityPolicies.None,
+            UserIdentityTokens = new UserTokenPolicyCollection
+            {
+                new UserTokenPolicy { PolicyId = "anon", TokenType = UserTokenType.Anonymous }
+            }
+        };
+
+        OpcUaClientOptions encryptedOptions = CreateSecureEndpointTestOptions(
+            MessageSecurityMode.SignAndEncrypt,
+            new[] { SecurityPolicies.Basic256Sha256 },
+            OpcUaUserIdentity.CreateAnonymous());
+
+        Assert.Throws<InvalidOperationException>(() =>
+            OpcUaDiscovery.SelectEndpoint(new[] { mismatchedEncryptedMode }, encryptedOptions));
+    }
+
+    [Fact]
+    public void S08_SelectEndpoint_FiltersPlaintextAndSha1UserNameTokensWithoutMutatingInputAndBindsPolicyId()
+    {
+        EndpointDescription serverEndpoint = new()
+        {
+            EndpointUrl = "opc.tcp://127.0.0.1:4840",
+            TransportProfileUri = Profiles.UaTcpTransport,
+            SecurityMode = MessageSecurityMode.SignAndEncrypt,
+            SecurityPolicyUri = SecurityPolicies.Basic256Sha256,
+            SecurityLevel = 100,
+            UserIdentityTokens = new UserTokenPolicyCollection
+            {
+                new UserTokenPolicy
+                {
+                    PolicyId = "user_none",
+                    TokenType = UserTokenType.UserName,
+                    SecurityPolicyUri = SecurityPolicies.None
+                },
+                new UserTokenPolicy
+                {
+                    PolicyId = "user_sha1",
+                    TokenType = UserTokenType.UserName,
+                    SecurityPolicyUri = SecurityPolicies.Basic128Rsa15
+                },
+                new UserTokenPolicy
+                {
+                    PolicyId = "user_sha256",
+                    TokenType = UserTokenType.UserName,
+                    SecurityPolicyUri = SecurityPolicies.Basic256Sha256
+                }
+            }
+        };
+
+        OpcUaUserIdentity userIdentity = OpcUaUserIdentity.CreateUserName("operator", "CorrectHorseBatteryStaple!");
+        OpcUaClientOptions options = CreateSecureEndpointTestOptions(
+            MessageSecurityMode.SignAndEncrypt,
+            new[] { SecurityPolicies.Basic256Sha256 },
+            userIdentity);
+
+        ConfiguredEndpoint selected = OpcUaDiscovery.SelectEndpoint(new[] { serverEndpoint }, options);
+
+        Assert.Equal(3, serverEndpoint.UserIdentityTokens.Count);
+        UserTokenPolicy singleApprovedToken = Assert.Single(selected.Description.UserIdentityTokens);
+        Assert.Equal("user_sha256", singleApprovedToken.PolicyId);
+
+        IUserIdentity sdkIdentity = userIdentity.ToSdkIdentity(singleApprovedToken.PolicyId);
+        UserNameIdentityToken token = Assert.IsType<UserNameIdentityToken>(sdkIdentity.GetIdentityToken());
+        Assert.Equal("user_sha256", token.PolicyId);
+
+        EndpointDescription unencryptedOnlyPlaintextTokenEndpoint = new()
+        {
+            EndpointUrl = "opc.tcp://127.0.0.1:4840",
+            TransportProfileUri = Profiles.UaTcpTransport,
+            SecurityMode = MessageSecurityMode.None,
+            SecurityPolicyUri = SecurityPolicies.None,
+            UserIdentityTokens = new UserTokenPolicyCollection
+            {
+                new UserTokenPolicy
+                {
+                    PolicyId = "user_none",
+                    TokenType = UserTokenType.UserName,
+                    SecurityPolicyUri = SecurityPolicies.None
+                },
+                new UserTokenPolicy
+                {
+                    PolicyId = "user_sha1",
+                    TokenType = UserTokenType.UserName,
+                    SecurityPolicyUri = SecurityPolicies.Basic256
+                }
+            }
+        };
+
+        OpcUaClientOptions strictNoneOptions = CreateSecureEndpointTestOptions(
+            MessageSecurityMode.None,
+            new[] { SecurityPolicies.None },
+            userIdentity);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            OpcUaDiscovery.SelectEndpoint(new[] { unencryptedOnlyPlaintextTokenEndpoint }, strictNoneOptions));
+    }
+
+    [Fact]
+    public void S09_SelectEndpoint_PrioritizesClientPolicyRankAheadOfServerSecurityLevel()
+    {
+        EndpointDescription preferredPolicyLowerServerLevel = new()
+        {
+            EndpointUrl = "opc.tcp://127.0.0.1:4840",
+            TransportProfileUri = Profiles.UaTcpTransport,
+            SecurityMode = MessageSecurityMode.SignAndEncrypt,
+            SecurityPolicyUri = SecurityPolicies.Aes256_Sha256_RsaPss,
+            SecurityLevel = 10,
+            UserIdentityTokens = new UserTokenPolicyCollection
+            {
+                new UserTokenPolicy { PolicyId = "anon", TokenType = UserTokenType.Anonymous }
+            }
+        };
+
+        EndpointDescription weakerPolicyHigherServerLevel = new()
+        {
+            EndpointUrl = "opc.tcp://127.0.0.1:4840",
+            TransportProfileUri = Profiles.UaTcpTransport,
+            SecurityMode = MessageSecurityMode.SignAndEncrypt,
+            SecurityPolicyUri = SecurityPolicies.Basic256Sha256,
+            SecurityLevel = 250,
+            UserIdentityTokens = new UserTokenPolicyCollection
+            {
+                new UserTokenPolicy { PolicyId = "anon", TokenType = UserTokenType.Anonymous }
+            }
+        };
+
+        OpcUaClientOptions options = CreateSecureEndpointTestOptions(
+            MessageSecurityMode.SignAndEncrypt,
+            new[] { SecurityPolicies.Aes256_Sha256_RsaPss, SecurityPolicies.Basic256Sha256 },
+            OpcUaUserIdentity.CreateAnonymous());
+
+        ConfiguredEndpoint selected = OpcUaDiscovery.SelectEndpoint(
+            new[] { weakerPolicyHigherServerLevel, preferredPolicyLowerServerLevel },
+            options);
+
+        Assert.Equal(SecurityPolicies.Aes256_Sha256_RsaPss, selected.Description.SecurityPolicyUri);
+    }
+
+    [Fact]
+    public async Task S10_SelectEndpoint_PreservesApplicationConfigurationTransportQuotas()
+    {
+        string tempRoot = Path.Combine(Path.GetTempPath(), $"fieldlink-opcua-cfg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            OpcUaClientOptions options = new()
+            {
+                EndpointUrl = new Uri("opc.tcp://127.0.0.1:4840"),
+                MessageSecurityMode = MessageSecurityMode.None,
+                AllowedSecurityPolicies = new[] { SecurityPolicies.None },
+                DefaultOperationTimeout = TimeSpan.FromSeconds(17),
+                Certificates = new OpcUaCertificateOptions
+                {
+                    ApplicationCertificateStorePath = Path.Combine(tempRoot, "own"),
+                    TrustedPeerCertificatesStorePath = Path.Combine(tempRoot, "trusted"),
+                    TrustedIssuerCertificatesStorePath = Path.Combine(tempRoot, "issuer"),
+                    RejectedCertificateStorePath = Path.Combine(tempRoot, "rejected")
+                }
+            };
+
+            ApplicationConfiguration configuration = await OpcUaConfigurationFactory.CreateClientConfigurationAsync(
+                options,
+                CancellationToken.None);
+
+            EndpointDescription endpoint = new()
+            {
+                EndpointUrl = "opc.tcp://127.0.0.1:4840",
+                TransportProfileUri = Profiles.UaTcpTransport,
+                SecurityMode = MessageSecurityMode.None,
+                SecurityPolicyUri = SecurityPolicies.None,
+                UserIdentityTokens = new UserTokenPolicyCollection
+                {
+                    new UserTokenPolicy { PolicyId = "anon", TokenType = UserTokenType.Anonymous }
+                }
+            };
+
+            ConfiguredEndpoint selected = OpcUaDiscovery.SelectEndpoint(new[] { endpoint }, options, configuration);
+
+            Assert.Equal(17_000, selected.Configuration.OperationTimeout);
+            Assert.Equal(configuration.TransportQuotas.MaxMessageSize, selected.Configuration.MaxMessageSize);
+            Assert.Equal(configuration.TransportQuotas.ChannelLifetime, selected.Configuration.ChannelLifetime);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void S11_RedactionAndOptionsValidation_EnforceShortPasswordBoundariesAndRangeGuards()
+    {
+        OpcUaUserIdentity singleCharIdentity = OpcUaUserIdentity.CreateUserName("user", "a");
+        string unmangledMessage = "Failed calling ReadValueAsync at status Bad";
+        Assert.False(singleCharIdentity.ContainsSensitiveData(unmangledMessage));
+        Assert.Equal(unmangledMessage, singleCharIdentity.RedactPassword(unmangledMessage, "[REDACTED]"));
+
+        OpcUaUserIdentity shortPasswordIdentity = OpcUaUserIdentity.CreateUserName("user", "pass");
+        string sentenceWithSubstringAndToken = "bypassed with password pass!";
+        Assert.True(shortPasswordIdentity.ContainsSensitiveData(sentenceWithSubstringAndToken));
+        Assert.Equal("bypassed with password [REDACTED]!", shortPasswordIdentity.RedactPassword(sentenceWithSubstringAndToken, "[REDACTED]"));
+        Assert.False(shortPasswordIdentity.ContainsSensitiveData("bypassed with password"));
+
+        OpcUaUserIdentity longPasswordIdentity = OpcUaUserIdentity.CreateUserName("user", "WrongSecretPassword!42");
+        Assert.Equal(
+            "prefix[REDACTED]suffix",
+            longPasswordIdentity.RedactPassword("prefixWrongSecretPassword!42suffix", "[REDACTED]"));
+
+        OpcUaCertificateOptions invalidStoreType = new()
+        {
+            StoreType = (OpcUaCertificateStoreType)999,
+            ApplicationCertificateStorePath = "own",
+            TrustedPeerCertificatesStorePath = "trusted",
+            TrustedIssuerCertificatesStorePath = "issuer",
+            RejectedCertificateStorePath = "rejected"
+        };
+        OpcUaClientOptions storeTypeOptions = new()
+        {
+            EndpointUrl = new Uri("opc.tcp://127.0.0.1:4840"),
+            MessageSecurityMode = MessageSecurityMode.None,
+            AllowedSecurityPolicies = new[] { SecurityPolicies.None },
+            Certificates = invalidStoreType
+        };
+        Assert.Throws<ArgumentOutOfRangeException>(() => storeTypeOptions.ValidateAndClone());
+
+        OpcUaClientOptions excessiveTimeoutOptions = CreateSecureEndpointTestOptions(
+            MessageSecurityMode.None,
+            new[] { SecurityPolicies.None },
+            OpcUaUserIdentity.CreateAnonymous());
+        OpcUaClientOptions oversizedTimeout = new()
+        {
+            EndpointUrl = excessiveTimeoutOptions.EndpointUrl,
+            MessageSecurityMode = MessageSecurityMode.None,
+            AllowedSecurityPolicies = new[] { SecurityPolicies.None },
+            ConnectTimeout = TimeSpan.FromMilliseconds((double)int.MaxValue + 1000),
+            Certificates = excessiveTimeoutOptions.Certificates
+        };
+        Assert.Throws<ArgumentOutOfRangeException>(() => oversizedTimeout.ValidateAndClone());
+    }
+
+    private static OpcUaClientOptions CreateSecureEndpointTestOptions(
+        MessageSecurityMode securityMode,
+        IReadOnlyList<string> allowedPolicies,
+        OpcUaUserIdentity identity)
+    {
+        return new OpcUaClientOptions
+        {
+            EndpointUrl = new Uri("opc.tcp://127.0.0.1:4840"),
+            MessageSecurityMode = securityMode,
+            AllowedSecurityPolicies = allowedPolicies,
+            UserIdentity = identity,
+            Certificates = new OpcUaCertificateOptions
+            {
+                ApplicationCertificateStorePath = "own",
+                TrustedPeerCertificatesStorePath = "trusted",
+                TrustedIssuerCertificatesStorePath = "issuer",
+                RejectedCertificateStorePath = "rejected"
+            }
+        };
     }
 }

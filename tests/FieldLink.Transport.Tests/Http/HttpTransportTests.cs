@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -170,6 +171,118 @@ public sealed class HttpTransportTests
 
         var subpathOptions = new HttpTransportOptions(new Uri("http://127.0.0.1:8080/api/v1"));
         using var transport = new HttpTransport(subpathOptions, handler, disposeHandler: false);
+        await transport.SendAsync(new HttpTransportRequest(HttpMethodKind.Get, "rw/system"));
+
+        Assert.Equal("http://127.0.0.1:8080/api/v1/rw/system", capturedUri!.ToString());
+    }
+
+    [Fact]
+    public void CreateHandler_ScopesCredentialsToBaseOriginAndDisablesAutoRedirect()
+    {
+        var options = new HttpTransportOptions("192.168.10.20", 8443, useHttps: true)
+        {
+            Username = "operator",
+            Password = "secret"
+        };
+
+        using HttpClientHandler handler = HttpTransport.CreateHandler(options);
+
+        Assert.False(handler.AllowAutoRedirect);
+        Assert.NotNull(handler.Credentials);
+
+        Assert.NotNull(handler.Credentials!.GetCredential(new Uri("https://192.168.10.20:8443/rw/system"), "Basic"));
+        Assert.NotNull(handler.Credentials!.GetCredential(new Uri("https://192.168.10.20:8443/rw/system"), "Digest"));
+        Assert.Null(handler.Credentials!.GetCredential(new Uri("http://192.168.10.20:8443/rw/system"), "Basic"));
+        Assert.Null(handler.Credentials!.GetCredential(new Uri("https://192.168.10.20:443/rw/system"), "Basic"));
+        Assert.Null(handler.Credentials!.GetCredential(new Uri("https://10.0.0.99:8443/rw/system"), "Basic"));
+    }
+
+    [Fact]
+    public async Task SendAsync_WhenResponseExceedsMaximumResponseBodyBytes_ThrowsInvalidFrame()
+    {
+        var options = new HttpTransportOptions("127.0.0.1", 80)
+        {
+            MaximumResponseBodyBytes = 16
+        };
+
+        using var declaredTooLargeHandler = new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(new byte[32])
+            }));
+        using var transport1 = new HttpTransport(options, declaredTooLargeHandler, disposeHandler: false);
+
+        TransportException declaredException = await Assert.ThrowsAsync<TransportException>(
+            () => transport1.SendAsync(new HttpTransportRequest(HttpMethodKind.Get, "/large")));
+        Assert.Equal(TransportFailure.InvalidFrame, declaredException.Failure);
+
+        using var streamingTooLargeHandler = new StubHttpMessageHandler((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new MemoryStream(new byte[32]))
+            }));
+        using var transport2 = new HttpTransport(options, streamingTooLargeHandler, disposeHandler: false);
+
+        TransportException streamingException = await Assert.ThrowsAsync<TransportException>(
+            () => transport2.SendAsync(new HttpTransportRequest(HttpMethodKind.Get, "/stream-large")));
+        Assert.Equal(TransportFailure.InvalidFrame, streamingException.Failure);
+    }
+
+    [Fact]
+    public async Task SendAsync_WhenDisposedWhileInFlight_ThrowsConnectionClosed()
+    {
+        var started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = new StubHttpMessageHandler(async (_, token) =>
+        {
+            started.TrySetResult(true);
+            await Task.Delay(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+
+        var transport = new HttpTransport(new HttpTransportOptions("127.0.0.1", 80), handler, disposeHandler: false);
+        Task<HttpTransportResponse> sendTask = transport.SendAsync(new HttpTransportRequest(HttpMethodKind.Get, "/slow"));
+        await started.Task;
+        transport.Dispose();
+
+        TransportException exception = await Assert.ThrowsAsync<TransportException>(() => sendTask);
+        Assert.Equal(TransportFailure.ConnectionClosed, exception.Failure);
+    }
+
+    [Fact]
+    public void OptionsAndRequest_RejectTimeoutOverflowInvalidBodyCapAndHeaderControlCharacters()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HttpTransportOptions("127.0.0.1", 80) { Timeout = TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HttpTransportOptions("127.0.0.1", 80) { MaximumResponseBodyBytes = 0 });
+        Assert.Throws<ArgumentException>(() =>
+            new HttpTransportOptions("127.0.0.1", 80) { DefaultContentType = "text/plain\r\nX-Injected: 1" });
+        Assert.Throws<ArgumentException>(() =>
+            new HttpTransportRequest(HttpMethodKind.Post, "/rw", new byte[] { 1 }, "text/plain\nEvil: 1"));
+        Assert.Throws<ArgumentException>(() =>
+            new HttpTransportRequest(HttpMethodKind.Get, "/rw")
+            {
+                Headers = new Dictionary<string, string> { ["X-Ok"] = "val\r\nEvil: 1" }
+            });
+        Assert.Throws<ArgumentException>(() =>
+            new HttpTransportRequest(HttpMethodKind.Get, "/rw")
+            {
+                Headers = new Dictionary<string, string> { ["X-Bad\r\nName"] = "val" }
+            });
+    }
+
+    [Fact]
+    public async Task SendAsync_BaseUriWithQueryString_EnsureTrailingSlashPreservesPathAndQuery()
+    {
+        Uri? capturedUri = null;
+        using var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            capturedUri = request.RequestUri;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+
+        var options = new HttpTransportOptions(new Uri("http://127.0.0.1:8080/api/v1?env=prod"));
+        using var transport = new HttpTransport(options, handler, disposeHandler: false);
         await transport.SendAsync(new HttpTransportRequest(HttpMethodKind.Get, "rw/system"));
 
         Assert.Equal("http://127.0.0.1:8080/api/v1/rw/system", capturedUri!.ToString());

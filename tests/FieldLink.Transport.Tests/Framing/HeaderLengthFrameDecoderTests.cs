@@ -12,6 +12,7 @@ public sealed class HeaderLengthFrameDecoderTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new HeaderLengthFrameDecoder(6, -1, 2, true, 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new HeaderLengthFrameDecoder(6, 0, 3, true, 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new HeaderLengthFrameDecoder(6, 5, 2, true, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new HeaderLengthFrameDecoder(6, int.MaxValue, 4, true, 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new HeaderLengthFrameDecoder(6, 0, 2, true, 0, maximumFrameLength: 5));
     }
 

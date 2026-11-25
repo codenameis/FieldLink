@@ -10,7 +10,7 @@ using Opc.Ua;
 namespace FieldLink.OpcUa.Subscriptions;
 
 /// <summary>SDK 수신 스레드와 단일 소비자(<see cref="ReadNextAsync"/>)를 유한 큐로 분리하는 Fail-Closed OPC UA 구독 핸들입니다.</summary>
-public sealed class OpcUaSubscription : IDisposable, IAsyncDisposable
+public sealed partial class OpcUaSubscription : IDisposable, IAsyncDisposable
 {
     private readonly OpcUaSubscriptionOptions _options;
     private readonly IOpcUaSubscriptionAdapter _adapter;
@@ -108,9 +108,14 @@ public sealed class OpcUaSubscription : IDisposable, IAsyncDisposable
                 return batch;
             }
 
+            if (waitTask is null)
+            {
+                continue;
+            }
+
             try
             {
-                await WaitWithCallerCancellationAsync(waitTask!, cancellationToken).ConfigureAwait(false);
+                await OpcUaDeadline.WaitWithCancellationAsync(waitTask, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -148,7 +153,7 @@ public sealed class OpcUaSubscription : IDisposable, IAsyncDisposable
         }
 
         _lifetime.UnregisterSubscription(this);
-        return WaitForCompletionWithCancellationAsync(closeTask, cancellationToken);
+        return OpcUaDeadline.WaitWithCancellationAsync(closeTask, cancellationToken);
     }
 
     /// <summary>네트워크 응답을 기다리지 않고 구독을 즉시 비블로킹으로 해제합니다.</summary>
@@ -188,223 +193,11 @@ public sealed class OpcUaSubscription : IDisposable, IAsyncDisposable
         }
         catch (ObjectDisposedException)
         {
+            // 동시 Dispose 호출로 이미 해제된 경우 정상 종료로 간주
         }
         finally
         {
             Dispose();
         }
-    }
-
-    internal void EnqueueRawBatch(OpcUaRawDataChangeBatch rawBatch)
-    {
-        if (_lifetime.CurrentGeneration != _capturedGeneration)
-        {
-            return;
-        }
-
-        if (!OpcUaBatchSnapshot.TryBuild(
-            rawBatch,
-            _itemsByClientHandle,
-            out OpcUaDataChangeBatch? batch,
-            out long estimatedBytes))
-        {
-            return;
-        }
-
-        bool overflowTriggered = EnqueueOrFaultLocked(batch!, estimatedBytes);
-        if (overflowTriggered)
-        {
-            _lifetime.UnregisterSubscription(this);
-            OpcUaDeadline.ObserveOrphanedFault(DeleteOnServerSafelyAsync());
-        }
-    }
-
-    internal void TerminateFromParent(OpcUaSubscriptionTerminationReason reason, Exception? cause)
-    {
-        lock (_queueLock)
-        {
-            if (_terminationReason != OpcUaSubscriptionTerminationReason.None)
-            {
-                return;
-            }
-
-            bool clearQueue = reason == OpcUaSubscriptionTerminationReason.ParentFaulted;
-            TransitionLocked(reason, cause, clearQueue);
-        }
-    }
-
-    private bool TryDequeueOrCreateWaiter(
-        CancellationToken cancellationToken,
-        out OpcUaDataChangeBatch? batch,
-        out Task<bool>? waitTask)
-    {
-        lock (_queueLock)
-        {
-            if (_terminationReason == OpcUaSubscriptionTerminationReason.Disposed)
-            {
-                throw new ObjectDisposedException(nameof(OpcUaSubscription));
-            }
-
-            if (_consumerInFlight)
-            {
-                throw new InvalidOperationException("OpcUaSubscription.ReadNextAsync는 단일 소비자만 동시에 호출할 수 있습니다.");
-            }
-
-            if (_terminationReason is OpcUaSubscriptionTerminationReason.QueueOverflow or OpcUaSubscriptionTerminationReason.ParentFaulted)
-            {
-                throw _terminationException!;
-            }
-
-            if (_queue.Count > 0)
-            {
-                QueuedBatch entry = _queue.Dequeue();
-                _queuedBytes -= entry.EstimatedBytes;
-                batch = entry.Batch;
-                waitTask = null;
-                return true;
-            }
-
-            if (_terminationReason is OpcUaSubscriptionTerminationReason.Closed or OpcUaSubscriptionTerminationReason.ParentClosed)
-            {
-                batch = null;
-                waitTask = null;
-                return true;
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            _consumerInFlight = true;
-            _waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            batch = null;
-            waitTask = _waiter.Task;
-            return false;
-        }
-    }
-
-    private bool EnqueueOrFaultLocked(OpcUaDataChangeBatch batch, long estimatedBytes)
-    {
-        lock (_queueLock)
-        {
-            if (_terminationReason != OpcUaSubscriptionTerminationReason.None ||
-                _lifetime.CurrentGeneration != _capturedGeneration)
-            {
-                return false;
-            }
-
-            if (_queue.Count + 1 <= _options.MaxQueuedBatches &&
-                _queuedBytes + estimatedBytes <= _options.MaxQueuedBytes)
-            {
-                _queue.Enqueue(new QueuedBatch(batch, estimatedBytes));
-                _queuedBytes += estimatedBytes;
-                _waiter?.TrySetResult(true);
-                return false;
-            }
-
-            Exception overflowException = new InvalidOperationException(
-                $"구독 로컬 유한 큐 한도를 초과하여 Fail-Closed 종료되었습니다. " +
-                $"(QueuedBatches={_queue.Count}/{_options.MaxQueuedBatches}, QueuedBytes={_queuedBytes + estimatedBytes}/{_options.MaxQueuedBytes})");
-            TransitionLocked(OpcUaSubscriptionTerminationReason.QueueOverflow, overflowException, clearQueue: true);
-            return true;
-        }
-    }
-
-    private void TransitionLocked(OpcUaSubscriptionTerminationReason reason, Exception? exception, bool clearQueue)
-    {
-        _terminationReason = reason;
-        _terminationException = exception;
-
-        if (clearQueue)
-        {
-            _queue.Clear();
-            _queuedBytes = 0;
-        }
-
-        _waiter?.TrySetResult(false);
-    }
-
-    private async Task CloseServerSubscriptionAsync()
-    {
-        try
-        {
-            await DeleteOnServerSafelyAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            _adapter.Dispose();
-        }
-    }
-
-    private async Task DeleteOnServerSafelyAsync()
-    {
-        try
-        {
-            using CancellationTokenSource timeoutSource = new(_closeTimeout);
-            await _adapter.DeleteAsync(timeoutSource.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (ServiceResultException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-    }
-
-    private static async Task WaitWithCallerCancellationAsync(Task<bool> waitTask, CancellationToken cancellationToken)
-    {
-        if (!cancellationToken.CanBeCanceled)
-        {
-            await waitTask.ConfigureAwait(false);
-            return;
-        }
-
-        TaskCompletionSource<bool> cancelSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        using CancellationTokenRegistration registration = cancellationToken.Register(
-            static state => ((TaskCompletionSource<bool>)state!).TrySetResult(false),
-            cancelSource);
-
-        Task completed = await Task.WhenAny(waitTask, cancelSource.Task).ConfigureAwait(false);
-        if (completed == cancelSource.Task)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-        }
-
-        await waitTask.ConfigureAwait(false);
-    }
-
-    private static async Task WaitForCompletionWithCancellationAsync(Task targetTask, CancellationToken cancellationToken)
-    {
-        if (!cancellationToken.CanBeCanceled)
-        {
-            await targetTask.ConfigureAwait(false);
-            return;
-        }
-
-        TaskCompletionSource<bool> cancelSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        using CancellationTokenRegistration registration = cancellationToken.Register(
-            static state => ((TaskCompletionSource<bool>)state!).TrySetResult(false),
-            cancelSource);
-
-        Task completed = await Task.WhenAny(targetTask, cancelSource.Task).ConfigureAwait(false);
-        if (completed == cancelSource.Task)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-        }
-
-        await targetTask.ConfigureAwait(false);
-    }
-
-    private readonly struct QueuedBatch
-    {
-        public QueuedBatch(OpcUaDataChangeBatch batch, long estimatedBytes)
-        {
-            Batch = batch;
-            EstimatedBytes = estimatedBytes;
-        }
-
-        public OpcUaDataChangeBatch Batch { get; }
-
-        public long EstimatedBytes { get; }
     }
 }

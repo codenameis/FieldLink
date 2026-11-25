@@ -6,6 +6,9 @@ namespace FieldLink.Transport.Framing;
 public sealed class DelimitedFrameDecoder : IFrameDecoder
 {
     private const int DefaultMaximumFrameLength = 4096;
+    private const int DelimiterNotFoundIndex = -1;
+    private const int InitialFrameLength = 0;
+    private const int EmptyDelimiterLength = 0;
 
     private readonly byte[] _endDelimiter;
     private readonly byte[]? _startDelimiter;
@@ -28,12 +31,12 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
             throw new ArgumentNullException(nameof(endDelimiter));
         }
 
-        if (endDelimiter.Length == 0)
+        if (endDelimiter.Length == EmptyDelimiterLength)
         {
             throw new ArgumentException("종료 구분자는 비어 있을 수 없습니다.", nameof(endDelimiter));
         }
 
-        int minimumFrameLength = (startDelimiter?.Length ?? 0) + endDelimiter.Length;
+        long minimumFrameLength = (long)(startDelimiter?.Length ?? EmptyDelimiterLength) + endDelimiter.Length;
         if (maximumFrameLength < minimumFrameLength)
         {
             throw new ArgumentOutOfRangeException(
@@ -74,7 +77,7 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
                 $"프레임이 최대 허용 길이({_maximumFrameLength} 바이트)를 초과할 때까지 종료 구분자를 찾지 못했습니다.");
         }
 
-        frameLength = 0;
+        frameLength = InitialFrameLength;
         return false;
     }
 
@@ -107,13 +110,13 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
     {
         if (received.Array is not { } array)
         {
-            return -1;
+            return DelimiterNotFoundIndex;
         }
 
         int offset = received.Offset;
         int count = received.Count;
         int delimiterLength = _endDelimiter.Length;
-        int searchStart = _startDelimiter?.Length ?? 0;
+        int searchStart = _startDelimiter?.Length ?? EmptyDelimiterLength;
 
         for (int i = searchStart; i <= count - delimiterLength; i++)
         {
@@ -123,7 +126,7 @@ public sealed class DelimitedFrameDecoder : IFrameDecoder
             }
         }
 
-        return -1;
+        return DelimiterNotFoundIndex;
     }
 
     private bool IsDelimiterMatch(byte[] array, int startIndex)

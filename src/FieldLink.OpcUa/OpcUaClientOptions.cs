@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using FieldLink.OpcUa.Internal;
 using FieldLink.OpcUa.Security;
 using Opc.Ua;
 
@@ -186,20 +187,18 @@ public sealed class OpcUaClientOptions
 
     private void ValidateTimeoutsAndLimits()
     {
-        if (ConnectTimeout <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(ConnectTimeout), "연결 제한 시간은 0보다 커야 합니다.");
-        }
-
-        if (DefaultOperationTimeout <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(DefaultOperationTimeout), "기본 작업 제한 시간은 0보다 커야 합니다.");
-        }
-
-        if (CloseTimeout <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(CloseTimeout), "종료 제한 시간은 0보다 커야 합니다.");
-        }
+        OpcUaDeadline.ValidatePositiveTimeout(
+            ConnectTimeout,
+            nameof(ConnectTimeout),
+            "연결 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
+        OpcUaDeadline.ValidatePositiveTimeout(
+            DefaultOperationTimeout,
+            nameof(DefaultOperationTimeout),
+            "기본 작업 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
+        OpcUaDeadline.ValidatePositiveTimeout(
+            CloseTimeout,
+            nameof(CloseTimeout),
+            "종료 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
 
         if (MaxConcurrentOperations < 1)
         {

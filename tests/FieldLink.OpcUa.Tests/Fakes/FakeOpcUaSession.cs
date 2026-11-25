@@ -91,6 +91,8 @@ internal sealed class FakeSessionAdapter : IOpcUaSessionAdapter
 
     public Func<OpcUaSubscriptionOptions, Action<OpcUaRawDataChangeBatch>, IOpcUaSubscriptionAdapter>? OnCreateSubscription { get; set; }
 
+    public Func<int, CancellationToken, Task>? OnClose { get; set; }
+
     public event KeepAliveEventHandler? KeepAlive;
 
     public void RaiseKeepAlive(StatusCode statusCode)
@@ -171,6 +173,11 @@ internal sealed class FakeSessionAdapter : IOpcUaSessionAdapter
     public Task CloseAsync(int timeoutMilliseconds, CancellationToken cancellationToken)
     {
         CloseCount++;
+        if (OnClose is not null)
+        {
+            return OnClose(timeoutMilliseconds, cancellationToken);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -197,14 +204,36 @@ internal sealed class FakeSubscriptionAdapter : IOpcUaSubscriptionAdapter
 
     public uint RevisedLifetimeCount { get; set; } = 15;
 
-    public int DeleteCallCount { get; private set; }
+    private int _deleteCallCount;
+    private int _disposeCount;
 
-    public Task CreateAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public int DeleteCallCount => Volatile.Read(ref _deleteCallCount);
 
-    public Task<IReadOnlyList<OpcUaMonitoredItemCreationResult>> CreateMonitoredItemsAsync(
+    public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+    public Func<CancellationToken, Task>? OnCreate { get; set; }
+
+    public Func<IReadOnlyList<OpcUaResolvedMonitoredItem>, CancellationToken, Task>? OnBeforeCreateMonitoredItems { get; set; }
+
+    public Task CreateAsync(CancellationToken cancellationToken)
+    {
+        if (OnCreate is not null)
+        {
+            return OnCreate(cancellationToken);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public async Task<IReadOnlyList<OpcUaMonitoredItemCreationResult>> CreateMonitoredItemsAsync(
         IReadOnlyList<OpcUaResolvedMonitoredItem> items,
         CancellationToken cancellationToken)
     {
+        if (OnBeforeCreateMonitoredItems is not null)
+        {
+            await OnBeforeCreateMonitoredItems(items, cancellationToken).ConfigureAwait(false);
+        }
+
         OpcUaMonitoredItemCreationResult[] results = new OpcUaMonitoredItemCreationResult[items.Count];
         for (int i = 0; i < items.Count; i++)
         {
@@ -217,16 +246,17 @@ internal sealed class FakeSubscriptionAdapter : IOpcUaSubscriptionAdapter
             results[i] = new OpcUaMonitoredItemCreationResult((uint)(i + 1), outcome);
         }
 
-        return Task.FromResult<IReadOnlyList<OpcUaMonitoredItemCreationResult>>(results);
+        return results;
     }
 
     public Task DeleteAsync(CancellationToken cancellationToken)
     {
-        DeleteCallCount++;
+        Interlocked.Increment(ref _deleteCallCount);
         return Task.CompletedTask;
     }
 
     public void Dispose()
     {
+        Interlocked.Increment(ref _disposeCount);
     }
 }

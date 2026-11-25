@@ -1,4 +1,5 @@
 using System;
+using FieldLink.OpcUa.Internal;
 using Opc.Ua;
 
 namespace FieldLink.OpcUa.Services;
@@ -49,9 +50,12 @@ public sealed class OpcUaBrowseOptions
                 "MaxTotalReferences는 1 이상이어야 합니다.");
         }
 
-        if (Timeout.HasValue && Timeout.Value <= TimeSpan.Zero)
+        if (Timeout.HasValue)
         {
-            throw new ArgumentOutOfRangeException(nameof(Timeout), "Timeout은 0보다 커야 합니다.");
+            OpcUaDeadline.ValidatePositiveTimeout(
+                Timeout.Value,
+                nameof(Timeout),
+                "Timeout은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
         }
 
         return new OpcUaBrowseOptions

@@ -9,6 +9,8 @@ public sealed class OpcUaUserIdentity
 {
     private const string AnonymousDisplayName = "Anonymous";
     private const string RedactedPasswordMask = "****";
+    private const int MinimumRedactablePasswordLength = 4;
+    private const int UnconditionalRedactLength = 8;
 
     private readonly string? _password;
 
@@ -60,16 +62,32 @@ public sealed class OpcUaUserIdentity
         return $"UserName({Username}:{RedactedPasswordMask})";
     }
 
-    internal IUserIdentity ToSdkIdentity()
+    internal IUserIdentity ToSdkIdentity(string? policyId = null)
     {
         if (IdentityType == OpcUaUserIdentityType.Anonymous)
         {
-            return new UserIdentity(new AnonymousIdentityToken());
+            AnonymousIdentityToken anonymousToken = new();
+            if (!string.IsNullOrEmpty(policyId))
+            {
+                anonymousToken.PolicyId = policyId;
+            }
+
+            return new UserIdentity(anonymousToken);
         }
 
         byte[] passwordBytes = Encoding.UTF8.GetBytes(_password ?? string.Empty);
-        // CreateUserName 생성 시 비어 있지 않은 Username이 이미 검증되었다.
-        return new UserIdentity(Username!, passwordBytes);
+        UserNameIdentityToken userNameToken = new()
+        {
+            // CreateUserName 생성 시 비어 있지 않은 Username이 이미 검증되었다.
+            UserName = Username ?? string.Empty,
+            DecryptedPassword = passwordBytes
+        };
+        if (!string.IsNullOrEmpty(policyId))
+        {
+            userNameToken.PolicyId = policyId;
+        }
+
+        return new UserIdentity(userNameToken);
     }
 
     internal OpcUaUserIdentity Clone()
@@ -79,21 +97,80 @@ public sealed class OpcUaUserIdentity
 
     internal bool ContainsSensitiveData(string? text)
     {
-        if (text is not { Length: > 0 } || _password is not { Length: > 0 })
+        if (text is not { Length: > 0 } ||
+            _password is not { Length: >= MinimumRedactablePasswordLength } password)
         {
             return false;
         }
 
-        return text.IndexOf(_password, StringComparison.Ordinal) >= 0;
+        if (password.Length >= UnconditionalRedactLength)
+        {
+            return text.IndexOf(password, StringComparison.Ordinal) >= 0;
+        }
+
+        return FindNextDelimitedMatch(text, password, 0) >= 0;
     }
 
     internal string RedactPassword(string message, string replacement)
     {
-        if (message.Length == 0 || _password is not { Length: > 0 })
+        if (message.Length == 0 ||
+            _password is not { Length: >= MinimumRedactablePasswordLength } password)
         {
             return message;
         }
 
-        return message.Replace(_password, replacement);
+        if (password.Length >= UnconditionalRedactLength)
+        {
+            return message.Replace(password, replacement);
+        }
+
+        int matchIndex = FindNextDelimitedMatch(message, password, 0);
+        if (matchIndex < 0)
+        {
+            return message;
+        }
+
+        StringBuilder builder = new(message.Length);
+        int cursor = 0;
+        while (matchIndex >= 0)
+        {
+            builder.Append(message, cursor, matchIndex - cursor);
+            builder.Append(replacement);
+            cursor = matchIndex + password.Length;
+            matchIndex = FindNextDelimitedMatch(message, password, cursor);
+        }
+
+        builder.Append(message, cursor, message.Length - cursor);
+        return builder.ToString();
+    }
+
+    private static int FindNextDelimitedMatch(string text, string password, int startIndex)
+    {
+        int searchIndex = startIndex;
+        while (searchIndex <= text.Length - password.Length)
+        {
+            int matchIndex = text.IndexOf(password, searchIndex, StringComparison.Ordinal);
+            if (matchIndex < 0)
+            {
+                return -1;
+            }
+
+            if (IsDelimitedToken(text, matchIndex, password.Length))
+            {
+                return matchIndex;
+            }
+
+            searchIndex = matchIndex + 1;
+        }
+
+        return -1;
+    }
+
+    private static bool IsDelimitedToken(string text, int startIndex, int length)
+    {
+        bool leftBoundaryOk = startIndex == 0 || !char.IsLetterOrDigit(text[startIndex - 1]);
+        int endIndex = startIndex + length;
+        bool rightBoundaryOk = endIndex == text.Length || !char.IsLetterOrDigit(text[endIndex]);
+        return leftBoundaryOk && rightBoundaryOk;
     }
 }

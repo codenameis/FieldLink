@@ -38,6 +38,14 @@ public sealed class OpcUaCertificateOptions
 
     internal void Validate(MessageSecurityMode securityMode)
     {
+        if (!Enum.IsDefined(typeof(OpcUaCertificateStoreType), StoreType))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(StoreType),
+                StoreType,
+                "지원하지 않는 인증서 저장소 유형입니다.");
+        }
+
         if (securityMode != MessageSecurityMode.None &&
             string.IsNullOrWhiteSpace(ApplicationCertificateStorePath))
         {

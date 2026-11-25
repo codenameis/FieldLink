@@ -11,6 +11,8 @@ internal readonly struct OpcUaDeadline
     private const long MinimumDelayTicks = 1L;
     private const double MinimumTimeoutHintMilliseconds = 1.0;
 
+    public static readonly TimeSpan MaximumTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
+
     private readonly long _deadlineTimestamp;
 
     private OpcUaDeadline(long deadlineTimestamp)
@@ -18,12 +20,31 @@ internal readonly struct OpcUaDeadline
         _deadlineTimestamp = deadlineTimestamp;
     }
 
+    public static void ValidatePositiveTimeout(TimeSpan timeout, string parameterName, string errorMessage)
+    {
+        if (timeout <= TimeSpan.Zero || timeout > MaximumTimeout)
+        {
+            throw new ArgumentOutOfRangeException(parameterName, timeout, errorMessage);
+        }
+    }
+
+    public static int ToPositiveMillisecondsCeiling(TimeSpan timeout, int minimumMilliseconds = 1)
+    {
+        double ceilingMilliseconds = Math.Ceiling(timeout.TotalMilliseconds);
+        if (ceilingMilliseconds >= int.MaxValue)
+        {
+            return int.MaxValue;
+        }
+
+        return Math.Max(minimumMilliseconds, (int)ceilingMilliseconds);
+    }
+
     public static OpcUaDeadline StartAfter(TimeSpan timeout)
     {
-        if (timeout <= TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(timeout), "제한 시간은 0보다 커야 합니다.");
-        }
+        ValidatePositiveTimeout(
+            timeout,
+            nameof(timeout),
+            "제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
 
         long now = Stopwatch.GetTimestamp();
         double rawTicks = Math.Ceiling(timeout.TotalSeconds * Stopwatch.Frequency);
@@ -90,6 +111,63 @@ internal readonly struct OpcUaDeadline
             TaskScheduler.Default);
     }
 
+    public static async Task WaitWithCancellationAsync(Task targetTask, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.CanBeCanceled)
+        {
+            await targetTask.ConfigureAwait(false);
+            return;
+        }
+
+        TaskCompletionSource<bool> cancelSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration registration = cancellationToken.Register(
+            static state =>
+            {
+                if (state is TaskCompletionSource<bool> source)
+                {
+                    source.TrySetResult(false);
+                }
+            },
+            cancelSource);
+
+        Task completed = await Task.WhenAny(targetTask, cancelSource.Task).ConfigureAwait(false);
+        if (completed == cancelSource.Task)
+        {
+            ObserveOrphanedFault(targetTask);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        await targetTask.ConfigureAwait(false);
+    }
+
+    public static async Task<TResult> WaitWithCancellationAsync<TResult>(Task<TResult> targetTask, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.CanBeCanceled)
+        {
+            return await targetTask.ConfigureAwait(false);
+        }
+
+        TaskCompletionSource<bool> cancelSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration registration = cancellationToken.Register(
+            static state =>
+            {
+                if (state is TaskCompletionSource<bool> source)
+                {
+                    source.TrySetResult(false);
+                }
+            },
+            cancelSource);
+
+        Task completed = await Task.WhenAny(targetTask, cancelSource.Task).ConfigureAwait(false);
+        if (completed == cancelSource.Task)
+        {
+            ObserveOrphanedFault(targetTask);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        return await targetTask.ConfigureAwait(false);
+    }
+
     public async Task<TResult> RunAsync<TResult>(
         Func<CancellationToken, Task<TResult>> operation,
         string operationName,
@@ -124,20 +202,20 @@ internal readonly struct OpcUaDeadline
             ObserveIfCreated(operationTask);
             throw;
         }
-        catch (OperationCanceledException ex) when (timeoutSource.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (timeoutSource.IsCancellationRequested)
         {
             ObserveIfCreated(operationTask);
-            throw new TimeoutException($"{operationName} 작업이 전체 제한 시간을 초과했습니다.", ex);
+            throw new TimeoutException($"{operationName} 작업이 전체 제한 시간을 초과했습니다.", exception);
         }
-        catch (ServiceResultException ex) when (callerToken.IsCancellationRequested && IsCancellationStatus(ex.StatusCode))
+        catch (ServiceResultException exception) when (callerToken.IsCancellationRequested && IsCancellationStatus(exception.StatusCode))
         {
             ObserveIfCreated(operationTask);
-            throw new OperationCanceledException($"{operationName} 작업이 취소되었습니다.", ex, callerToken);
+            throw new OperationCanceledException($"{operationName} 작업이 취소되었습니다.", exception, callerToken);
         }
-        catch (ServiceResultException ex) when (timeoutSource.IsCancellationRequested && IsCancellationStatus(ex.StatusCode))
+        catch (ServiceResultException exception) when (timeoutSource.IsCancellationRequested && IsCancellationStatus(exception.StatusCode))
         {
             ObserveIfCreated(operationTask);
-            throw new TimeoutException($"{operationName} 작업이 전체 제한 시간을 초과했습니다.", ex);
+            throw new TimeoutException($"{operationName} 작업이 전체 제한 시간을 초과했습니다.", exception);
         }
     }
 

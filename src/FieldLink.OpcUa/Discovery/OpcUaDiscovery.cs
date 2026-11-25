@@ -12,7 +12,6 @@ namespace FieldLink.OpcUa.Discovery;
 public static class OpcUaDiscovery
 {
     private const int DefaultDiscoveryTimeoutSeconds = 10;
-    private const int PolicyNotFoundRank = -1;
 
     private static readonly TimeSpan DefaultDiscoveryTimeout = TimeSpan.FromSeconds(DefaultDiscoveryTimeoutSeconds);
 
@@ -48,7 +47,8 @@ public static class OpcUaDiscovery
 
     internal static ConfiguredEndpoint SelectEndpoint(
         IReadOnlyList<EndpointDescription> endpoints,
-        OpcUaClientOptions options)
+        OpcUaClientOptions options,
+        ApplicationConfiguration? configuration = null)
     {
         if (endpoints is null)
         {
@@ -57,25 +57,28 @@ public static class OpcUaDiscovery
 
         EndpointDescription? bestEndpoint = null;
         int bestPolicyRank = int.MaxValue;
+        UserTokenPolicyCollection? bestApprovedTokens = null;
 
         for (int i = 0; i < endpoints.Count; i++)
         {
             EndpointDescription? candidate = endpoints[i];
-            if (candidate is null || !IsCompatibleEndpoint(candidate, options, out int policyRank))
+            if (candidate is null ||
+                !OpcUaEndpointPolicyFilter.IsCompatibleEndpoint(candidate, options, out int policyRank, out UserTokenPolicyCollection? approvedTokens))
             {
                 continue;
             }
 
             if (bestEndpoint is null ||
-                candidate.SecurityLevel > bestEndpoint.SecurityLevel ||
-                (candidate.SecurityLevel == bestEndpoint.SecurityLevel && policyRank < bestPolicyRank))
+                policyRank < bestPolicyRank ||
+                (policyRank == bestPolicyRank && candidate.SecurityLevel > bestEndpoint.SecurityLevel))
             {
                 bestEndpoint = candidate;
                 bestPolicyRank = policyRank;
+                bestApprovedTokens = approvedTokens;
             }
         }
 
-        if (bestEndpoint is null)
+        if (bestEndpoint is null || bestApprovedTokens is null)
         {
             throw new InvalidOperationException(
                 $"보안 요구사항(SecurityMode={options.MessageSecurityMode}, Identity={options.UserIdentity}, " +
@@ -83,97 +86,15 @@ public static class OpcUaDiscovery
                 $"수신된 후보 {endpoints.Count}건 중 무보안 None으로 자동 폴백하지 않고 연결을 중단합니다.");
         }
 
-        EndpointConfiguration endpointConfiguration = EndpointConfiguration.Create();
-        return new ConfiguredEndpoint(null, bestEndpoint, endpointConfiguration)
+        EndpointDescription selectedEndpoint = (EndpointDescription)bestEndpoint.Clone();
+        selectedEndpoint.UserIdentityTokens = bestApprovedTokens;
+
+        EndpointConfiguration endpointConfiguration = configuration is not null
+            ? EndpointConfiguration.Create(configuration)
+            : EndpointConfiguration.Create();
+        return new ConfiguredEndpoint(null, selectedEndpoint, endpointConfiguration)
         {
             UpdateBeforeConnect = options.UpdateEndpointUrlOnConnect
         };
-    }
-
-    private static bool IsCompatibleEndpoint(
-        EndpointDescription candidate,
-        OpcUaClientOptions options,
-        out int policyRank)
-    {
-        policyRank = int.MaxValue;
-
-        if (!string.Equals(candidate.TransportProfileUri, Profiles.UaTcpTransport, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        if (candidate.SecurityMode != options.MessageSecurityMode)
-        {
-            return false;
-        }
-
-        policyRank = FindPolicyRank(candidate.SecurityPolicyUri, options.AllowedSecurityPolicies);
-        if (policyRank < 0)
-        {
-            return false;
-        }
-
-        return SupportsUserIdentity(candidate, options);
-    }
-
-    private static int FindPolicyRank(string? policyUri, IReadOnlyList<string> allowedPolicies)
-    {
-        for (int i = 0; i < allowedPolicies.Count; i++)
-        {
-            if (string.Equals(allowedPolicies[i], policyUri, StringComparison.Ordinal))
-            {
-                return i;
-            }
-        }
-
-        return PolicyNotFoundRank;
-    }
-
-    private static bool SupportsUserIdentity(EndpointDescription candidate, OpcUaClientOptions options)
-    {
-        if (candidate.UserIdentityTokens is null)
-        {
-            return false;
-        }
-
-        UserTokenType requiredTokenType = options.UserIdentity.IdentityType == OpcUaUserIdentityType.Anonymous
-            ? UserTokenType.Anonymous
-            : UserTokenType.UserName;
-
-        for (int i = 0; i < candidate.UserIdentityTokens.Count; i++)
-        {
-            UserTokenPolicy? policy = candidate.UserIdentityTokens[i];
-            if (policy is null || policy.TokenType != requiredTokenType)
-            {
-                continue;
-            }
-
-            if (requiredTokenType == UserTokenType.UserName &&
-                IsUnencryptedUserNameExchange(options.MessageSecurityMode, policy.SecurityPolicyUri) &&
-                !options.AllowInsecureUserNameOverUnencryptedChannel)
-            {
-                continue;
-            }
-
-            return true;
-        }
-
-        return false;
-    }
-
-    private static bool IsUnencryptedUserNameExchange(MessageSecurityMode channelMode, string? tokenSecurityPolicyUri)
-    {
-        if (channelMode == MessageSecurityMode.None)
-        {
-            return string.IsNullOrEmpty(tokenSecurityPolicyUri) ||
-                string.Equals(tokenSecurityPolicyUri, SecurityPolicies.None, StringComparison.Ordinal);
-        }
-
-        if (channelMode == MessageSecurityMode.Sign)
-        {
-            return string.Equals(tokenSecurityPolicyUri, SecurityPolicies.None, StringComparison.Ordinal);
-        }
-
-        return false;
     }
 }

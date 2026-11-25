@@ -55,11 +55,7 @@ public sealed class WebSocketTransportOptions
         get => _connectTimeout;
         init
         {
-            if (value <= TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "연결 제한 시간은 0보다 커야 합니다.");
-            }
-
+            TransportTimeoutValidation.ValidatePositive(value, nameof(value), "연결 제한 시간은 0보다 크고 int.MaxValue 밀리초 이하이어야 합니다.");
             _connectTimeout = value;
         }
     }
@@ -70,11 +66,7 @@ public sealed class WebSocketTransportOptions
         get => _keepAliveInterval;
         init
         {
-            if (value < TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), value, "Keep-Alive 간격은 0 이상이어야 합니다.");
-            }
-
+            TransportTimeoutValidation.ValidateNonNegative(value, nameof(value), "Keep-Alive 간격은 0 이상이고 int.MaxValue 밀리초 이하이어야 합니다.");
             _keepAliveInterval = value;
         }
     }
@@ -98,6 +90,11 @@ public sealed class WebSocketTransportOptions
                 {
                     throw new ArgumentException("WebSocket 하위 프로토콜 이름은 비어 있을 수 없습니다.", nameof(value));
                 }
+
+                TransportHeaderValidation.ThrowIfContainsControlCharacters(
+                    protocol,
+                    nameof(value),
+                    "WebSocket 하위 프로토콜 이름에는 제어 문자(\\r, \\n, \\0)를 포함할 수 없습니다.");
 
                 copy.Add(protocol);
             }
@@ -130,6 +127,15 @@ public sealed class WebSocketTransportOptions
                 {
                     throw new ArgumentException($"WebSocket 요청 헤더 '{pair.Key}'의 값은 null일 수 없습니다.", nameof(value));
                 }
+
+                TransportHeaderValidation.ThrowIfContainsControlCharacters(
+                    pair.Key,
+                    nameof(value),
+                    "WebSocket 요청 헤더 이름에는 제어 문자(\\r, \\n, \\0)를 포함할 수 없습니다.");
+                TransportHeaderValidation.ThrowIfContainsControlCharacters(
+                    pair.Value,
+                    nameof(value),
+                    $"WebSocket 요청 헤더 '{pair.Key}'의 값에는 제어 문자(\\r, \\n, \\0)를 포함할 수 없습니다.");
 
                 copy[pair.Key] = pair.Value;
             }

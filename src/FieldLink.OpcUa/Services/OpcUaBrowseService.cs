@@ -79,7 +79,9 @@ internal static class OpcUaBrowseService
             throw new ServiceResultException(StatusCodes.BadUnexpectedError, "Browse 응답 결과 개수가 올바르지 않습니다.");
         }
 
+        int previousCount = progress.Collected.Count;
         CollectPageReferences(response.Results[0], options, progress);
+        TrackEmptyPages(progress.Collected.Count - previousCount, progress);
     }
 
     private static async Task CollectRemainingPagesAsync(
@@ -89,8 +91,6 @@ internal static class OpcUaBrowseService
         BrowseProgress progress,
         CancellationToken cancellationToken)
     {
-        int consecutiveEmptyPages = 0;
-
         while (progress.ContinuationPoint is { Length: > 0 })
         {
             uint timeoutHint = deadline.GetOperationTimeoutHintMilliseconds(cancellationToken, nameof(BrowseAsync));
@@ -107,25 +107,24 @@ internal static class OpcUaBrowseService
 
             int previousCount = progress.Collected.Count;
             CollectPageReferences(nextResponse.Results[0], options, progress);
-            consecutiveEmptyPages = TrackEmptyPages(progress.Collected.Count - previousCount, progress.ContinuationPoint, consecutiveEmptyPages);
+            TrackEmptyPages(progress.Collected.Count - previousCount, progress);
         }
     }
 
-    private static int TrackEmptyPages(int addedCount, byte[]? continuationPoint, int previousEmptyPages)
+    private static void TrackEmptyPages(int addedCount, BrowseProgress progress)
     {
-        if (addedCount > 0 || continuationPoint is not { Length: > 0 })
+        if (addedCount > 0 || progress.ContinuationPoint is not { Length: > 0 })
         {
-            return 0;
+            progress.ConsecutiveEmptyPages = 0;
+            return;
         }
 
-        int emptyCount = previousEmptyPages + 1;
-        if (emptyCount >= MaxConsecutiveEmptyPages)
+        progress.ConsecutiveEmptyPages++;
+        if (progress.ConsecutiveEmptyPages >= MaxConsecutiveEmptyPages)
         {
             throw new InvalidOperationException(
                 $"서버가 참조 없이 연속 {MaxConsecutiveEmptyPages}회 ContinuationPoint를 반환하여 탐색을 중단했습니다.");
         }
-
-        return emptyCount;
     }
 
     private static void CollectPageReferences(
@@ -150,7 +149,13 @@ internal static class OpcUaBrowseService
 
         for (int i = 0; i < result.References.Count; i++)
         {
-            progress.Collected.Add(result.References[i]);
+            ReferenceDescription? reference = result.References[i];
+            if (reference is null)
+            {
+                continue;
+            }
+
+            progress.Collected.Add(reference);
             if (progress.Collected.Count > options.MaxTotalReferences)
             {
                 throw new InvalidOperationException(
@@ -178,12 +183,15 @@ internal static class OpcUaBrowseService
         }
         catch (OperationCanceledException)
         {
+            // 종료/취소 시 ContinuationPoint 해제는 최선 노력으로 처리
         }
         catch (ServiceResultException)
         {
+            // 세션이 이미 닫혔거나 ContinuationPoint가 만료된 경우 무시
         }
         catch (ObjectDisposedException)
         {
+            // 세션이 이미 폐기된 경우 무시
         }
     }
 
@@ -192,5 +200,7 @@ internal static class OpcUaBrowseService
         public List<ReferenceDescription> Collected { get; } = new();
 
         public byte[]? ContinuationPoint { get; set; }
+
+        public int ConsecutiveEmptyPages { get; set; }
     }
 }

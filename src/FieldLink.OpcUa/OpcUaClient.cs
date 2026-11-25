@@ -12,7 +12,7 @@ using Opc.Ua;
 namespace FieldLink.OpcUa;
 
 /// <summary>보안 정책 강제, 세대 격리 세션 수명, 품질 보존 서비스, Fail-Closed 구독을 제공하는 OPC UA 클라이언트입니다.</summary>
-public sealed class OpcUaClient : IOpcUaClient
+public sealed partial class OpcUaClient : IOpcUaClient
 {
     private readonly IOpcUaDiscoveryClient _discoveryClient;
     private readonly OpcUaSessionLifetime _lifetime;
@@ -101,10 +101,11 @@ public sealed class OpcUaClient : IOpcUaClient
             throw new ArgumentException("읽을 노드는 최소 1개 이상이어야 합니다.", nameof(nodeIds));
         }
 
+        ExpandedNodeId[] nodeIdSnapshot = SnapshotList(nodeIds);
         DataValue[] results = await _lifetime.ExecuteAsync(
             timeout,
             nameof(ReadValuesAsync),
-            (session, deadline, operationToken) => OpcUaValueService.ReadValuesAsync(session, deadline, nodeIds, operationToken),
+            (session, _, deadline, operationToken) => OpcUaValueService.ReadValuesAsync(session, deadline, nodeIdSnapshot, operationToken),
             cancellationToken).ConfigureAwait(false);
 
         return new ReadOnlyCollection<DataValue>(results);
@@ -144,10 +145,11 @@ public sealed class OpcUaClient : IOpcUaClient
             throw new ArgumentException("쓰기 요청은 최소 1개 이상이어야 합니다.", nameof(requests));
         }
 
+        OpcUaWriteRequest[] requestSnapshot = SnapshotList(requests);
         StatusCode[] results = await _lifetime.ExecuteAsync(
             timeout,
             nameof(WriteValuesAsync),
-            (session, deadline, operationToken) => OpcUaValueService.WriteValuesAsync(session, deadline, requests, operationToken),
+            (session, _, deadline, operationToken) => OpcUaValueService.WriteValuesAsync(session, deadline, requestSnapshot, operationToken),
             cancellationToken).ConfigureAwait(false);
 
         return new ReadOnlyCollection<StatusCode>(results);
@@ -168,7 +170,7 @@ public sealed class OpcUaClient : IOpcUaClient
         return _lifetime.ExecuteAsync(
             validatedOptions.Timeout,
             nameof(BrowseAsync),
-            (session, deadline, operationToken) => OpcUaBrowseService.BrowseAsync(session, deadline, nodeId, validatedOptions, operationToken),
+            (session, _, deadline, operationToken) => OpcUaBrowseService.BrowseAsync(session, deadline, nodeId, validatedOptions, operationToken),
             cancellationToken);
     }
 
@@ -200,7 +202,8 @@ public sealed class OpcUaClient : IOpcUaClient
         return _lifetime.ExecuteAsync(
             timeout,
             nameof(SubscribeAsync),
-            (session, _, operationToken) => CreateSubscriptionInternalAsync(session, validatedOptions, validatedItems, operationToken),
+            (session, capturedGeneration, _, operationToken) =>
+                CreateSubscriptionInternalAsync(session, capturedGeneration, validatedOptions, validatedItems, operationToken),
             cancellationToken);
     }
 
@@ -227,11 +230,11 @@ public sealed class OpcUaClient : IOpcUaClient
             throw new ArgumentNullException(nameof(inputArguments));
         }
 
-        OpcUaMethodCallParameters parameters = new(objectId, methodId, inputArguments);
+        OpcUaMethodCallParameters parameters = new(objectId, methodId, SnapshotList(inputArguments));
         return _lifetime.ExecuteAsync(
             timeout,
             nameof(CallAsync),
-            (session, deadline, operationToken) => OpcUaMethodService.CallAsync(session, deadline, parameters, operationToken),
+            (session, _, deadline, operationToken) => OpcUaMethodService.CallAsync(session, deadline, parameters, operationToken),
             cancellationToken);
     }
 
@@ -256,6 +259,7 @@ public sealed class OpcUaClient : IOpcUaClient
         }
         catch (ObjectDisposedException)
         {
+            // 동시 Dispose 호출로 이미 폐기된 경우 정상 종료로 간주
         }
         finally
         {
@@ -263,163 +267,14 @@ public sealed class OpcUaClient : IOpcUaClient
         }
     }
 
-    private async Task<OpcUaSubscription> CreateSubscriptionInternalAsync(
-        IOpcUaSessionAdapter session,
-        OpcUaSubscriptionOptions options,
-        OpcUaMonitoredItemOptions[] items,
-        CancellationToken cancellationToken)
+    private static T[] SnapshotList<T>(IReadOnlyList<T> source)
     {
-        long capturedGeneration = _lifetime.CurrentGeneration;
-        OpcUaResolvedMonitoredItem[] resolvedItems = ResolveMonitoredItems(items, session.NamespaceUris);
-
-        OpcUaSubscription? createdSubscription = null;
-        object pendingLock = new();
-        List<OpcUaRawDataChangeBatch>? pendingInitialBatches = new();
-        IOpcUaSubscriptionAdapter? adapter = null;
-        try
+        T[] snapshot = new T[source.Count];
+        for (int i = 0; i < source.Count; i++)
         {
-            adapter = session.CreateSubscriptionAdapter(
-                options,
-                batch =>
-                {
-                    OpcUaSubscription? target;
-                    lock (pendingLock)
-                    {
-                        target = createdSubscription;
-                        if (target is null)
-                        {
-                            pendingInitialBatches?.Add(batch);
-                            return;
-                        }
-                    }
-
-                    target.EnqueueRawBatch(batch);
-                });
-
-            await adapter.CreateAsync(cancellationToken).ConfigureAwait(false);
-            IReadOnlyList<OpcUaMonitoredItemCreationResult> creationResults = await adapter
-                .CreateMonitoredItemsAsync(resolvedItems, cancellationToken)
-                .ConfigureAwait(false);
-
-            EnsureAtLeastOneMonitoredItemSucceeded(creationResults);
-
-            OpcUaSubscription subscription = new(
-                options,
-                adapter,
-                _lifetime,
-                capturedGeneration,
-                Options.CloseTimeout,
-                creationResults);
-
-            lock (pendingLock)
-            {
-                if (pendingInitialBatches is not null)
-                {
-                    for (int i = 0; i < pendingInitialBatches.Count; i++)
-                    {
-                        subscription.EnqueueRawBatch(pendingInitialBatches[i]);
-                    }
-
-                    pendingInitialBatches = null;
-                }
-
-                createdSubscription = subscription;
-            }
-
-            if (!_lifetime.RegisterSubscription(subscription, capturedGeneration))
-            {
-                subscription.TerminateFromParent(OpcUaSubscriptionTerminationReason.ParentClosed, null);
-                throw _lifetime.CreateStateTransitionException(capturedGeneration);
-            }
-
-            adapter = null;
-            return subscription;
-        }
-        finally
-        {
-            if (adapter is not null)
-            {
-                await CleanupFailedSubscriptionAdapterAsync(adapter).ConfigureAwait(false);
-            }
-        }
-    }
-
-    private static OpcUaMonitoredItemOptions[] ValidateMonitoredItemList(IReadOnlyList<OpcUaMonitoredItemOptions> items)
-    {
-        OpcUaMonitoredItemOptions[] validated = new OpcUaMonitoredItemOptions[items.Count];
-        HashSet<string> seenKeys = new(StringComparer.Ordinal);
-        for (int i = 0; i < items.Count; i++)
-        {
-            OpcUaMonitoredItemOptions item = items[i]
-                ?? throw new ArgumentException($"감시 항목 목록의 인덱스 {i}가 null입니다.", nameof(items));
-
-            OpcUaMonitoredItemOptions normalized = item.ValidateAndClone();
-            if (!seenKeys.Add(normalized.ClientItemKey))
-            {
-                throw new ArgumentException($"중복된 ClientItemKey입니다: '{normalized.ClientItemKey}'.", nameof(items));
-            }
-
-            validated[i] = normalized;
+            snapshot[i] = source[i];
         }
 
-        return validated;
-    }
-
-    private static OpcUaResolvedMonitoredItem[] ResolveMonitoredItems(
-        OpcUaMonitoredItemOptions[] items,
-        NamespaceTable namespaceUris)
-    {
-        OpcUaResolvedMonitoredItem[] resolved = new OpcUaResolvedMonitoredItem[items.Length];
-        for (int i = 0; i < items.Length; i++)
-        {
-            OpcUaMonitoredItemOptions item = items[i];
-            NodeId nodeId = OpcUaNodeResolver.ResolveNodeId(item.NodeId, namespaceUris, nameof(items));
-            resolved[i] = new OpcUaResolvedMonitoredItem(
-                item.ClientItemKey,
-                nodeId,
-                item.SamplingIntervalMilliseconds,
-                item.QueueSize,
-                item.DiscardOldest);
-        }
-
-        return resolved;
-    }
-
-    private static void EnsureAtLeastOneMonitoredItemSucceeded(IReadOnlyList<OpcUaMonitoredItemCreationResult> results)
-    {
-        for (int i = 0; i < results.Count; i++)
-        {
-            if (results[i].Outcome.IsSuccess)
-            {
-                return;
-            }
-        }
-
-        StatusCode firstFailure = results.Count > 0 ? results[0].Outcome.StatusCode : StatusCodes.BadUnexpectedError;
-        throw new ServiceResultException(
-            firstFailure,
-            $"모든 감시 항목({results.Count}건) 생성이 실패하여 서버 구독을 정리했습니다. 첫 실패 코드: {firstFailure}");
-    }
-
-    private async Task CleanupFailedSubscriptionAdapterAsync(IOpcUaSubscriptionAdapter adapter)
-    {
-        try
-        {
-            using CancellationTokenSource deleteTimeout = new(Options.CloseTimeout);
-            await adapter.DeleteAsync(deleteTimeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (ServiceResultException)
-        {
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-        finally
-        {
-            adapter.Dispose();
-        }
+        return snapshot;
     }
 }

@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 namespace FieldLink.Transport.Serial;
 
 /// <summary>RS-232/RS-422/RS-485 시리얼 포트를 통해 산업용 장치와 바이트를 주고받는 전송 구현체입니다.</summary>
-public sealed class SerialTransport : ITransport
+public sealed partial class SerialTransport : ITransport
 {
     private readonly SerialTransportOptions _options;
     private readonly SemaphoreSlim _exclusiveLock = new(1, 1);
@@ -14,7 +14,9 @@ public sealed class SerialTransport : ITransport
 
     private SerialPort? _serialPort;
     private StreamTransportSession? _session;
+    private CancellationTokenSource? _openCancellationSource;
     private long _connectionId;
+    private long _openGeneration;
     private TransportState _state = TransportState.Closed;
 
     /// <summary>시리얼 포트 설정으로 전송 인스턴스를 초기화합니다.</summary>
@@ -35,74 +37,6 @@ public sealed class SerialTransport : ITransport
                 return _state;
             }
         }
-        private set
-        {
-            lock (_stateLock)
-            {
-                _state = value;
-            }
-        }
-    }
-
-    /// <inheritdoc />
-    public Task OpenAsync(CancellationToken cancellationToken = default)
-    {
-        BeginOpen();
-
-        SerialPort? port = null;
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            port = CreateAndOpenPort();
-            CompleteOpen(port);
-            port = null;
-            return Task.CompletedTask;
-        }
-        catch (OperationCanceledException)
-        {
-            DisposePortSafely(port);
-            ResetOpeningToClosed();
-            throw;
-        }
-        catch (ObjectDisposedException)
-        {
-            DisposePortSafely(port);
-            throw;
-        }
-        catch (Exception exception)
-        {
-            DisposePortSafely(port);
-            ResetOpeningToClosed();
-            throw new TransportException(
-                TransportFailure.ConnectFailed,
-                $"시리얼 포트({_options.PortName})를 여는 데 실패했습니다.",
-                isRequestSent: false,
-                innerException: exception);
-        }
-    }
-
-    /// <inheritdoc />
-    public Task CloseAsync(CancellationToken cancellationToken = default)
-    {
-        SerialPort? port;
-        StreamTransportSession? session;
-        lock (_stateLock)
-        {
-            if (_state is TransportState.Closed or TransportState.Disposed)
-            {
-                return Task.CompletedTask;
-            }
-
-            _state = TransportState.Closed;
-            port = _serialPort;
-            session = _session;
-            _serialPort = null;
-            _session = null;
-        }
-
-        session?.ClearReceiveBuffer();
-        DisposePortSafely(port);
-        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
@@ -120,10 +54,10 @@ public sealed class SerialTransport : ITransport
         await _exclusiveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            StreamTransportSession session = CaptureOpenSession();
-            session.SetCancellationToken(cancellationToken);
+            (StreamTransportSession session, SerialPort port) = CaptureOpenSession();
+            session.BeginExclusiveExchange(cancellationToken);
             session.ClearReceiveBuffer();
-            DiscardSerialInBuffer();
+            DiscardSerialInBuffer(port);
 
             TResult result;
             try
@@ -133,13 +67,20 @@ public sealed class SerialTransport : ITransport
             catch
             {
                 session.ClearReceiveBuffer();
-                DiscardSerialInBuffer();
+                DiscardSerialInBuffer(port);
                 throw;
             }
 
             if (_options.SilenceInterval > TimeSpan.Zero)
             {
-                await Task.Delay(_options.SilenceInterval, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await Task.Delay(_options.SilenceInterval, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // 이미 완료된 송수신 결과를 후속 묵음 대기 중 취소로 실패 처리하지 않는다.
+                }
             }
 
             return result;
@@ -150,101 +91,7 @@ public sealed class SerialTransport : ITransport
         }
     }
 
-    /// <inheritdoc />
-    public void Dispose()
-    {
-        SerialPort? port;
-        StreamTransportSession? session;
-        lock (_stateLock)
-        {
-            if (_state == TransportState.Disposed)
-            {
-                return;
-            }
-
-            _state = TransportState.Disposed;
-            port = _serialPort;
-            session = _session;
-            _serialPort = null;
-            _session = null;
-        }
-
-        session?.ClearReceiveBuffer();
-        DisposePortSafely(port);
-    }
-
-    private void BeginOpen()
-    {
-        lock (_stateLock)
-        {
-            if (_state == TransportState.Disposed)
-            {
-                throw new ObjectDisposedException(nameof(SerialTransport));
-            }
-
-            if (_state != TransportState.Closed)
-            {
-                throw new InvalidOperationException($"현재 상태({_state})에서는 포트를 열 수 없습니다.");
-            }
-
-            _state = TransportState.Opening;
-        }
-    }
-
-    private SerialPort CreateAndOpenPort()
-    {
-        var port = new SerialPort(
-            _options.PortName,
-            _options.BaudRate,
-            _options.Parity,
-            _options.DataBits,
-            _options.StopBits)
-        {
-            ReadTimeout = (int)_options.ReadTimeout.TotalMilliseconds,
-            WriteTimeout = (int)_options.WriteTimeout.TotalMilliseconds
-        };
-
-        port.Open();
-        return port;
-    }
-
-    private void CompleteOpen(SerialPort port)
-    {
-        lock (_stateLock)
-        {
-            if (_state == TransportState.Disposed)
-            {
-                throw new ObjectDisposedException(nameof(SerialTransport));
-            }
-
-            if (_state != TransportState.Opening)
-            {
-                throw new OperationCanceledException("포트 여는 중 전송이 닫혔습니다.");
-            }
-
-            long connectionId = Interlocked.Increment(ref _connectionId);
-            _serialPort = port;
-            _session = new StreamTransportSession(
-                connectionId,
-                port.BaseStream,
-                CancellationToken.None,
-                onBeforeSend: DiscardSerialInBuffer);
-            _state = TransportState.Open;
-        }
-    }
-
-    private void ResetOpeningToClosed()
-    {
-        lock (_stateLock)
-        {
-            if (_state == TransportState.Opening)
-            {
-                _state = TransportState.Closed;
-            }
-        }
-    }
-
-    private StreamTransportSession CaptureOpenSession()
+    private (StreamTransportSession Session, SerialPort Port) CaptureOpenSession()
     {
         lock (_stateLock)
         {
@@ -258,18 +105,12 @@ public sealed class SerialTransport : ITransport
                 throw new InvalidOperationException("시리얼 포트 전송이 열려 있지 않습니다. OpenAsync를 먼저 호출하세요.");
             }
 
-            return _session;
+            return (_session, _serialPort);
         }
     }
 
-    private void DiscardSerialInBuffer()
+    private static void DiscardSerialInBuffer(SerialPort? port)
     {
-        SerialPort? port;
-        lock (_stateLock)
-        {
-            port = _serialPort;
-        }
-
         if (port is not { IsOpen: true })
         {
             return;
@@ -282,23 +123,6 @@ public sealed class SerialTransport : ITransport
         catch
         {
             // 포트 버퍼 비우기 중 발생한 부수적 예외는 무시
-        }
-    }
-
-    private static void DisposePortSafely(SerialPort? port)
-    {
-        try
-        {
-            if (port is { IsOpen: true })
-            {
-                port.Close();
-            }
-
-            port?.Dispose();
-        }
-        catch
-        {
-            // 리소스 정리 중 예외는 무시
         }
     }
 }

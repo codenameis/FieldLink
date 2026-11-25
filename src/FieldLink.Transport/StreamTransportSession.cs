@@ -15,21 +15,25 @@ internal sealed class StreamTransportSession : ITransportSession
 
     private readonly Stream _stream;
     private readonly Action? _onBeforeSend;
+    private readonly Action? _onReadAbandoned;
     private byte[] _buffer;
     private int _bufferedCount;
     private bool _hasSent;
+    private bool _isAborted;
 
     public StreamTransportSession(
         long connectionId,
         Stream stream,
         CancellationToken cancellationToken,
         int initialBufferSize = DefaultInitialBufferSize,
-        Action? onBeforeSend = null)
+        Action? onBeforeSend = null,
+        Action? onReadAbandoned = null)
     {
         ConnectionId = connectionId;
         _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         CancellationToken = cancellationToken;
         _onBeforeSend = onBeforeSend;
+        _onReadAbandoned = onReadAbandoned;
         int clampedBufferSize = Math.Min(Math.Max(initialBufferSize, DefaultInitialBufferSize), MaximumBufferSize);
         _buffer = new byte[clampedBufferSize];
         _bufferedCount = 0;
@@ -39,9 +43,10 @@ internal sealed class StreamTransportSession : ITransportSession
 
     public CancellationToken CancellationToken { get; private set; }
 
-    public void SetCancellationToken(CancellationToken cancellationToken)
+    public void BeginExclusiveExchange(CancellationToken cancellationToken)
     {
         CancellationToken = cancellationToken;
+        _hasSent = false;
     }
 
     public void ClearReceiveBuffer()
@@ -60,6 +65,9 @@ internal sealed class StreamTransportSession : ITransportSession
             throw new ArgumentNullException(nameof(frame));
         }
 
+        CancellationToken.ThrowIfCancellationRequested();
+        ThrowIfAborted(isRequestSent: false);
+
         if (frame.Length == 0)
         {
             return;
@@ -77,6 +85,14 @@ internal sealed class StreamTransportSession : ITransportSession
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (ObjectDisposedException exception)
+        {
+            throw new TransportException(
+                TransportFailure.ConnectionClosed,
+                "전송 연결이 닫혀 프레임을 전송할 수 없습니다.",
+                isRequestSent: false,
+                innerException: exception);
         }
         catch (Exception exception)
         {
@@ -97,6 +113,9 @@ internal sealed class StreamTransportSession : ITransportSession
 
         while (true)
         {
+            CancellationToken.ThrowIfCancellationRequested();
+            ThrowIfAborted(isRequestSent: _hasSent);
+
             if (_bufferedCount > 0)
             {
                 var segment = new ArraySegment<byte>(_buffer, 0, _bufferedCount);
@@ -114,6 +133,9 @@ internal sealed class StreamTransportSession : ITransportSession
 
     private async Task<int> ReadNextChunkAsync()
     {
+        CancellationToken.ThrowIfCancellationRequested();
+        ThrowIfAborted(isRequestSent: _hasSent);
+
         int bytesRead;
         try
         {
@@ -125,19 +147,24 @@ internal sealed class StreamTransportSession : ITransportSession
 
             if (!readTask.IsCompleted && CancellationToken.CanBeCanceled)
             {
-                var cancellationSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var cancellationSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 using (CancellationToken.Register(
-                    static state => ((TaskCompletionSource<bool>)state!).TrySetResult(true),
-                    cancellationSource))
+                    static state =>
+                    {
+                        if (state is TaskCompletionSource<bool> signal)
+                        {
+                            signal.TrySetResult(true);
+                        }
+                    },
+                    cancellationSignal))
                 {
-                    Task completedTask = await Task.WhenAny(readTask, cancellationSource.Task).ConfigureAwait(false);
+                    Task completedTask = await Task.WhenAny(readTask, cancellationSignal.Task).ConfigureAwait(false);
                     if (completedTask != readTask)
                     {
-                        _ = readTask.ContinueWith(
-                            static faulted => _ = faulted.Exception,
-                            CancellationToken.None,
-                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                            TaskScheduler.Default);
+                        // netstandard2.0 스트림은 취소 토큰을 무시하고 OS I/O를 계속 점유하므로,
+                        // 고아 ReadAsync가 후속 요청 응답을 공유 _buffer에 덮어쓰지 않도록 연결을 즉시 중단한다.
+                        TransportTaskWait.ObserveFaultSafely(readTask);
+                        AbortOnOrphanedRead();
                         CancellationToken.ThrowIfCancellationRequested();
                     }
                 }
@@ -175,6 +202,38 @@ internal sealed class StreamTransportSession : ITransportSession
         }
 
         return bytesRead;
+    }
+
+    private void ThrowIfAborted(bool isRequestSent)
+    {
+        if (_isAborted)
+        {
+            throw new TransportException(
+                TransportFailure.ConnectionClosed,
+                "이전 수신 작업이 취소되어 연결이 중단되었습니다.",
+                isRequestSent: isRequestSent);
+        }
+    }
+
+    private void AbortOnOrphanedRead()
+    {
+        _isAborted = true;
+        _bufferedCount = 0;
+
+        if (_onReadAbandoned is not null)
+        {
+            _onReadAbandoned();
+            return;
+        }
+
+        try
+        {
+            _stream.Dispose();
+        }
+        catch
+        {
+            // 고아 I/O 중단을 위한 스트림 정리 예외는 무시
+        }
     }
 
     private byte[] ExtractFrame(int frameLength)

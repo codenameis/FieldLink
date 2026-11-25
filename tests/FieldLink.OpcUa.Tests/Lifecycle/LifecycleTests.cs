@@ -17,7 +17,7 @@ public sealed class LifecycleTests
     [Fact]
     public async Task L01_RepeatedOpenReadCloseCycles_SucceedCleanly()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
 
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
@@ -140,7 +140,7 @@ public sealed class LifecycleTests
     [Fact]
     public async Task L06_ServerForcesSessionClosure_FaultsWithoutAutoReconnectAndRecoversAfterExplicitClose()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
 
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
@@ -262,10 +262,10 @@ public sealed class LifecycleTests
     [Fact]
     public async Task L08_SlowServerResponseExceedsDeadline_ThrowsTimeoutAndObservesOrphanedTask()
     {
-        bool unobservedRaised = false;
+        Exception? unobservedException = null;
         void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
         {
-            unobservedRaised = true;
+            unobservedException = e.Exception;
             e.SetObserved();
         }
 
@@ -293,7 +293,78 @@ public sealed class LifecycleTests
             GC.WaitForPendingFinalizers();
             GC.Collect();
 
-            Assert.False(unobservedRaised);
+            Assert.Null(unobservedException);
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
+        }
+    }
+
+    [Fact]
+    public async Task L09_DisposeDuringInFlightOpen_CancelsCleanlyWithoutDoubleDisposeOfOpenCancellationSource()
+    {
+        FakeDiscoveryClient discovery = new();
+        FakeSessionFactory sessionFactory = new();
+        TaskCompletionSource<bool> sessionCreateEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<IOpcUaSessionAdapter> sessionGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        sessionFactory.OnCreateSession = cancellationToken =>
+        {
+            sessionCreateEntered.TrySetResult(true);
+            cancellationToken.Register(() => sessionGate.TrySetCanceled(cancellationToken));
+            return sessionGate.Task;
+        };
+
+        using OpcUaClient client = new(CreateFakeClientOptions(), discovery, sessionFactory);
+        Task openTask = client.OpenAsync();
+        await sessionCreateEntered.Task;
+
+        client.Dispose();
+        Assert.Equal(OpcUaClientState.Disposed, client.State);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => openTask);
+    }
+
+    [Fact]
+    public async Task L10_CanceledCloseAsync_ObservesBackgroundCloseFaultWithoutUnobservedTaskException()
+    {
+        Exception? unobservedException = null;
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            unobservedException = e.Exception;
+            e.SetObserved();
+        }
+
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            FakeDiscoveryClient discovery = new();
+            FakeSessionFactory sessionFactory = new();
+            FakeSessionAdapter session = new();
+            TaskCompletionSource<bool> closeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<bool> delayedCloseFaultTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            session.OnClose = (_, _) =>
+            {
+                closeEntered.TrySetResult(true);
+                return delayedCloseFaultTcs.Task;
+            };
+            sessionFactory.OnCreateSession = _ => Task.FromResult<IOpcUaSessionAdapter>(session);
+
+            using OpcUaClient client = new(CreateFakeClientOptions(), discovery, sessionFactory);
+            await client.OpenAsync();
+
+            using CancellationTokenSource callerCancel = new(TimeSpan.FromMilliseconds(50));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.CloseAsync(callerCancel.Token));
+            await closeEntered.Task;
+
+            delayedCloseFaultTcs.SetException(new InvalidOperationException("Delayed close background fault"));
+            await Task.Delay(50);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            Assert.Null(unobservedException);
         }
         finally
         {

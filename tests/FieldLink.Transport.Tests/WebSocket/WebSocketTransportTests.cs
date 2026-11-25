@@ -21,7 +21,17 @@ public sealed class WebSocketTransportTests
         Assert.Throws<ArgumentException>(() => new WebSocketTransportOptions(new Uri("http://127.0.0.1:8080")));
         Assert.Throws<ArgumentException>(() => new WebSocketTransportOptions(new Uri("/relative", UriKind.Relative)));
         Assert.Throws<ArgumentOutOfRangeException>(() => new WebSocketTransportOptions(new Uri("ws://127.0.0.1:8080")) { ConnectTimeout = TimeSpan.Zero });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new WebSocketTransportOptions(new Uri("ws://127.0.0.1:8080")) { ConnectTimeout = TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new WebSocketTransportOptions(new Uri("ws://127.0.0.1:8080")) { KeepAliveInterval = TimeSpan.FromMilliseconds((double)int.MaxValue + 1) });
         Assert.Throws<ArgumentOutOfRangeException>(() => new WebSocketTransportOptions(new Uri("ws://127.0.0.1:8080")) { MaximumMessageSize = 0 });
+        Assert.Throws<ArgumentException>(() => new WebSocketTransportOptions(new Uri("ws://127.0.0.1:8080"))
+        {
+            Headers = new Dictionary<string, string> { ["X-Header"] = "bad\r\nvalue" }
+        });
+        Assert.Throws<ArgumentException>(() => new WebSocketTransportOptions(new Uri("ws://127.0.0.1:8080"))
+        {
+            SubProtocols = new[] { "proto\r\n" }
+        });
     }
 
     [Fact]
@@ -96,6 +106,61 @@ public sealed class WebSocketTransportTests
             listener.Stop();
             await serverTask;
         }
+    }
+
+    [Fact]
+    public async Task ReceiveAndCloseConcurrently_TransitionsStateCleanlyWithoutConcurrencyError()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        Task serverTask = Task.Run(async () =>
+        {
+            using TcpClient client = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
+            using NetworkStream stream = client.GetStream();
+            await PerformServerHandshakeAsync(stream).ConfigureAwait(false);
+            try
+            {
+                await ReadClientFrameAsync(stream).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        });
+
+        try
+        {
+            var options = new WebSocketTransportOptions(new Uri($"ws://127.0.0.1:{port}/ws"));
+            using var transport = new WebSocketTransport(options);
+            await transport.OpenAsync(CancellationToken.None);
+
+            Task<WebSocketFrameMessage> receiveTask = transport.ReceiveAsync(CancellationToken.None);
+            await Task.Delay(40);
+            await transport.CloseAsync(CancellationToken.None);
+
+            Assert.Equal(TransportState.Closed, transport.State);
+            TransportException receiveException = await Assert.ThrowsAsync<TransportException>(() => receiveTask);
+            Assert.Equal(TransportFailure.ConnectionClosed, receiveException.Failure);
+        }
+        finally
+        {
+            listener.Stop();
+            await serverTask;
+        }
+    }
+
+    [Fact]
+    public async Task OpenAsync_WhenSocketConfigurationThrows_ResetsStateToClosedInsteadOfStuckOpening()
+    {
+        var options = new WebSocketTransportOptions(new Uri("ws://127.0.0.1:1/ws"))
+        {
+            Headers = new Dictionary<string, string> { ["Host: bad"] = "val" }
+        };
+        using var transport = new WebSocketTransport(options);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => transport.OpenAsync(CancellationToken.None));
+        Assert.Equal(TransportState.Closed, transport.State);
     }
 
     private static async Task PerformServerHandshakeAsync(NetworkStream stream)

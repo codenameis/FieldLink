@@ -51,12 +51,15 @@ internal sealed class OpcUaSdkDiscoveryClient : IOpcUaDiscoveryClient
         }
         catch (OperationCanceledException)
         {
+            // Discovery 연결 정리 중 타임아웃은 무시
         }
         catch (ServiceResultException)
         {
+            // Discovery 연결이 이미 닫힌 경우 무시
         }
         catch (ObjectDisposedException)
         {
+            // Discovery 클라이언트가 이미 폐기된 경우 무시
         }
     }
 }

@@ -94,7 +94,7 @@ public sealed class ServiceTests
     [Fact]
     public async Task D03_ScalarAndOneDimensionalArrays_ReadAndWritePreserveValuesAndTimestamps()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
 
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
@@ -144,7 +144,7 @@ public sealed class ServiceTests
     [Fact]
     public async Task D04_BatchReadWithMixedQualities_PreservesOrderAndQualityWithoutDropping()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
 
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
@@ -214,7 +214,7 @@ public sealed class ServiceTests
     [Fact]
     public async Task D05_BatchWriteWithPartialSuccess_PreservesOrderAndStatusCodes()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
 
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
@@ -263,7 +263,7 @@ public sealed class ServiceTests
     [Fact]
     public async Task D06_SlowWriteTimeout_ThrowsTimeoutExceptionWithExactlyOneServerExecution()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
         server.NodeManager.ResetCounters();
         server.NodeManager.SetSlowWriteDelay(TimeSpan.FromMilliseconds(400));
@@ -285,7 +285,7 @@ public sealed class ServiceTests
     [Fact]
     public async Task D07_MultiPageBrowseOnLoopbackAndEmptyPageWithContinuationPoint_CollectsAllReferences()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
 
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
@@ -432,7 +432,7 @@ public sealed class ServiceTests
             fakeClient.BrowseAsync(TestNode("TestRoot.BrowseFolder"), cancellationToken: cancelSource.Token));
         Assert.Equal(1, session.BrowseNextReleaseCallCount);
 
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
         using TestClientCertificateSetup clientSetup = new(server.RootDirectory);
         await clientSetup.TrustServerAsync(server);
@@ -448,7 +448,7 @@ public sealed class ServiceTests
     [Fact]
     public async Task D09_MethodCall_SuccessFailureAndTimeoutNeverRetries()
     {
-        using OpcUaTestServer server = new();
+        await using OpcUaTestServer server = new();
         await server.StartServerAsync();
         server.NodeManager.ResetCounters();
 
@@ -492,6 +492,165 @@ public sealed class ServiceTests
 
         await Task.Delay(500);
         Assert.Equal(1, server.NodeManager.MethodExecutionCount);
+    }
+
+    [Fact]
+    public async Task D10_BrowseAsync_SkipsNullReferencesAndCountsInitialEmptyPageTowardCap()
+    {
+        FakeDiscoveryClient discovery = new();
+        FakeSessionFactory sessionFactory = new();
+        FakeSessionAdapter session = new();
+        session.NamespaceUris.Append(OpcUaTestNodeManager.NamespaceUri);
+
+        session.OnBrowse = (_, _, _, _) => Task.FromResult(new BrowseResponse
+        {
+            Results = new BrowseResultCollection
+            {
+                new BrowseResult
+                {
+                    StatusCode = StatusCodes.Good,
+                    References = new ReferenceDescriptionCollection
+                    {
+                        null!,
+                        new ReferenceDescription { BrowseName = new QualifiedName("ValidEntry") },
+                        null!
+                    }
+                }
+            }
+        });
+        sessionFactory.OnCreateSession = _ => Task.FromResult<IOpcUaSessionAdapter>(session);
+
+        using OpcUaClient client = new(CreateFakeClientOptions(), discovery, sessionFactory);
+        await client.OpenAsync();
+
+        IReadOnlyList<ReferenceDescription> filteredReferences = await client.BrowseAsync(TestNode("TestRoot.BrowseFolder"));
+        ReferenceDescription single = Assert.Single(filteredReferences);
+        Assert.Equal("ValidEntry", single.BrowseName.Name);
+
+        int browseNextCalls = 0;
+        session.OnBrowse = (_, _, _, _) => Task.FromResult(new BrowseResponse
+        {
+            Results = new BrowseResultCollection
+            {
+                new BrowseResult
+                {
+                    StatusCode = StatusCodes.Good,
+                    ContinuationPoint = new byte[] { 1 },
+                    References = new ReferenceDescriptionCollection()
+                }
+            }
+        });
+        session.OnBrowseNext = (_, release, _, _) =>
+        {
+            if (release)
+            {
+                return Task.FromResult(new BrowseNextResponse { Results = new BrowseResultCollection { new BrowseResult() } });
+            }
+
+            browseNextCalls++;
+            return Task.FromResult(new BrowseNextResponse
+            {
+                Results = new BrowseResultCollection
+                {
+                    new BrowseResult
+                    {
+                        StatusCode = StatusCodes.Good,
+                        ContinuationPoint = new byte[] { 2 },
+                        References = new ReferenceDescriptionCollection()
+                    }
+                }
+            });
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.BrowseAsync(TestNode("TestRoot.BrowseFolder")));
+        // Initial empty page counts as 1, so cap of 64 triggers on the 63rd BrowseNext call.
+        Assert.Equal(63, browseNextCalls);
+        Assert.True(session.BrowseNextReleaseCallCount >= 1);
+    }
+
+    [Fact]
+    public async Task D11_ReadAndWriteValuesAsync_SnapshotCallerListsBeforeWaitingOnConcurrencySemaphore()
+    {
+        FakeDiscoveryClient discovery = new();
+        FakeSessionFactory sessionFactory = new();
+        FakeSessionAdapter session = new();
+        session.NamespaceUris.Append(OpcUaTestNodeManager.NamespaceUri);
+
+        TaskCompletionSource<bool> firstReadStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource<ReadResponse> releaseFirstRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        int readInvocationCount = 0;
+        int capturedSecondReadNodeCount = 0;
+        int capturedWriteNodeCount = 0;
+
+        session.OnRead = (_, nodesToRead, _) =>
+        {
+            int invocation = Interlocked.Increment(ref readInvocationCount);
+            if (invocation == 1)
+            {
+                firstReadStarted.TrySetResult(true);
+                return releaseFirstRead.Task;
+            }
+
+            capturedSecondReadNodeCount = nodesToRead.Count;
+            DataValueCollection values = new();
+            for (int i = 0; i < nodesToRead.Count; i++)
+            {
+                values.Add(new DataValue(new Variant(42)));
+            }
+
+            return Task.FromResult(new ReadResponse { Results = values });
+        };
+
+        session.OnWrite = (_, nodesToWrite, _) =>
+        {
+            capturedWriteNodeCount = nodesToWrite.Count;
+            StatusCodeCollection statuses = new();
+            for (int i = 0; i < nodesToWrite.Count; i++)
+            {
+                statuses.Add(StatusCodes.Good);
+            }
+
+            return Task.FromResult(new WriteResponse { Results = statuses });
+        };
+
+        sessionFactory.OnCreateSession = _ => Task.FromResult<IOpcUaSessionAdapter>(session);
+
+        OpcUaClientOptions singleConcurrencyOptions = new()
+        {
+            EndpointUrl = new Uri("opc.tcp://127.0.0.1:4840"),
+            MessageSecurityMode = MessageSecurityMode.None,
+            AllowedSecurityPolicies = new[] { SecurityPolicies.None },
+            MaxConcurrentOperations = 1,
+            Certificates = CreateFakeClientOptions().Certificates
+        };
+
+        using OpcUaClient client = new(singleConcurrencyOptions, discovery, sessionFactory);
+        await client.OpenAsync();
+
+        Task<DataValue> blockingReadTask = client.ReadValueAsync(TestNode("TestRoot.Scalar.Int32"));
+        await firstReadStarted.Task;
+
+        List<ExpandedNodeId> mutableReadNodes = new() { TestNode("TestRoot.Scalar.Int32") };
+        Task<IReadOnlyList<DataValue>> queuedReadTask = client.ReadValuesAsync(mutableReadNodes);
+        mutableReadNodes.Clear();
+
+        List<OpcUaWriteRequest> mutableWrites = new()
+        {
+            new OpcUaWriteRequest(TestNode("TestRoot.Scalar.Int32"), new DataValue(new Variant(77)))
+        };
+        Task<IReadOnlyList<StatusCode>> queuedWriteTask = client.WriteValuesAsync(mutableWrites);
+        mutableWrites.Clear();
+
+        releaseFirstRead.SetResult(new ReadResponse { Results = new DataValueCollection { new DataValue(new Variant(1)) } });
+
+        await blockingReadTask;
+        IReadOnlyList<DataValue> readResults = await queuedReadTask;
+        IReadOnlyList<StatusCode> writeResults = await queuedWriteTask;
+
+        Assert.Equal(1, capturedSecondReadNodeCount);
+        Assert.Single(readResults);
+        Assert.Equal(1, capturedWriteNodeCount);
+        Assert.Single(writeResults);
     }
 
     private static OpcUaClientOptions CreateFakeClientOptions()
