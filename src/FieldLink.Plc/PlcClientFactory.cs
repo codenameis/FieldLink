@@ -18,6 +18,7 @@ using FieldLink.Plc.Protocols.Yokogawa;
 using FieldLink.Transport;
 using FieldLink.Transport.Serial;
 using FieldLink.Transport.Tcp;
+using FieldLink.Transport.Udp;
 
 namespace FieldLink.Plc;
 
@@ -130,14 +131,31 @@ public static class PlcClientFactory
         return new PlcClient(transport, protocol, clientOptions);
     }
 
-    /// <summary>Mitsubishi MC 프로토콜(바이너리)을 TCP로 사용하는 PLC 클라이언트를 생성합니다.</summary>
-    public static PlcClient CreateMitsubishiMCBinary(
+    /// <summary>Mitsubishi MC 프로토콜(바이너리)을 TCP로 사용하는 PLC 클라이언트를 생성합니다. (기본 포트 5000)</summary>
+    public static PlcClient CreateMitsubishiMCBinaryTcp(
         string host,
+        int? port = null,
         MCOptions? mcOptions = null,
         PlcClientOptions? clientOptions = null)
     {
         MCOptions options = mcOptions ?? new MCOptions();
-        var transport = new TcpTransport(new TcpTransportOptions(host, options.Port));
+        int effectivePort = port ?? options.Port;
+        var transport = new TcpTransport(new TcpTransportOptions(host, effectivePort));
+        var protocol = new MCBinaryProtocol(transport, options);
+        return new PlcClient(transport, protocol, clientOptions);
+    }
+
+    /// <summary>Mitsubishi MC 프로토콜(바이너리)을 UDP로 사용하는 PLC 클라이언트를 생성합니다. (기본 포트 5000)</summary>
+    public static PlcClient CreateMitsubishiMCBinaryUdp(
+        string host,
+        int? port = null,
+        int? localPort = null,
+        MCOptions? mcOptions = null,
+        PlcClientOptions? clientOptions = null)
+    {
+        MCOptions options = mcOptions ?? new MCOptions();
+        int effectivePort = port ?? options.Port;
+        var transport = new UdpTransport(new UdpTransportOptions(host, effectivePort, localPort));
         var protocol = new MCBinaryProtocol(transport, options);
         return new PlcClient(transport, protocol, clientOptions);
     }
@@ -152,14 +170,31 @@ public static class PlcClientFactory
         return new PlcClient(transport, protocol, clientOptions);
     }
 
-    /// <summary>Mitsubishi MC 프로토콜(ASCII)을 TCP로 사용하는 PLC 클라이언트를 생성합니다.</summary>
-    public static PlcClient CreateMitsubishiMCAscii(
+    /// <summary>Mitsubishi MC 프로토콜(ASCII)을 TCP로 사용하는 PLC 클라이언트를 생성합니다. (기본 포트 5000)</summary>
+    public static PlcClient CreateMitsubishiMCAsciiTcp(
         string host,
+        int? port = null,
         MCOptions? mcOptions = null,
         PlcClientOptions? clientOptions = null)
     {
         MCOptions options = mcOptions ?? new MCOptions();
-        var transport = new TcpTransport(new TcpTransportOptions(host, options.Port));
+        int effectivePort = port ?? options.Port;
+        var transport = new TcpTransport(new TcpTransportOptions(host, effectivePort));
+        var protocol = new MCAsciiProtocol(transport, options);
+        return new PlcClient(transport, protocol, clientOptions);
+    }
+
+    /// <summary>Mitsubishi MC 프로토콜(ASCII)을 UDP로 사용하는 PLC 클라이언트를 생성합니다. (기본 포트 5000)</summary>
+    public static PlcClient CreateMitsubishiMCAsciiUdp(
+        string host,
+        int? port = null,
+        int? localPort = null,
+        MCOptions? mcOptions = null,
+        PlcClientOptions? clientOptions = null)
+    {
+        MCOptions options = mcOptions ?? new MCOptions();
+        int effectivePort = port ?? options.Port;
+        var transport = new UdpTransport(new UdpTransportOptions(host, effectivePort, localPort));
         var protocol = new MCAsciiProtocol(transport, options);
         return new PlcClient(transport, protocol, clientOptions);
     }

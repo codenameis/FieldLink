@@ -29,12 +29,12 @@ PLC 프로토콜 · 산업용 로봇 · OPC UA (IEC 62541) · 전송 및 프레�
 
 ## 아키텍처
 
-| 패키지 | 책임 | 대상 프레임워크 | 주요 진입점 |
-| --- | --- | --- | --- |
-| [`FieldLink.Transport`](src/FieldLink.Transport/FieldLink.Transport.csproj) | TCP, UDP, Serial(`System.IO.Ports`), HTTP, WebSocket 및 `IFrameDecoder` 코덱 | `netstandard2.0` | [`ITransport`](src/FieldLink.Transport/ITransport.cs), `TcpTransport`, `SerialTransport` |
-| [`FieldLink.Plc`](src/FieldLink.Plc/FieldLink.Plc.csproj) | 통합 읽기/쓰기 퍼사드를 제공하는 16개 PLC 프로토콜 제품군 | `netstandard2.0` | [`PlcClientFactory`](src/FieldLink.Plc/PlcClientFactory.cs), [`PlcClient`](src/FieldLink.Plc/PlcClient.cs) |
-| [`FieldLink.Robot`](src/FieldLink.Robot/FieldLink.Robot.csproj) | 8개 제조사의 산업용 로봇 컨트롤러 클라이언트 | `netstandard2.0` | [`RobotClientFactory`](src/FieldLink.Robot/RobotClientFactory.cs), [`IRobotClient`](src/FieldLink.Robot/Abstractions/IRobotClient.cs) |
-| [`FieldLink.OpcUa`](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj) | 보안 정책 강제 OPC UA (IEC 62541) 클라이언트 래퍼 | `net48`, `netstandard2.1` | [`OpcUaClient`](src/FieldLink.OpcUa/OpcUaClient.cs), [`IOpcUaClient`](src/FieldLink.OpcUa/IOpcUaClient.cs) |
+| 패키지 | 대상 프레임워크 | 역할 및 주요 진입점 |
+| --- | --- | --- |
+| [`FieldLink.Transport`](src/FieldLink.Transport/FieldLink.Transport.csproj) | `netstandard2.0` | TCP·UDP·Serial·HTTP·WebSocket 전송 및 `IFrameDecoder` 코덱 ([`ITransport`](src/FieldLink.Transport/ITransport.cs)) |
+| [`FieldLink.Plc`](src/FieldLink.Plc/FieldLink.Plc.csproj) | `netstandard2.0` | 16개 PLC 프로토콜 통합 읽기/쓰기 퍼사드 ([`PlcClientFactory`](src/FieldLink.Plc/PlcClientFactory.cs), [`PlcClient`](src/FieldLink.Plc/PlcClient.cs)) |
+| [`FieldLink.Robot`](src/FieldLink.Robot/FieldLink.Robot.csproj) | `netstandard2.0` | 8개 제조사 산업용 로봇 컨트롤러 클라이언트 ([`RobotClientFactory`](src/FieldLink.Robot/RobotClientFactory.cs), [`IRobotClient`](src/FieldLink.Robot/Abstractions/IRobotClient.cs)) |
+| [`FieldLink.OpcUa`](src/FieldLink.OpcUa/FieldLink.OpcUa.csproj) | `net48`, `netstandard2.1` | 보안 정책 강제 OPC UA (IEC 62541) 래퍼 ([`OpcUaClient`](src/FieldLink.OpcUa/OpcUaClient.cs), [`IOpcUaClient`](src/FieldLink.OpcUa/IOpcUaClient.cs)) |
 
 ```mermaid
 flowchart TB
@@ -77,56 +77,63 @@ flowchart TB
 
 ### PLC 프로토콜 (`FieldLink.Plc`)
 
-모든 팩토리 메서드는 사용자 정의 `ITransport` 주입 오버로드를 제공해 로깅 데코레이터나 단위 테스트용 모의 전송을 손쉽게 연결할 수 있습니다.
+> [!NOTE]
+> 모든 PLC 팩토리 메서드는 사용자 정의 `ITransport` 주입 오버로드(`Create...(ITransport, ...)`)도 함께 제공하므로 로깅 데코레이터나 단위 테스트용 모의 전송을 그대로 연결할 수 있습니다.
 
-| 제조사 / 표준 | 대상 시리즈 | 와이어 프로토콜 및 프레이밍 | `PlcClientFactory` 진입점 |
-| --- | --- | --- | --- |
-| **Modbus** | 표준 Modbus 장치 | Modbus TCP, Modbus RTU, Modbus ASCII | `CreateModbusTcp`, `CreateModbusRtu`, `CreateModbusAscii` |
-| **Mitsubishi Electric** | MELSEC Q / L / iQ-R / iQ-F / FX | MC 프로토콜 3E 프레임 (Binary / ASCII) | `CreateMitsubishiMCBinary`, `CreateMitsubishiMCAscii` |
-| **Siemens** | S7-200 / 300 / 400 / 1200 / 1500 | ISO-on-TCP 기반 S7 communication (TPKT + COTP) | `CreateSiemensS7Comm` |
-| **LS ELECTRIC** | XGT / XGB / XGK / XGI | FEnet 전용 이더넷 프로토콜 | `CreateLsElectricFEnet` |
-| **Delta Electronics** | DVP / AS 시리즈 | 시리즈 주소 매핑 기반 Modbus RTU / TCP | `CreateDelta`, `CreateDeltaDvpRtu`, `CreateDeltaDvpTcp`, `CreateDeltaAsTcp` |
-| **FATEK** | FBs 시리즈 | FATEK Serial / TCP ASCII (`STX`/`ETX`/LRC) | `CreateFatek`, `CreateFatekSerial` |
-| **Fuji Electric** | SPB Loader / MICREX-SX SPH | SPB ASCII (`:`/`CRLF`) 및 SPH SX-Bus Binary (`0xFB`) | `CreateFujiElectricSpb`, `CreateFujiElectricSpbSerial`, `CreateFujiElectricSph`, `CreateFujiElectricSphTcp` |
-| **GE Fanuc / Emerson** | PACSystems RX3i/RX7i, Series 90-30 | TCP 기반 SRTP 56바이트 바이너리 프로토콜 | `CreateGESrtp`, `CreateGESrtpTcp` |
-| **Inovance** | AM400/600, H3U, H5U | 시리즈·워드내 비트 매핑 기반 Modbus RTU / TCP | `CreateInovance`, `CreateInovanceTcp`, `CreateInovanceRtu` |
-| **JTEKT (Toyota)** | TOYOPUC (2PORT-EFR) | TOYOPUC Computer Link (기본 및 확장 `PRG` 뱅크) | `CreateJtektToyopuc`, `CreateJtektToyopucTcp` |
-| **Keyence** | KV-8000 / 7000 / 5000 / 3000 / Nano | KV 상위 링크 ASCII (`CR`/`RDS`/`WRS`/`CQ`) | `CreateKeyenceHostLink`, `CreateKeyenceHostLinkTcp`, `CreateKeyenceHostLinkSerial` |
-| **Megmeet** | MC200 / MC280 시리즈 | 16/32비트 카운터 경계 처리 Modbus RTU / TCP | `CreateMegmeet`, `CreateMegmeetRtu`, `CreateMegmeetTcp` |
-| **Panasonic** | FP-X / FP0R / FP2SH / FP7 | MEWTOCOL-COM ASCII (`%`/`<` 프레임, BCC) | `CreatePanasonicMewtocol`, `CreatePanasonicMewtocolSerial`, `CreatePanasonicMewtocolTcp` |
-| **VIGOR** | VS 시리즈 | Computer Link 바이너리 (`DLE STX ... DLE ETX` + 체크섬) | `CreateVigor`, `CreateVigorSerial` |
-| **XINJE** | XC / XD · XL 시리즈 | Modbus RTU / TCP 및 확장 기능 코드 | `CreateXinje`, `CreateXinjeRtu`, `CreateXinjeTcp` |
-| **Yokogawa** | FA-M3 시리즈 | Higher-Level Link Service 바이너리 프로토콜 | `CreateYokogawa`, `CreateYokogawaTcp` |
+#### 이더넷 · 표준 프로토콜
+
+| 제조사 · 대상 시리즈 | 프로토콜 및 프레이밍 | `PlcClientFactory` 진입점 |
+| --- | --- | --- |
+| **Modbus**<br>표준 Modbus 장치 | Modbus TCP · RTU · ASCII | `CreateModbusTcp`<br>`CreateModbusRtu`<br>`CreateModbusAscii` |
+| **Mitsubishi Electric**<br>Q / L / iQ-R / iQ-F / FX | MC 3E/4E (Binary·ASCII, TCP/UDP) | `CreateMitsubishiMCBinaryTcp`<br>`CreateMitsubishiMCBinaryUdp`<br>`CreateMitsubishiMCAsciiTcp`<br>`CreateMitsubishiMCAsciiUdp` |
+| **LS ELECTRIC**<br>XGT / XGB / XGK / XGI | FEnet 전용 이더넷 (TCP) | `CreateLsElectricFEnet` |
+| **Siemens**<br>S7-200/300/400/1200/1500 | ISO-on-TCP 기반 S7comm | `CreateSiemensS7Comm` |
+| **GE Fanuc / Emerson**<br>RX3i / RX7i / 90-30 | SRTP 56바이트 바이너리 (TCP) | `CreateGESrtpTcp` |
+| **Fuji Electric**<br>MICREX-SX SPH | SPH SX-Bus 바이너리 (TCP) | `CreateFujiElectricSphTcp` |
+| **JTEKT (Toyota)**<br>TOYOPUC (2PORT-EFR) | TOYOPUC Computer Link (TCP) | `CreateJtektToyopucTcp` |
+| **Yokogawa**<br>FA-M3 시리즈 | Higher-Level Link 바이너리 (TCP) | `CreateYokogawaTcp` |
+
+#### 시리얼 · 상위 링크 프로토콜
+
+| 제조사 · 대상 시리즈 | 프로토콜 및 프레이밍 | `PlcClientFactory` 진입점 |
+| --- | --- | --- |
+| **Keyence**<br>KV-8000/7000/5000/3000/Nano | KV 상위 링크 ASCII (TCP / Serial) | `CreateKeyenceHostLinkTcp`<br>`CreateKeyenceHostLinkSerial` |
+| **Panasonic**<br>FP-X / FP0R / FP2SH / FP7 | MEWTOCOL-COM ASCII (TCP / Serial) | `CreatePanasonicMewtocolTcp`<br>`CreatePanasonicMewtocolSerial` |
+| **Fuji Electric**<br>MICREX-F SPB Loader | SPB ASCII (Serial) | `CreateFujiElectricSpbSerial` |
+| **FATEK**<br>FBs 시리즈 | FATEK ASCII `STX`/`ETX` (Serial) | `CreateFatekSerial` |
+| **VIGOR**<br>VS 시리즈 | Computer Link 바이너리 (Serial) | `CreateVigorSerial` |
+
+#### Modbus 매핑 기반 PLC 제품군
+
+| 제조사 · 대상 시리즈 | 프로토콜 및 매핑 | `PlcClientFactory` 진입점 |
+| --- | --- | --- |
+| **Delta Electronics**<br>DVP / AS 시리즈 | Modbus TCP / RTU + 시리즈 주소 매핑 | `CreateDeltaDvpTcp`<br>`CreateDeltaAsTcp`<br>`CreateDeltaDvpRtu` |
+| **Inovance**<br>AM400/600, H3U, H5U | Modbus TCP / RTU + 워드 내 비트 매핑 | `CreateInovanceTcp`<br>`CreateInovanceRtu` |
+| **XINJE**<br>XC / XD · XL 시리즈 | Modbus TCP / RTU + 확장 기능 코드 | `CreateXinjeTcp`<br>`CreateXinjeRtu` |
+| **Megmeet**<br>MC200 / MC280 시리즈 | Modbus TCP / RTU + 32비트 카운터 경계 | `CreateMegmeetTcp`<br>`CreateMegmeetRtu` |
 
 ### 산업용 로봇 프로토콜 (`FieldLink.Robot`)
 
-| 제조사 | 컨트롤러 / 프로토콜 | 전송 방식 | `RobotClientFactory` 진입점 |
-| --- | --- | --- | --- |
-| **ABB** | Robot Web Services (RWS) | HTTP / HTTPS | `CreateAbbRws` |
-| **EFORT** | ER7B-C10 (V1 / V2 프레임) | TCP | `CreateEfortER7BC10V1`, `CreateEfortER7BC10V2`, `CreateEfortER7BC10` |
-| **Estun** | Estun Modbus 인터페이스 | TCP | `CreateEstunModbus` |
-| **FANUC** | FANUC Robot Interface | TCP | `CreateFanucRobotInterface` |
-| **현대로보틱스 (Hyundai)** | Hi5 / Hi6 OnLTrack | UDP 리스너 | `CreateHyundaiOnLTrack` |
-| **KUKA** | KUKA VarProxy | TCP | `CreateKukaVarProxy` |
-| **KUKA** | KUKA Socket ASCII | TCP | `CreateKukaSocketAscii` |
-| **Yamaha** | RCX 컨트롤러 | TCP | `CreateYamahaRcx` |
-| **Yaskawa** | YRC Ethernet | TCP | `CreateYaskawaYrcEthernet` |
-| **Yaskawa** | High-Speed Ethernet Server (HSE) | UDP | `CreateYaskawaHighSpeedEthernet` |
+| 제조사 · 컨트롤러 | 프로토콜 및 전송 방식 | `RobotClientFactory` 진입점 |
+| --- | --- | --- |
+| **ABB** (IRC5 / OmniCore) | Robot Web Services (HTTP / HTTPS) | `CreateAbbRws` |
+| **EFORT** (ER7B-C10 V1 / V2) | EFORT 바이너리 (TCP) | `CreateEfortER7BC10V2`<br>`CreateEfortER7BC10V1` |
+| **Estun** | Estun Modbus 인터페이스 (TCP) | `CreateEstunModbus` |
+| **FANUC** | FANUC Robot Interface (TCP) | `CreateFanucRobotInterface` |
+| **현대로보틱스 (Hyundai)** (Hi5 / Hi6) | OnLTrack (UDP 리스너) | `CreateHyundaiOnLTrack` |
+| **KUKA** | VarProxy · Socket ASCII (TCP) | `CreateKukaVarProxy`<br>`CreateKukaSocketAscii` |
+| **Yamaha** (RCX) | RCX 컨트롤러 ASCII (TCP) | `CreateYamahaRcx` |
+| **Yaskawa** (YRC1000 / DX200) | YRC Ethernet (TCP) · HSE (UDP) | `CreateYaskawaYrcEthernet`<br>`CreateYaskawaHighSpeedEthernet` |
 
-### OPC UA 클라이언트 (`FieldLink.OpcUa`)
+### OPC UA 및 전송 계층
 
-`FieldLink.OpcUa`는 저수준 채널/세션 구현을 내부로 캡슐화하고 클라이언트 수명주기와 보안·서비스 계약을 관리합니다.
-
-- **세션 수명주기 및 탐색**: Endpoint 탐색(`OpcUaSdkDiscoveryClient`), 엄격한 X.509 인증서 신뢰 검증(미신뢰 인증서 자동 승인 금지), 도메인 검증(`checkDomain: true`), 세대 격리 세션 관리
-- **데이터 접근 및 서비스**: 단건·일괄 읽기/쓰기(`ReadValueAsync`, `ReadValuesAsync`, `WriteValueAsync`, `WriteValuesAsync`), 주소 공간 탐색(`BrowseAsync`), 메서드 호출(`CallAsync`) 및 `OpcUaDeadline` 전체 타임아웃 제어
-- **구독**: 유한 큐 기반 백프레셔 제어를 제공하는 모니터링 구독(`SubscribeAsync`)
-
-### 전송 및 프레이밍 (`FieldLink.Transport`)
-
-| 구분 | 구현체 |
-| --- | --- |
-| **스트림 · 패킷 전송** | `TcpTransport`, `UdpTransport`, `UdpListenerTransport`, `SerialTransport`, `HttpTransport`, `WebSocketTransport` |
-| **프레임 디코더 (`IFrameDecoder`)** | `FixedLengthFrameDecoder`, `DelimitedFrameDecoder`, `HeaderLengthFrameDecoder`, `AvailableBytesFrameDecoder` |
+- **OPC UA (`FieldLink.OpcUa`)**:
+  - **세션 수명주기 및 탐색**: Endpoint 탐색(`OpcUaSdkDiscoveryClient`), 엄격한 X.509 인증서 신뢰 검증(미신뢰 인증서 자동 승인 금지), 도메인 검증(`checkDomain: true`), 세대 격리 세션 관리
+  - **데이터 접근 및 서비스**: 단건·일괄 읽기/쓰기(`ReadValueAsync`, `ReadValuesAsync`, `WriteValueAsync`, `WriteValuesAsync`), 주소 공간 탐색(`BrowseAsync`), 메서드 호출(`CallAsync`) 및 `OpcUaDeadline` 전체 타임아웃 제어
+  - **구독**: 유한 큐 기반 백프레셔 제어를 제공하는 모니터링 구독(`SubscribeAsync`)
+- **전송 및 프레이밍 (`FieldLink.Transport`)**:
+  - **채널**: `TcpTransport`, `UdpTransport`, `UdpListenerTransport`, `SerialTransport`, `HttpTransport`, `WebSocketTransport`
+  - **프레임 디코더 (`IFrameDecoder`)**: `FixedLengthFrameDecoder`, `DelimitedFrameDecoder`, `HeaderLengthFrameDecoder`, `AvailableBytesFrameDecoder`
 
 ---
 
@@ -134,13 +141,19 @@ flowchart TB
 
 ### 1. PLC 클라이언트 (`FieldLink.Plc`)
 
+#### 1-1. 전송 방식 선택 (TCP vs UDP) 및 단건 읽기/쓰기
+
 ```csharp
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 using FieldLink.Plc;
 
-using var client = PlcClientFactory.CreateMitsubishiMCBinary("192.168.0.10", port: 5000);
+// PlcClientFactory 메서드 이름으로 TCP / UDP를 명시적으로 선택합니다 (기본 포트: 5000)
+using var client = PlcClientFactory.CreateMitsubishiMCBinaryTcp("192.168.0.10", port: 5000);
+
+// UDP를 사용할 때는 아래와 같이 호출합니다 (필요 시 localPort로 PC 측 바인딩 포트 지정 가능)
+// using var client = PlcClientFactory.CreateMitsubishiMCBinaryUdp("192.168.0.10", port: 5000);
 
 PlcResult openResult = await client.OpenAsync(CancellationToken.None);
 if (!openResult.IsSuccess)
@@ -159,6 +172,37 @@ PlcResult writeResult = await client.WriteInt16Async("D200", 1234);
 if (!writeResult.IsSuccess)
 {
     Console.WriteLine($"쓰기 실패: {writeResult.Error.Message}");
+}
+```
+
+#### 1-2. 연속 쓰기 · 연속 읽기 (배열, 비트, 문자열, 대량 분할 쓰기)
+
+`Write*Async` 메서드에 배열을 전달하면 시작 주소부터 연속된 레지스터·비트에 일괄 기록합니다. 프로토콜 1회 최대 한도(예: MC 3E 기본 960워드)를 넘기면 내부에서 자동으로 청크를 나누어 순차 전송합니다.
+
+```csharp
+// 1. 연속 16비트 워드 배열 쓰기 및 읽기 (D100 ~ D103)
+PlcResult wordWrite = await client.WriteInt16Async("D100", new short[] { 10, 20, 30, 40 });
+PlcResult<short[]> wordRead = await client.ReadInt16Async("D100", count: 4);
+
+// 2. 연속 32비트 정수 · 단정밀도 실수 배열 쓰기 (D200 ~ D203, D300 ~ D305)
+await client.WriteInt32Async("D200", new int[] { 100_000, 200_000 });
+await client.WriteSingleAsync("D300", new float[] { 12.5f, 37.25f, 99.0f });
+
+// 3. 연속 비트 배열 쓰기 및 읽기 (M100 ~ M103)
+await client.WriteBooleanAsync("M100", new bool[] { true, false, true, true });
+PlcResult<bool[]> bitRead = await client.ReadBooleanAsync("M100", count: 4);
+
+// 4. 연속 워드 영역에 문자열 쓰기 및 읽기 (D400 ~ D407, 16바이트 용량)
+await client.WriteStringAsync("D400", "LOT-2026A", characterCapacity: 16);
+PlcResult<string> lotCode = await client.ReadStringAsync("D400", characterCapacity: 16);
+
+// 5. 한도를 초과하는 대량 연속 쓰기 (자동 분할 및 실패 시 완료 개수 확인)
+short[] recipe = new short[2000];
+PlcResult bulkWrite = await client.WriteInt16Async("D1000", recipe);
+if (!bulkWrite.IsSuccess)
+{
+    Console.WriteLine(
+        $"대량 쓰기 실패: {bulkWrite.Error.Message} (완료된 원소 수: {bulkWrite.Error.CompletedCount})");
 }
 ```
 
@@ -238,12 +282,10 @@ dotnet test FieldLink.slnx -c Release
 dotnet format FieldLink.slnx --verify-no-changes
 ```
 
-| 테스트 프로젝트 | 대상 프레임워크 | 검증 범위 |
-| --- | --- | --- |
-| `FieldLink.Transport.Tests` | `net8.0` | 프레임 디코더, 스트림 세션, TCP/Serial 수명주기 |
-| `FieldLink.Plc.Tests` | `net8.0` | 주소 파서, 요청 빌더, 응답 파서, 다중 분할 프로토콜 상태 |
-| `FieldLink.Robot.Tests` | `net8.0` | 로봇 프로토콜 코덱, HTTP/TCP/UDP 드라이버, 세션 초기화 |
-| `FieldLink.OpcUa.Tests` | `net10.0`, `net48` | 루프백 OPC UA 서버 연동, 보안 정책 검증, 구독 처리 |
+- **`FieldLink.Transport.Tests`** (`net8.0`): 프레임 디코더, 스트림 세션, TCP/UDP/Serial 수명주기
+- **`FieldLink.Plc.Tests`** (`net8.0`): 주소 파서, 요청 빌더, 응답 파서, 다중 분할 프로토콜 상태
+- **`FieldLink.Robot.Tests`** (`net8.0`): 로봇 프로토콜 코덱, HTTP/TCP/UDP 드라이버, 세션 초기화
+- **`FieldLink.OpcUa.Tests`** (`net10.0`, `net48`): 루프백 OPC UA 서버 연동, 보안 정책 검증, 구독 처리
 
 > `[Trait("Category", "Hardware")]` 특성이 붙은 실장비 통합 테스트는 물리 장치가 필요하므로 오프라인 자동 테스트에서 제외됩니다.
 

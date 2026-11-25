@@ -1,4 +1,6 @@
 using System;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -160,6 +162,77 @@ public sealed class MCProtocolTests
 
         Assert.Equal(ByteOrder.LittleEndian, binaryClient.ByteOrder);
         Assert.Equal(ByteOrder.LittleEndian, asciiClient.ByteOrder);
+    }
+
+    [Fact]
+    public void Factory_TcpAndUdpMethods_CreateLittleEndianClientsAndValidatePorts()
+    {
+        using var binaryTcpDefault = PlcClientFactory.CreateMitsubishiMCBinaryTcp("127.0.0.1");
+        using var binaryTcpExplicit = PlcClientFactory.CreateMitsubishiMCBinaryTcp("127.0.0.1", port: 5002);
+        using var binaryUdpDefault = PlcClientFactory.CreateMitsubishiMCBinaryUdp("127.0.0.1");
+        using var binaryUdpExplicit = PlcClientFactory.CreateMitsubishiMCBinaryUdp("127.0.0.1", port: 5002, localPort: 15002);
+        using var asciiTcpDefault = PlcClientFactory.CreateMitsubishiMCAsciiTcp("127.0.0.1");
+        using var asciiTcpExplicit = PlcClientFactory.CreateMitsubishiMCAsciiTcp("127.0.0.1", port: 5003);
+        using var asciiUdpDefault = PlcClientFactory.CreateMitsubishiMCAsciiUdp("127.0.0.1");
+        using var asciiUdpExplicit = PlcClientFactory.CreateMitsubishiMCAsciiUdp("127.0.0.1", port: 5003, localPort: 15003);
+
+        Assert.Equal(ByteOrder.LittleEndian, binaryTcpDefault.ByteOrder);
+        Assert.Equal(ByteOrder.LittleEndian, binaryTcpExplicit.ByteOrder);
+        Assert.Equal(ByteOrder.LittleEndian, binaryUdpDefault.ByteOrder);
+        Assert.Equal(ByteOrder.LittleEndian, binaryUdpExplicit.ByteOrder);
+        Assert.Equal(ByteOrder.LittleEndian, asciiTcpDefault.ByteOrder);
+        Assert.Equal(ByteOrder.LittleEndian, asciiTcpExplicit.ByteOrder);
+        Assert.Equal(ByteOrder.LittleEndian, asciiUdpDefault.ByteOrder);
+        Assert.Equal(ByteOrder.LittleEndian, asciiUdpExplicit.ByteOrder);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcClientFactory.CreateMitsubishiMCBinaryTcp("127.0.0.1", port: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcClientFactory.CreateMitsubishiMCBinaryTcp("127.0.0.1", port: 65536));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcClientFactory.CreateMitsubishiMCBinaryUdp("127.0.0.1", port: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcClientFactory.CreateMitsubishiMCBinaryUdp("127.0.0.1", port: 5000, localPort: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcClientFactory.CreateMitsubishiMCAsciiTcp("127.0.0.1", port: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlcClientFactory.CreateMitsubishiMCAsciiUdp("127.0.0.1", port: 5000, localPort: 65536));
+    }
+
+    [Fact]
+    public async Task Factory_CreateMitsubishiMCBinaryUdp_LoopbackReadAndContiguousWrite_Succeeds()
+    {
+        using var server = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        int serverPort = ((IPEndPoint)server.Client.LocalEndPoint!).Port;
+
+        byte[]? capturedReadRequest = null;
+        byte[]? capturedWriteRequest = null;
+
+        Task serverTask = Task.Run(async () =>
+        {
+            UdpReceiveResult firstDatagram = await server.ReceiveAsync().ConfigureAwait(false);
+            capturedReadRequest = firstDatagram.Buffer;
+            byte[] readResponse = FromHex("D0 00 00 FF FF 03 00 04 00 00 00 34 12");
+            await server.SendAsync(readResponse, readResponse.Length, firstDatagram.RemoteEndPoint).ConfigureAwait(false);
+
+            UdpReceiveResult secondDatagram = await server.ReceiveAsync().ConfigureAwait(false);
+            capturedWriteRequest = secondDatagram.Buffer;
+            byte[] writeResponse = FromHex("D0 00 00 FF FF 03 00 02 00 00 00");
+            await server.SendAsync(writeResponse, writeResponse.Length, secondDatagram.RemoteEndPoint).ConfigureAwait(false);
+        });
+
+        using var client = PlcClientFactory.CreateMitsubishiMCBinaryUdp("127.0.0.1", port: serverPort);
+
+        PlcResult openResult = await client.OpenAsync();
+        Assert.True(openResult.IsSuccess);
+
+        PlcResult<short> readResult = await client.ReadInt16Async("D100");
+        Assert.True(readResult.IsSuccess);
+        Assert.Equal((short)0x1234, readResult.Value);
+
+        PlcResult writeResult = await client.WriteInt16Async("D100", new short[] { 0x1234, 0x5678 });
+        Assert.True(writeResult.IsSuccess);
+
+        await serverTask;
+        PlcResult closeResult = await client.CloseAsync();
+        Assert.True(closeResult.IsSuccess);
+
+        Assert.Equal(FromHex("50 00 00 FF FF 03 00 0C 00 10 00 01 04 00 00 64 00 00 A8 01 00"), capturedReadRequest);
+        Assert.Equal(FromHex("50 00 00 FF FF 03 00 10 00 10 00 01 14 00 00 64 00 00 A8 02 00 34 12 78 56"), capturedWriteRequest);
     }
 
     [Fact]
